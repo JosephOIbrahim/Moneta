@@ -1,0 +1,79 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "moneta"
+version = "0.1.0"
+description = "Memory substrate built on OpenUSD's composition engine. Sibling to Octavius."
+readme = "README.md"
+requires-python = ">=3.11"
+authors = [
+    { name = "Joseph Ibrahim" },
+]
+license = { text = "Proprietary" }
+classifiers = [
+    "Development Status :: 2 - Pre-Alpha",
+    "Intended Audience :: Developers",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Private :: Do Not Upload",
+]
+
+# Runtime dependencies
+# --------------------
+# Substrate Engineer (Phase 1 Pass 2) elected stdlib-only list-backed
+# struct-of-arrays for the ECS hot tier, deferring numpy/pandas adoption.
+# Rationale: MONETA.md §2.2 says "vectorizable, struct-of-arrays or
+# DataFrame-backed" — list-backed SoA satisfies the structural requirement,
+# keeps the handoff dep-free, and leaves backing choice to Phase 2 profiling.
+# Persistence Engineer still selects the vector index (FAISS vs LanceDB)
+# per MONETA.md §6 Role 3, which will introduce the first real runtime dep.
+dependencies = []
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0",
+    "pytest-cov",
+    "ruff",
+]
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/moneta"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+src = ["src", "tests"]
+
+[tool.ruff.lint]
+select = [
+    "E",   # pycodestyle errors
+    "W",   # pycodestyle warnings
+    "F",   # pyflakes
+    "I",   # isort
+    "UP",  # pyupgrade
+    "B",   # flake8-bugbear
+]
+ignore = [
+    "E501",  # line too long (ruff format handles wrapping)
+]
+
+[tool.pytest.ini_options]
+minversion = "8.0"
+testpaths = ["tests"]
+pythonpath = ["src"]
+# Default python_files plus the synthetic session harness, which is named
+# after its domain purpose rather than the test_*.py convention.
+python_files = ["test_*.py", "*_test.py", "synthetic_session.py"]
+addopts = [
+    "-ra",
+    "--strict-markers",
+    "--strict-config",
+]
+markers = [
+    "unit: fast isolated unit tests",
+    "integration: end-to-end deposit/query/attention/consolidation flow tests",
+    "load: synthetic session harness tests (Phase 1 completion gate)",
+]
