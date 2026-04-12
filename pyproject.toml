@@ -4,32 +4,28 @@ build-backend = "hatchling.build"
 
 [project]
 name = "moneta"
-version = "0.1.0"
+version = "0.2.0"
 description = "Memory substrate built on OpenUSD's composition engine. Sibling to Octavius."
 readme = "README.md"
 requires-python = ">=3.11"
 authors = [
-    { name = "Joseph Ibrahim" },
+    { name = "Joseph Ibrahim", email = "joseph@josephibrahim.com" },
 ]
 license = { text = "Proprietary" }
+keywords = ["memory", "agents", "openusd", "ecs", "cognitive-substrate"]
 classifiers = [
-    "Development Status :: 2 - Pre-Alpha",
+    "Development Status :: 3 - Alpha",
     "Intended Audience :: Developers",
     "Programming Language :: Python :: 3",
     "Programming Language :: Python :: 3.11",
     "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Programming Language :: Python :: 3.14",
     "Private :: Do Not Upload",
 ]
 
-# Runtime dependencies
-# --------------------
-# Substrate Engineer (Phase 1 Pass 2) elected stdlib-only list-backed
-# struct-of-arrays for the ECS hot tier, deferring numpy/pandas adoption.
-# Rationale: MONETA.md §2.2 says "vectorizable, struct-of-arrays or
-# DataFrame-backed" — list-backed SoA satisfies the structural requirement,
-# keeps the handoff dep-free, and leaves backing choice to Phase 2 profiling.
-# Persistence Engineer still selects the vector index (FAISS vs LanceDB)
-# per MONETA.md §6 Role 3, which will introduce the first real runtime dep.
+# Runtime dependencies — zero in Phase 1 (stdlib-only ECS).
+# Phase 3 adds LanceDB when the vector index backend ships.
 dependencies = []
 
 [project.optional-dependencies]
@@ -38,6 +34,11 @@ dev = [
     "pytest-cov",
     "ruff",
 ]
+
+[project.urls]
+Repository = "https://github.com/JosephOIbrahim/Moneta"
+Blueprint = "https://github.com/JosephOIbrahim/Moneta/blob/main/MONETA.md"
+Architecture = "https://github.com/JosephOIbrahim/Moneta/blob/main/ARCHITECTURE.md"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/moneta"]
