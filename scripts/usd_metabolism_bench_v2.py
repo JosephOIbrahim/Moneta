@@ -249,9 +249,10 @@ def build_stage_for_config(
     if config.accumulated_layer_size > 0:
         with Sdf.ChangeBlock():
             for i in range(config.accumulated_layer_size):
-                Sdf.CreatePrimInLayer(
+                ps = Sdf.CreatePrimInLayer(
                     primary_layer, Sdf.Path(f"/accum_{i}")
                 )
+                ps.specifier = Sdf.SpecifierDef
         primary_layer.Save()
 
     return stage, primary_layer
@@ -367,8 +368,18 @@ def run_config(
     config: BenchConfig,
     tmp_root: Path,
     n_writes: int,
+    lock_scope: str = "wide",
 ) -> MetricsRow:
-    """Execute one benchmark config end-to-end."""
+    """Execute one benchmark config end-to-end.
+
+    Parameters
+    ----------
+    lock_scope
+        "wide" (Phase 2 default): writer holds mutex across
+        ChangeBlock + Save + shadow-commit.
+        "narrow" (Phase 3 Q6 variant): writer releases mutex after
+        ChangeBlock exits; Save + shadow-commit run lock-free.
+    """
     setup_start = time.perf_counter()
     work_dir = tmp_root / f"cfg_{id(config):x}"
 
@@ -396,18 +407,35 @@ def run_config(
     # Writer loop — N batches with per-batch lock windows.
     write_windows: List[Tuple[float, float]] = []
     for i in range(n_writes):
-        with stage_lock:
-            write_start = time.perf_counter()
-            author_batch(
-                primary_layer,
-                batch_id=i,
-                batch_size=config.batch_size,
-                structural_ratio=config.structural_ratio,
-            )
+        if lock_scope == "narrow":
+            # Q6 narrow-lock variant: lock covers ChangeBlock only.
+            # Save + shadow-commit run lock-free, concurrent with reader.
+            with stage_lock:
+                write_start = time.perf_counter()
+                author_batch(
+                    primary_layer,
+                    batch_id=i,
+                    batch_size=config.batch_size,
+                    structural_ratio=config.structural_ratio,
+                )
+            # Lock released — ChangeBlock has exited inside author_batch.
             primary_layer.Save()
-            # Round 3 Q3 fix (e): shadow index commit inside the writer lock.
             time.sleep(config.shadow_index_commit_ms / 1000.0)
             write_end = time.perf_counter()
+        else:
+            # Wide-lock (Phase 2 baseline): lock covers everything.
+            with stage_lock:
+                write_start = time.perf_counter()
+                author_batch(
+                    primary_layer,
+                    batch_id=i,
+                    batch_size=config.batch_size,
+                    structural_ratio=config.structural_ratio,
+                )
+                primary_layer.Save()
+                # Round 3 Q3 fix (e): shadow index commit inside the writer lock.
+                time.sleep(config.shadow_index_commit_ms / 1000.0)
+                write_end = time.perf_counter()
         write_windows.append((write_start, write_end))
 
         # Let the reader observe post-write Pcp rebuild tax.
@@ -525,6 +553,196 @@ def warmup_sweep() -> List[BenchConfig]:
 # ----------------------------------------------------------------------
 
 
+def run_stress_test(
+    n_iterations: int,
+    output_path: Path,
+    progress: bool,
+) -> int:
+    """Q6 thread-safety stress test: concurrent Traverse() during Save().
+
+    Phase 3 Pass 5. Tests whether it is safe for a reader thread to call
+    stage.Traverse() while a writer thread calls layer.Save() on the same
+    stage, given the Sdf.ChangeBlock has already exited.
+
+    Methodology
+    -----------
+    - One shared stage with 25,000 accumulated prims (ensures Save() takes
+      measurable time, creating a window for concurrent Traverse).
+    - Each iteration: writer authors 10 new prims inside a locked
+      ChangeBlock, releases the lock, then calls Save() lock-free.
+    - A threading.Barrier synchronizes the reader to start Traverse()
+      exactly when Save() begins.
+    - Reader traverses the full stage, asserting every prim with a "val"
+      attribute returns a non-None value (catches partial reads and stale
+      cache corruption).
+    - Failures: any exception, any assertion failure, or reader seeing None
+      for an authored attribute.
+
+    Returns the count of failed iterations (0 = DETERMINISTIC SAFE).
+    """
+    print("Q6 Thread-Safety Stress Test", flush=True)
+    print(f"  iterations  = {n_iterations}", flush=True)
+    print(f"  output      = {output_path}", flush=True)
+    print(flush=True)
+
+    work_dir = Path(tempfile.mkdtemp(prefix="moneta_stress_"))
+    config = BenchConfig(
+        batch_size=10,
+        structural_ratio=0.5,
+        sublayer_count=5,
+        read_load_hz=60,
+        shadow_index_commit_ms=0,
+        accumulated_layer_size=25000,
+    )
+    stage, primary_layer = build_stage_for_config(work_dir, config)
+
+    stage_lock = threading.Lock()
+    results: List[dict] = []
+
+    for i in range(n_iterations):
+        barrier = threading.Barrier(2, timeout=30)
+        reader_data: dict = {
+            "exception": None, "assertions_ok": True,
+            "latency_ms": 0.0, "prims_traversed": 0,
+        }
+        writer_data: dict = {"exception": None, "save_ms": 0.0}
+
+        def writer_fn(iteration: int = i) -> None:
+            try:
+                with stage_lock:
+                    with Sdf.ChangeBlock():
+                        for j in range(10):
+                            path = Sdf.Path(f"/stress_{iteration}_{j}")
+                            ps = Sdf.CreatePrimInLayer(primary_layer, path)
+                            ps.specifier = Sdf.SpecifierDef
+                            Sdf.AttributeSpec(
+                                ps, "val", Sdf.ValueTypeNames.Int
+                            ).default = iteration
+                # Lock released, ChangeBlock exited.
+                barrier.wait()
+                save_start = time.perf_counter()
+                primary_layer.Save()
+                writer_data["save_ms"] = (
+                    (time.perf_counter() - save_start) * 1000
+                )
+            except Exception as e:
+                writer_data["exception"] = f"{type(e).__name__}: {e}"
+                try:
+                    barrier.wait()
+                except threading.BrokenBarrierError:
+                    pass
+
+        def reader_fn() -> None:
+            try:
+                barrier.wait()
+                start = time.perf_counter()
+                count = 0
+                for prim in stage.Traverse():
+                    count += 1
+                    if prim.HasAttribute("val"):
+                        v = prim.GetAttribute("val").Get()
+                        if v is None:
+                            reader_data["assertions_ok"] = False
+                reader_data["prims_traversed"] = count
+                reader_data["latency_ms"] = (
+                    (time.perf_counter() - start) * 1000
+                )
+            except Exception as e:
+                reader_data["exception"] = f"{type(e).__name__}: {e}"
+
+        wt = threading.Thread(target=writer_fn, name="stress-writer")
+        rt = threading.Thread(target=reader_fn, name="stress-reader")
+        wt.start()
+        rt.start()
+        wt.join(timeout=60)
+        rt.join(timeout=60)
+
+        row = {
+            "iteration": i,
+            "writer_exception": writer_data["exception"],
+            "reader_exception": reader_data["exception"],
+            "assertions_ok": reader_data["assertions_ok"],
+            "save_ms": round(writer_data["save_ms"], 2),
+            "traverse_latency_ms": round(reader_data["latency_ms"], 2),
+            "prims_traversed": reader_data["prims_traversed"],
+        }
+        results.append(row)
+
+        if progress and (i + 1) % 500 == 0:
+            fails = sum(
+                1 for r in results
+                if r["writer_exception"] or r["reader_exception"]
+                or not r["assertions_ok"]
+            )
+            avg_save = statistics.mean(r["save_ms"] for r in results[-500:])
+            avg_trav = statistics.mean(
+                r["traverse_latency_ms"] for r in results[-500:]
+            )
+            print(
+                f"  [{i + 1:5d}/{n_iterations}] "
+                f"fails={fails} "
+                f"avg_save={avg_save:.1f}ms "
+                f"avg_traverse={avg_trav:.1f}ms "
+                f"prims={row['prims_traversed']}",
+                flush=True,
+            )
+
+    # Write CSV
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    with open(output_path, "w", newline="", encoding="utf-8") as fp:
+        fieldnames = list(results[0].keys())
+        writer = csv.DictWriter(fp, fieldnames=fieldnames)
+        writer.writeheader()
+        writer.writerows(results)
+    print(f"\nWrote {len(results)} rows to {output_path}", flush=True)
+
+    n_failures = sum(
+        1 for r in results
+        if r["writer_exception"] or r["reader_exception"]
+        or not r["assertions_ok"]
+    )
+    n_ok = len(results) - n_failures
+
+    print(flush=True)
+    print(f"=== STRESS TEST RESULTS ===", flush=True)
+    print(f"  Total iterations:  {len(results)}", flush=True)
+    print(f"  Passed:            {n_ok}", flush=True)
+    print(f"  Failed:            {n_failures}", flush=True)
+    if results:
+        saves = [r["save_ms"] for r in results if r["save_ms"] > 0]
+        travs = [r["traverse_latency_ms"] for r in results if r["traverse_latency_ms"] > 0]
+        if saves:
+            print(
+                f"  Save p50/p95:      "
+                f"{percentile(saves, 50):.1f} / {percentile(saves, 95):.1f} ms",
+                flush=True,
+            )
+        if travs:
+            print(
+                f"  Traverse p50/p95:  "
+                f"{percentile(travs, 50):.1f} / {percentile(travs, 95):.1f} ms",
+                flush=True,
+            )
+    if n_failures == 0:
+        print(f"\n  RULING: DETERMINISTIC SAFE — H1 confirmed.", flush=True)
+    else:
+        print(f"\n  RULING: DETERMINISTIC UNSAFE — H2 confirmed.", flush=True)
+        for r in results:
+            if r["writer_exception"] or r["reader_exception"] or not r["assertions_ok"]:
+                print(f"    Failure at iteration {r['iteration']}: {r}", flush=True)
+                if sum(1 for rr in results if rr.get("writer_exception") or rr.get("reader_exception")) >= 5:
+                    print("    (showing first 5 failures only)", flush=True)
+                    break
+
+    # Cleanup
+    try:
+        shutil.rmtree(work_dir, ignore_errors=True)
+    except Exception:
+        pass
+
+    return n_failures
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(
         description="USD Metabolism Benchmark v2 — Phase 2 decision gate"
@@ -554,7 +772,34 @@ def main() -> int:
         action="store_true",
         help="Print per-config progress.",
     )
+    parser.add_argument(
+        "--lock-scope",
+        choices=["wide", "narrow"],
+        default="wide",
+        help="Writer lock scope. 'wide' = Phase 2 baseline. 'narrow' = Q6 variant.",
+    )
+    parser.add_argument(
+        "--stress",
+        type=int,
+        default=0,
+        metavar="N",
+        help="Run Q6 thread-safety stress test with N iterations instead of sweep.",
+    )
+    parser.add_argument(
+        "--stress-output",
+        default="results/pass5-threadsafety-stress.csv",
+        help="CSV output for stress test results.",
+    )
     args = parser.parse_args()
+
+    # Dispatch: stress test or benchmark sweep
+    if args.stress > 0:
+        n_failures = run_stress_test(
+            n_iterations=args.stress,
+            output_path=Path(args.stress_output),
+            progress=args.progress,
+        )
+        return 0 if n_failures == 0 else 1
 
     if args.warmup_only:
         configs = warmup_sweep()
@@ -595,7 +840,7 @@ def main() -> int:
                     flush=True,
                 )
             try:
-                row = run_config(cfg, tmp_root, args.n_writes)
+                row = run_config(cfg, tmp_root, args.n_writes, args.lock_scope)
                 rows.append(row)
                 if args.progress or args.warmup_only:
                     dt = time.perf_counter() - cfg_start
