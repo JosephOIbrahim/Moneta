@@ -26,3 +26,4 @@ translate into claims language.
 | Pass | File | Claims evidenced | Summary |
 |------|------|-----------------|---------|
 | Pass 5 | `pass5-usd-threadsafety-review.md` | #4 (protected sublayer concurrency-safe) | Q6 investigation: concurrent Traverse + Save is safe. Reader path to protected sublayer is concurrency-safe. |
+| Pass 6 | `pass6-lock-shrink-implementation.md` | #4 (primary), #3 (secondary) | Narrow-lock implementation confirms concurrency-safe read path in production writer. |

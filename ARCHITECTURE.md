@@ -305,7 +305,20 @@ Human gates between every pair of consecutive passes. Pass boundaries are commit
 - **Benchmark data:** `docs/phase2-benchmark-results.md` (analyst interpretation) and `docs/phase2-closure.md` (rulings).
 - **Gemini outputs:** `docs/rounds/round-2.md` and `docs/rounds/round-3.md`.
 
-### 15.6 What stays locked from Phase 1 and Phase 2
+### 15.6 Pass 5/6 update: narrow writer lock
+
+**Authorized by:** Pass 5 Q6 investigation (commit 500b1dd). Empirical basis: 2,000 stress-test iterations, 70,010,000 concurrent prim-attribute read assertions, zero failures on OpenUSD 0.25.5. See `docs/patent-evidence/pass5-usd-threadsafety-review.md`.
+
+**Change (Pass 6):** The writer lock in `src/moneta/usd_target.py` covers `Sdf.ChangeBlock` only. `layer.Save()` runs outside the lock, concurrent with readers. The sequential-write ordering from §7 is preserved: ChangeBlock completes (prims authored in-memory) → Save completes (prims durable on disk) → vector index committed. Only the reader-blocking scope changes.
+
+**Revised cost model:** The steady-state p95 reader stall drops from ~131ms (Phase 2 attribute-case mean, §15.2 constraint #5) to a projected ~10–30ms at Moneta's operational batch sizes (≤500 prims, ≤50k accumulated). At batch=10 (typical), the stall drops to sub-1ms. These are projections from the Pass 5 narrow-lock benchmark comparison, not re-measured production numbers. The Phase 2 cost model number (131ms) is superseded for planning purposes but retained as the conservative fallback if the narrow lock is ever reverted.
+
+**What this does NOT change:**
+- §7 sequential-write ordering (locked)
+- §15.2 constraints #1–#4 (sublayer rotation, idle-window scheduling, batch cap, shadow commit budget)
+- The four substrate novelty claims (structural, not temporal)
+
+### 15.7 What stays locked from Phase 1 and Phase 2
 
 All locked invariants from §2–§10 remain in force through Phase 3. Additionally:
 

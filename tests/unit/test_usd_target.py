@@ -338,3 +338,135 @@ class TestInMemoryMode:
         assert prim.IsValid()
 
         target.close()
+
+
+# ==================================================================
+# Pass 6 adversarial additions — closing Pass 3 builder-bias debt
+#
+# Each test below documents which Pass 3 weakness it addresses.
+# Original Pass 3 tests are left unmodified for regression continuity.
+# ==================================================================
+
+
+class TestAdversarialAttributeValues:
+    """Pass 3 weakness: test_author_single_prim_creates_usd_spec checks
+    attribute types (isinstance) but not VALUES. A prim with utility=0.0
+    when 0.25 was authored would pass the original test. These tests
+    verify exact value round-trips.
+    """
+
+    def test_attribute_values_match_authored_data(self) -> None:
+        target = UsdTarget(log_path=None)
+        mem = _make_memory(
+            payload="exact value check",
+            utility=0.42,
+            attended_count=7,
+            protected_floor=0.15,
+        )
+        target.author_stage_batch([mem])
+        target.flush()
+
+        prim = target.stage.GetPrimAtPath(f"/Memory_{mem.entity_id.hex}")
+        assert prim.IsValid()
+
+        assert prim.GetAttribute("payload").Get() == "exact value check"
+        assert abs(prim.GetAttribute("utility").Get() - 0.42) < 1e-6, (
+            "utility value must match authored data, not just be a float"
+        )
+        assert prim.GetAttribute("attended_count").Get() == 7
+        assert abs(prim.GetAttribute("protected_floor").Get() - 0.15) < 1e-6
+        assert prim.GetAttribute("prior_state").Get() == int(EntityState.STAGED_FOR_SYNC)
+
+
+class TestAdversarialRotationBoundary:
+    """Pass 3 weakness: test_rolling_sublayer_rotates_at_cap only tests
+    cap → cap+1. It does not verify cap-1 does NOT rotate. The rotation
+    guard is `count >= cap`, so off-by-one errors in either direction
+    are invisible to the original test.
+    """
+
+    def test_no_rotation_at_cap_minus_one(self) -> None:
+        """cap-1 prims must NOT trigger rotation."""
+        cap = 10
+        target = UsdTarget(log_path=None, rotation_cap=cap)
+
+        batch = [_make_memory() for _ in range(cap - 1)]
+        target.author_stage_batch(batch)
+
+        rolling = [n for n in target.sublayer_names if n != PROTECTED_SUBLAYER_NAME]
+        assert len(rolling) == 1, "cap-1 should not trigger rotation"
+        assert target.get_prim_count(rolling[0]) == cap - 1
+
+    def test_rotation_at_exact_cap(self) -> None:
+        """Exactly cap prims fill the sublayer; the next prim triggers rotation."""
+        cap = 10
+        target = UsdTarget(log_path=None, rotation_cap=cap)
+
+        # Fill to exactly cap
+        target.author_stage_batch([_make_memory() for _ in range(cap)])
+        rolling_before = [n for n in target.sublayer_names if n != PROTECTED_SUBLAYER_NAME]
+        assert len(rolling_before) == 1
+        assert target.get_prim_count(rolling_before[0]) == cap
+
+        # cap+1 triggers rotation
+        target.author_stage_batch([_make_memory()])
+        rolling_after = [n for n in target.sublayer_names if n != PROTECTED_SUBLAYER_NAME]
+        assert len(rolling_after) == 2, "cap+1 must trigger rotation"
+
+
+class TestAdversarialEmptyBatch:
+    """Pass 3 gap: no test for empty batch input. author_stage_batch
+    should handle an empty list gracefully (no prims authored, valid
+    AuthoringResult returned).
+    """
+
+    def test_empty_batch_returns_valid_result_no_prims(self) -> None:
+        target = UsdTarget(log_path=None)
+        result = target.author_stage_batch([])
+
+        assert isinstance(result, AuthoringResult)
+        assert result.entity_ids == []
+        assert result.target == "usd"
+
+        # No prims should exist beyond the stage root
+        prims = list(target.stage.Traverse())
+        assert len(prims) == 0, "empty batch should not create any prims"
+
+
+class TestAdversarialNarrowLock:
+    """Pass 6 specific: verify the narrow-lock pattern — prims are
+    visible in-memory BEFORE flush() is called. This is the behavioral
+    consequence of the Pass 5 ruling: ChangeBlock exit makes prims
+    visible, Save (in flush) just writes to disk.
+    """
+
+    def test_prims_visible_before_flush(self) -> None:
+        """After author_stage_batch but before flush, prims are traversable."""
+        target = UsdTarget(log_path=None)
+        mem = _make_memory(payload="pre-flush visibility")
+        target.author_stage_batch([mem])
+
+        # NOT calling flush() yet — prim should still be visible
+        prim = target.stage.GetPrimAtPath(f"/Memory_{mem.entity_id.hex}")
+        assert prim.IsValid(), "prim must be visible after ChangeBlock exit, before flush"
+        assert prim.GetAttribute("payload").Get() == "pre-flush visibility"
+
+    def test_disk_round_trip_requires_flush(self, tmp_path: Path) -> None:
+        """On-disk mode: prim is NOT durable until flush() is called."""
+        target = UsdTarget(log_path=tmp_path / "cortex")
+        mem = _make_memory(payload="flush required")
+        target.author_stage_batch([mem])
+
+        # Reload WITHOUT flushing first — file may not have the new prim
+        # (the root layer has sublayer refs, but sublayers may not be saved)
+        cortex_dir = tmp_path / "cortex"
+        root_file = cortex_dir / "cortex_root.usda"
+
+        # Now flush and reload — prim should be there
+        target.flush()
+        reloaded = Usd.Stage.Open(str(root_file))
+        prim = reloaded.GetPrimAtPath(f"/Memory_{mem.entity_id.hex}")
+        assert prim.IsValid(), "prim must be durable after flush()"
+        assert prim.GetAttribute("payload").Get() == "flush required"
+
+        target.close()

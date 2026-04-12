@@ -1,16 +1,29 @@
 """Real USD authoring target — Sdf-level writes via pxr.
 
-ARCHITECTURE.md §15. Phase 3 Pass 3. First pxr import in src/moneta/.
+ARCHITECTURE.md §15. Phase 3 Pass 3 (created), Pass 6 (lock shrink).
 
 This module implements the AuthoringTarget Protocol from sequential_writer.py
 as a drop-in replacement for MockUsdTarget. The MockUsdTarget is kept
-alongside for A/B validation through Phase 3 Pass 6.
+alongside for A/B validation through Phase 3 Pass 7.
+
+Writer lock scope (Pass 6, authorized by Pass 5 ruling)
+-------------------------------------------------------
+``author_stage_batch`` performs Sdf authoring inside ``Sdf.ChangeBlock``
+only. ``layer.Save()`` is deferred to ``flush()``, which the
+``SequentialWriter`` calls separately after authoring returns. This
+narrow-lock pattern allows concurrent ``stage.Traverse()`` during the
+Save window without data corruption — empirically verified at 2,000
+iterations / 70M concurrent prim-attribute reads on OpenUSD 0.25.5
+(see ``docs/patent-evidence/pass5-usd-threadsafety-review.md``,
+commit 500b1dd). The sequential-write ordering from ARCHITECTURE.md §7
+is preserved: ChangeBlock completes, Save completes, then the shadow
+vector index is committed. Only the reader-blocking scope changes.
 
 Authoring pattern
 -----------------
 All writes use the Sdf-level API (Sdf.CreatePrimInLayer + Sdf.AttributeSpec)
 inside Sdf.ChangeBlock, NOT UsdStage.DefinePrim. This matches the benchmark
-(scripts/usd_metabolism_bench_v2.py) and avoids the USD 0.25.5
+(scripts/usd_metabolism_bench_v2.py) and avoids the OpenUSD 0.25.5
 DefinePrim-inside-ChangeBlock-with-sublayers incompatibility (stage.cpp:3889).
 
 Prim naming discipline
@@ -210,8 +223,11 @@ class UsdTarget:
         """Author staged entities to USD via Sdf-level API.
 
         All writes inside ``Sdf.ChangeBlock`` (substrate convention #5).
-        ``layer.Save()`` called per dirty layer after the ChangeBlock
-        exits, matching the pattern measured by the Phase 2 benchmark.
+        ``layer.Save()`` is NOT called here — it is deferred to
+        ``flush()``, which the ``SequentialWriter`` calls after this
+        method returns. This narrow-lock scope allows concurrent readers
+        to traverse the stage during the Save window. Empirical basis:
+        Pass 5 Q6 investigation (commit 500b1dd, OpenUSD 0.25.5).
         """
         authored_at = time.time()
         batch_id = str(_uuid.uuid4())
@@ -224,7 +240,8 @@ class UsdTarget:
                 groups[name] = (layer, [])
             groups[name][1].append(m)
 
-        # Author per-layer, each inside its own ChangeBlock
+        # Author per-layer, each inside its own ChangeBlock.
+        # Save() is deferred to flush() — narrow lock scope per Pass 5 ruling.
         for name, (layer, batch) in groups.items():
             with Sdf.ChangeBlock():
                 for m in batch:
@@ -245,10 +262,6 @@ class UsdTarget:
                     )
                     _set_attr(prim_spec, "prior_state", Sdf.ValueTypeNames.Int, int(m.state))
 
-            # Save after ChangeBlock exits — matches benchmark lock scope
-            if not self._in_memory:
-                layer.Save()
-
             self._prim_counts[name] = self._prim_counts.get(name, 0) + len(batch)
 
         _logger.info(
@@ -266,12 +279,16 @@ class UsdTarget:
         )
 
     def flush(self) -> None:
-        """Ensure all layers are durable on disk.
+        """Save all dirty layers to disk. Primary durability path.
 
-        In normal flow, ``Save()`` already fires per-layer inside
-        ``author_stage_batch``. This is the safety net called by
-        ``SequentialWriter`` between authoring and vector update per
-        ARCHITECTURE.md §7.
+        Called by ``SequentialWriter`` after ``author_stage_batch``
+        returns and before the vector index is committed, preserving
+        ARCHITECTURE.md §7 sequential-write ordering: ChangeBlock
+        (in author_stage_batch) → Save (here) → vector commit (after).
+
+        Since Pass 6, ``author_stage_batch`` no longer calls Save()
+        itself — this method is the sole Save call site, enabling the
+        narrow-lock pattern verified in Pass 5.
         """
         if not self._in_memory:
             for layer in self._layers.values():

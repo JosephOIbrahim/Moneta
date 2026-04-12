@@ -301,3 +301,104 @@ class TestABEquivalence:
         assert mock_result.staged == n_stage
 
         moneta_api._reset_state()
+
+
+# ------------------------------------------------------------------
+# 5. Sublayer rotation during sleep pass (Pass 6 hardening)
+# ------------------------------------------------------------------
+
+
+class TestSublayerRotationDuringSleepPass:
+    def test_rotation_across_passes_preserves_all_prims(
+        self, fresh_moneta_usd: None
+    ) -> None:
+        """Verify sublayer rotation across two sleep passes doesn't lose prims.
+
+        Rotation is a between-batch boundary: all entities in a single
+        author_stage_batch call go to the current sublayer, and rotation
+        triggers on the next call when the accumulated count exceeds the
+        cap. This test exercises rotation by running two sleep passes:
+        the first fills the sublayer past the cap, the second rotates.
+        """
+        state = moneta_api._state
+        target = state.authoring_target
+
+        # Override rotation cap to a small value for test speed.
+        target._rotation_cap = 5
+
+        # Pass 1: deposit and consolidate 8 prims → fills sublayer past cap=5
+        eids_1 = _deposit_n(8)
+        _force_staging(eids_1)
+        r1 = moneta.run_sleep_pass()
+        assert r1.staged == 8
+
+        rolling_after_1 = [nm for nm in target.sublayer_names if nm != PROTECTED_SUBLAYER_NAME]
+        assert len(rolling_after_1) == 1, "first pass fills one sublayer"
+        assert target.get_prim_count(rolling_after_1[0]) == 8
+
+        # Pass 2: deposit and consolidate 4 more → rotation triggers (8 >= cap=5)
+        eids_2 = _deposit_n(4)
+        _force_staging(eids_2)
+        r2 = moneta.run_sleep_pass()
+        assert r2.staged == 4
+
+        rolling_after_2 = [nm for nm in target.sublayer_names if nm != PROTECTED_SUBLAYER_NAME]
+        assert len(rolling_after_2) == 2, (
+            f"second pass should trigger rotation, got {len(rolling_after_2)} sublayers"
+        )
+
+        # Verify no prims lost
+        total = sum(target.get_prim_count(nm) for nm in rolling_after_2)
+        assert total == 12, f"expected 12 total prims, got {total}"
+
+        # Verify all entities reachable in the composed stage
+        for eid in eids_1 + eids_2:
+            prim = target.stage.GetPrimAtPath(f"/Memory_{eid.hex}")
+            assert prim.IsValid(), f"prim for {eid} should survive rotation"
+
+
+# ------------------------------------------------------------------
+# 6. Post-sleep-pass reader consistency (Pass 6 hardening)
+# ------------------------------------------------------------------
+
+
+class TestPostSleepPassReaderConsistency:
+    def test_prims_visible_to_traverse_after_sleep_pass(
+        self, fresh_moneta_usd: None
+    ) -> None:
+        """After a sleep pass consolidates entities, a fresh Traverse sees
+        the authored prims. Validates the narrow-lock contract at the
+        integration layer: ChangeBlock makes prims visible in-memory,
+        flush() makes them durable.
+        """
+        state = moneta_api._state
+        target = state.authoring_target
+
+        n = 5
+        eids = _deposit_n(n)
+        _force_staging(eids)
+
+        # Pre-sleep: no authored prims in USD yet
+        authored_pre = [
+            p for p in target.stage.Traverse()
+            if "Memory_" in str(p.GetPath())
+        ]
+        assert len(authored_pre) == 0, "no Memory prims in USD before sleep pass"
+
+        result = moneta.run_sleep_pass()
+        assert result.staged == n
+
+        # Post-sleep: all authored prims visible via Traverse
+        authored_post = [
+            p for p in target.stage.Traverse()
+            if "Memory_" in str(p.GetPath())
+        ]
+        assert len(authored_post) == n, (
+            f"expected {n} Memory prims after sleep pass, got {len(authored_post)}"
+        )
+
+        for prim in authored_post:
+            payload = prim.GetAttribute("payload")
+            assert payload.IsValid() and payload.Get() is not None, (
+                f"prim {prim.GetPath()} must have valid payload attribute"
+            )
