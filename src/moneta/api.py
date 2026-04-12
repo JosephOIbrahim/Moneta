@@ -92,6 +92,14 @@ class MonetaConfig:
     # Mock USD log destination. None → in-memory ephemeral buffer.
     mock_target_log_path: Optional[Path] = None
 
+    # Phase 3 real USD target (ARCHITECTURE.md §15).
+    # use_real_usd=True routes consolidation writes through UsdTarget
+    # instead of MockUsdTarget. Default False preserves Phase 1 behavior.
+    use_real_usd: bool = False
+    # Rolling sublayer directory for UsdTarget. None → in-memory anonymous
+    # layers (useful for tests). Only used when use_real_usd=True.
+    usd_target_path: Optional[Path] = None
+
 
 # ----------------------------------------------------------------------
 # Unified module state
@@ -108,7 +116,8 @@ class _ModuleState:
     vector_index: VectorIndex
     consolidation: ConsolidationRunner
     sequential_writer: SequentialWriter
-    mock_target: MockUsdTarget
+    authoring_target: object  # MockUsdTarget or UsdTarget (AuthoringTarget Protocol)
+    mock_target: Optional[MockUsdTarget] = None  # set only when mock is active; test compat
     durability: Optional[DurabilityManager] = None
 
 
@@ -134,7 +143,8 @@ def _reset_state() -> None:
     if _state is not None:
         if _state.durability is not None:
             _state.durability.close()
-        _state.mock_target.close()
+        if hasattr(_state.authoring_target, "close"):
+            _state.authoring_target.close()
     _state = None
 
 
@@ -200,8 +210,20 @@ def init(
     else:
         ecs = ECS()
 
-    mock_target = MockUsdTarget(log_path=config.mock_target_log_path)
-    sequential_writer = SequentialWriter(mock_target, vector_index)
+    # Target selection: real USD (Phase 3) or mock (Phase 1 / dev / test).
+    # UsdTarget imported function-level to keep api.py importable under
+    # plain Python 3.14 where pxr is unavailable. Phase 1 tests never
+    # set use_real_usd=True, so the import never fires for them.
+    mock_target: Optional[MockUsdTarget] = None
+    if config.use_real_usd:
+        from .usd_target import UsdTarget
+
+        authoring_target = UsdTarget(log_path=config.usd_target_path)
+    else:
+        mock_target = MockUsdTarget(log_path=config.mock_target_log_path)
+        authoring_target = mock_target
+
+    sequential_writer = SequentialWriter(authoring_target, vector_index)
     consolidation = ConsolidationRunner(max_entities=config.max_entities)
 
     _state = _ModuleState(
@@ -211,14 +233,16 @@ def init(
         vector_index=vector_index,
         consolidation=consolidation,
         sequential_writer=sequential_writer,
+        authoring_target=authoring_target,
         mock_target=mock_target,
         durability=durability,
     )
     _logger.info(
-        "moneta.init complete half_life=%.1fs max_entities=%d durability=%s",
+        "moneta.init complete half_life=%.1fs max_entities=%d durability=%s target=%s",
         config.half_life_seconds,
         config.max_entities,
         "on" if durability is not None else "off",
+        "usd" if config.use_real_usd else "mock",
     )
 
 

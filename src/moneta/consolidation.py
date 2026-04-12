@@ -48,6 +48,7 @@ _logger = logging.getLogger(__name__)
 
 DEFAULT_MAX_ENTITIES = 10000  # ruling #5, MONETA.md §2.6
 DEFAULT_IDLE_TRIGGER_MS = 5000  # MONETA.md §2.6
+MAX_BATCH_SIZE = 500  # ARCHITECTURE.md §15.2 constraint #3
 
 # Locked Round 2 selection thresholds (ARCHITECTURE.md §6).
 PRUNE_UTILITY_THRESHOLD = 0.1
@@ -167,7 +168,8 @@ class ConsolidationRunner:
             ecs.remove(eid)
             vector_index.delete(eid)
 
-        # 5. Stage: flag, commit, advance to CONSOLIDATED.
+        # 5. Stage: flag, commit in batches, advance to CONSOLIDATED.
+        # Batched per ARCHITECTURE.md §15.2 constraint #3 (500-prim cap).
         authoring_at: Optional[float] = None
         if stage_ids and sequential_writer is not None:
             staged_memories: List[Memory] = []
@@ -176,8 +178,10 @@ class ConsolidationRunner:
                 memory = ecs.get_memory(eid)
                 if memory is not None:
                     staged_memories.append(memory)
-            result = sequential_writer.commit_staging(staged_memories)
-            authoring_at = result.authored_at
+            for batch_start in range(0, len(staged_memories), MAX_BATCH_SIZE):
+                batch = staged_memories[batch_start : batch_start + MAX_BATCH_SIZE]
+                result = sequential_writer.commit_staging(batch)
+                authoring_at = result.authored_at
             for eid in stage_ids:
                 ecs.set_state(eid, EntityState.CONSOLIDATED)
 
