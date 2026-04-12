@@ -19,18 +19,19 @@ If the blueprint and the spec disagree on a clause, that is a §9 trigger, not a
 
 ## Current phase
 
-**Phase 1** — ECS + four-op API, zero USD dependency.
+**Phase 3** — USD integration at measured depth. Yellow tier.
 
-Phase 1 is gated on:
+Phase 1 shipped as v0.1.0 (94 tests green, ECS + four-op API + mock USD target + Protocol-based sequential writer). Phase 2 closed as tag `moneta-v0.2.0-phase2-closed` with verdict YELLOW — clean in the operational envelope, with documented graceful degradation beyond it.
 
-- All four ops working end-to-end
-- Decay math verified against reference implementation
-- Shadow index consistent under simulated load
-- Mock consolidation selection stable under test load
-- Full unit test suite green
-- A 30-minute synthetic session runs clean
+Phase 3 hard rules are locked in `ARCHITECTURE.md` §15. Agent discipline is governed by `docs/agent-commandments.md` from Pass 3 onward.
 
-Phases 2 (USD benchmark) and 3 (USD integration at measured depth) are gated on their predecessors. See MONETA.md §4.
+Key Phase 3 constraints (full detail in ARCHITECTURE.md §15):
+- `pxr` imports legal inside `src/moneta/` starting Pass 3
+- Sublayer rotation at 50k prims, idle-window consolidation >5s, 500-prim batch cap
+- LanceDB shadow commit budget ≤ 15ms p99
+- Steady-state p95 stall planning number: ~131ms
+- 94 existing tests must stay green through every pass
+- Human gates between every pair of consecutive passes
 
 ## Locked decisions — do not re-open
 
@@ -40,22 +41,23 @@ The following cannot be patched without MONETA.md §9 escalation. Rounds 2 and 3
 2. **Decay math.** `U_now = max(ProtectedFloor, U_last * exp(-λ * (t_now - t_last)))`. Lazy, memoryless, exponential. Never on a background tick. Exactly three evaluation points.
 3. **Concurrency primitive.** Append-only attention log, reduced at sleep pass. Not spinlocks. Not CAS.
 4. **Atomicity.** Sequential write — USD first, vector second. Vector index is authoritative. No 2PC.
+5. **Phase 3 operational envelope.** Seven hard constraints in ARCHITECTURE.md §15.2, derived from Phase 2 benchmark + closure rulings. Sublayer rotation at 50k, idle-window scheduling, 500-prim batch cap, 15ms shadow commit budget.
 
 If implementation surfaces a reason one of these looks wrong, that is §9 Trigger 2 (spec-level surprise), not a local fix.
 
-## Phase 1 non-goals (MONETA.md §7)
+## Phase 1 non-goals (MONETA.md §7) — scope changes for Phase 3
 
-Do **not** build any of these in Phase 1. They will be reverted:
+The following were non-goals in Phase 1. Phase 3 lifts specific restrictions as noted:
 
-- Any `pxr`, `Usd`, `Sdf`, or `Pcp` imports
-- Real USD authoring, variant creation, or sublayer management
+- ~~Any `pxr`, `Usd`, `Sdf`, or `Pcp` imports~~ **Legal in `src/moneta/` starting Phase 3 Pass 3** (ARCHITECTURE.md §15.1)
+- ~~Real USD authoring, variant creation, or sublayer management~~ **Phase 3 scope** (ARCHITECTURE.md §15)
 - Gist generation via LLM calls
 - Multi-agent shared stage coordination (Octavius territory)
 - Cross-session USD hydration at cold start
 - Cognitive Twin integration
 - Cognitive Bridge MCP server implementation
-- Benchmark work (Phase 2)
-- Patent filing (Stage 3)
+- ~~Benchmark work (Phase 2)~~ **Phase 2 complete** — see `docs/phase2-benchmark-results.md` and `docs/phase2-closure.md`
+- ~~Patent filing (Stage 3)~~ **Enters scope in Phase 3** — gated on MVP existence per Round 3 Q2
 - Renaming, rebranding, or re-scoping
 - Framework edits to `MONETA.md` without §9 escalation
 - A fifth agent API operation
@@ -99,15 +101,17 @@ Architect drafts the Round 4 brief. Joseph Ibrahim reviews before it goes to Gem
 
 ## Build and test commands
 
-Phase 1 uses Python ≥ 3.11, `pytest`, `ruff`. No runtime dependencies — Substrate Engineer elected stdlib-only list-backed SoA for the ECS; Persistence Engineer elected an in-memory shadow vector index (LanceDB deferred to Phase 2 profiling).
+Phase 1 and Phase 3 use Python ≥ 3.11, `pytest`, `ruff`. Phase 1 has zero runtime dependencies (stdlib-only ECS, in-memory vector index). Phase 3 adds `pxr` (OpenUSD Python bindings) and LanceDB.
+
+**pxr requirement (Phase 3 Pass 3+):** OpenUSD's Python bindings are not pip-installable. Use Houdini's bundled `hython` (tested: Houdini 21.0.512, OpenUSD 0.25.5, Python 3.11.7) or build `pxr` from source against your Python. The Phase 2 benchmark ran on hython. If using hython, invoke tests as `hython -m pytest` instead of `pytest`.
 
 Standard commands:
 
 ```bash
 pip install -e .[dev]
-pytest tests/unit              # unit tests (70 passing as of Phase 1 Pass 3)
-pytest tests/integration       # end-to-end flow — not yet landed
-pytest tests/load              # 30-minute synthetic session — Phase 1 gate, not yet landed
+pytest tests/unit              # unit tests (94 passing as of Phase 1 completion)
+pytest tests/integration       # end-to-end flow
+pytest tests/load              # 30-minute synthetic session gate
 python -c "import moneta; moneta.smoke_check()"   # end-to-end smoke (requires PYTHONPATH=src if not editable-installed)
 ruff check src tests
 ruff format src tests
@@ -121,28 +125,36 @@ Tests are discoverable from the repo root via `pytest` because `pyproject.toml` 
 
 ```
 MONETA.md                      # blueprint (source of narrative + phasing)
-ARCHITECTURE.md                # locked spec (Architect)
+ARCHITECTURE.md                # locked spec (Architect) — §15 added Phase 3 Pass 2
 CLAUDE.md                      # this file
 pyproject.toml                 # project metadata, dev deps, tool config
-src/moneta/                    # Phase 1 implementation surface
+README.md                      # project README with Mermaid architecture diagrams
+src/moneta/                    # implementation surface (Phase 1 shipped, Phase 3 extends)
 tests/unit/                    # Test Engineer
 tests/integration/
 tests/load/
+scripts/
+└── usd_metabolism_bench_v2.py # Phase 2 USD benchmark (243-config sweep)
 docs/
+├── agent-commandments.md      # eight commandments governing MoE agent discipline
 ├── substrate-conventions.md   # shared with Octavius
+├── phase2-benchmark-results.md # analyst data interpretation
+├── phase2-closure.md          # interpretation session rulings + operational envelope
 └── rounds/
-    ├── round-1.md             # scoping brief placeholder
-    ├── round-2.md             # Gemini R2 + Claude R2.5 placeholder
-    └── round-3.md             # Gemini R3 + closure placeholder
+    ├── round-1.md             # scoping brief placeholder (content not recovered)
+    ├── round-2.md             # Gemini Deep Think Round 2 architectural scoping
+    └── round-3.md             # Gemini Deep Think Round 3 plan validation
 ```
 
 ## Hard rules for any Claude Code session working in this repo
 
 - Do not re-open Round 2 or Round 3 decisions. Escalate per MONETA.md §9.
-- Do not import `pxr`, `Usd`, `Sdf`, or `Pcp` in Phase 1 code under any circumstances.
+- Do not import `pxr`, `Usd`, `Sdf`, or `Pcp` outside `src/moneta/`, or before Phase 3 Pass 3.
 - Do not add a fifth operation to the agent API.
-- Do not expand Phase 1 scope beyond MONETA.md §7.
+- Do not violate the Phase 3 operational envelope (ARCHITECTURE.md §15.2).
 - Do not let documentation lag implementation by more than one PR (Documentarian contract).
 - Do not cross role boundaries without Architect review.
+- Do not break the 94 existing Phase 1 tests. Regression is higher priority than new work.
+- Follow `docs/agent-commandments.md` from Phase 3 Pass 3 onward.
 
 Ship Moneta.

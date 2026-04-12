@@ -254,7 +254,69 @@ When a trigger fires, the Architect drafts a Round 4 brief following the Round 3
 
 ---
 
-## 15. Conformance checklist
+## 15. Phase 3 hard rules and operational envelope
+
+Phase 3 is USD integration at measured depth, ending at v1.0.0. It begins with real `pxr` imports at Pass 3 and ships a working consolidation translator writing to actual OpenUSD stages.
+
+### 15.1 pxr import authorization
+
+`pxr`, `Usd`, `Sdf`, and `Pcp` imports become legal inside `src/moneta/` starting **Phase 3 Pass 3** (real USD writer scaffolding). They remain illegal in Pass 2 (Architect re-brief) and in all test files that do not explicitly require USD. No `pxr` imports outside `src/moneta/`.
+
+### 15.2 Operational envelope (from Phase 2 closure §3)
+
+Phase 3 ships in **Yellow tier** with the following hard constraints, derived from the Phase 2 benchmark (243-config sweep, 52.9 min, OpenUSD 0.25.5 on Threadripper PRO 7965WX) and the interpretation session rulings in `docs/phase2-closure.md`.
+
+**Hard constraints (enforced at build time):**
+
+1. **Sublayer rotation at 50k prims per sublayer.** When `cortex_YYYY_MM_DD.usda` reaches 50k prims, cut a new sublayer and pin the old one in position. Rotation is the primary lever against accumulated serialization tax.
+2. **Consolidation runs only during inference idle windows > 5 seconds.** Not a 1Hz background tick. Yellow-tier scheduling per Round 3.
+3. **Maximum batch size per consolidation pass: 500 prims.** Half of the benchmark's worst-batch test point. Well inside the operational envelope at accumulated ≤ 50k.
+4. **LanceDB shadow commit budget: ≤ 15ms p99.** The 50ms shadow_commit case is where 6/9 Red excursions live. If the 15ms budget cannot be met with LanceDB defaults, the Persistence Engineer surfaces it as a §9 Trigger 2 escalation, not a silent acceptance.
+
+**Cost model assumptions (capacity planning):**
+
+5. **Steady-state p95 stall: ~131ms median** (benchmark's attribute-case global mean, per Phase 2 closure Q5 ruling). This is the number Phase 3 plans against, not the optimistic bare-prim mean.
+6. **Reader throughput under contention: ~41Hz achieved vs 60Hz requested** (68% of target) during worst-case consolidation windows. Readers are starved but not dead.
+7. **Pcp rebuild cost: effectively free** (0.1–2.6ms across the entire sweep). Phase 3 does not need to optimize for Pcp invalidation avoidance, composition graph depth, or variant complexity caps.
+
+### 15.3 Investigation tasks (during Phase 3 execution)
+
+8. **Q6: Concurrent Traverse + Save safety.** Can the writer lock release after `Sdf.ChangeBlock` exits but before `Save()` returns? If safe, reduces stall by ~80% and moves the Green test point into reach. If unsafe, Phase 3 ships at constraints 1–7 unchanged. If ambiguous (USD docs silent, race detector produces intermittent warnings without deterministic failures), that is the Round 4 trigger — convene Gemini Deep Think scoped tightly to the USD concurrency question. See `docs/phase2-closure.md` §2 Q6.
+9. **Per-sublayer size distribution benchmark.** Extend `usd_metabolism_bench_v2.py` with a `(primary_layer_size, secondary_layer_size)` dimension to empirically confirm the sublayer rotation hypothesis.
+10. **Benchmark v3: spec-count vs semantic-type separation.** Optional, low priority. Only if Phase 3 benchmark work surfaces a reason to disambiguate more cleanly.
+
+### 15.4 Pass structure (reference, not contract)
+
+| Pass | Role | Deliverable |
+|------|------|-------------|
+| 1 | Documentarian | Orphan migration (done — commit b1803c7) |
+| 2 | Architect | Re-brief: hard rules, operational envelope, agent commandments (this pass) |
+| 3 | Substrate + Persistence | Real USD writer scaffolding. First `pxr` imports. Mock target kept alongside for A/B validation. |
+| 4 | Consolidation + Persistence | Sublayer rotation + consolidation wiring against real USD. |
+| 5 | Benchmark Engineer | Q6 thread-safety investigation (concurrent Traverse + Save). |
+| 6 | Test Engineer | Integration tests + synthetic session re-run against real USD target. |
+| 7 | Architect + Test Engineer | Completion gate. Tag v1.0.0. |
+
+Human gates between every pair of consecutive passes. Pass boundaries are commit boundaries.
+
+### 15.5 Cross-references
+
+- **Agent discipline:** `docs/agent-commandments.md` governs all Phase 3 passes from Pass 3 onward.
+- **Benchmark data:** `docs/phase2-benchmark-results.md` (analyst interpretation) and `docs/phase2-closure.md` (rulings).
+- **Gemini outputs:** `docs/rounds/round-2.md` and `docs/rounds/round-3.md`.
+
+### 15.6 What stays locked from Phase 1 and Phase 2
+
+All locked invariants from §2–§10 remain in force through Phase 3. Additionally:
+
+- 94 existing tests must stay green through every Phase 3 pass.
+- Mock USD target (`mock_usd_target.py`) is retained alongside the real target through Phase 3 for A/B validation.
+- Protocol-based dependency inversion in `sequential_writer.py` is the Phase 3 swap mechanism. The writer itself is not modified; the real USD target drops in via `AuthoringTarget` Protocol.
+- The four substrate novelty claims (MONETA.md §3) are structural, not temporal — invariant across Green/Yellow/Red integration tiers.
+
+---
+
+## 16. Conformance checklist
 
 Before Phase 1 ships, Test Engineer verifies:
 
@@ -271,4 +333,4 @@ Before Phase 1 ships, Test Engineer verifies:
 
 ---
 
-*Locked 2026-04-11. Source: MONETA.md. Changes require MONETA.md §9 escalation.*
+*Locked 2026-04-11. §15 added 2026-04-12 (Phase 3 Pass 2). Source: MONETA.md. Changes require MONETA.md §9 escalation.*
