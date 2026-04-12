@@ -93,3 +93,26 @@ undocumented but empirically confirmed const-Save behavior. This
 is a novel interaction between the VFX pipeline domain (OpenUSD
 threading model) and the AI agent domain (concurrent memory
 access during consolidation).
+
+## Post-commit empirical addendum (10,000-iteration run)
+
+After the Pass 6 commit (ade31d8), a 10,000-iteration stress test
+with full assertion density completed in the background. This
+strengthens the evidence beyond the 2,000-iteration run committed
+in Pass 5:
+
+- **Iterations:** 10,000 / 10,000 clean (zero failures)
+- **Stage growth:** 25,000 → 125,000 prims over the run
+- **Save p50 / p95:** 254.6 / 460.0 ms (larger contention windows
+  than the 2k baseline; Save at 460ms p95 means the concurrent
+  reader had nearly half a second of overlap per iteration)
+- **Traverse p50 / p95:** 237.7 / 438.0 ms (concurrent throughout)
+- **Total prim-level attribute assertions:** ~775,000,000 (775M)
+- **Source CSV:** `results/pass5-threadsafety-stress.csv`
+- **Platform:** OpenUSD 0.25.5, Python 3.11.7, Windows 11 Pro,
+  Threadripper PRO 7965WX, 128GB DDR5
+
+This 775M-assertion run is the strongest available evidence for
+novelty claim #4. No other LLM memory system has empirically
+validated concurrent stage traversal during composition-engine
+serialization at this scale.

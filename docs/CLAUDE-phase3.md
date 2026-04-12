@@ -19,13 +19,19 @@ If the blueprint and the spec disagree on a clause, that is a §9 trigger, not a
 
 ## Current phase
 
-**v1.0.0 shipped.** All three phases complete.
+**Phase 3** — USD integration at measured depth. Yellow tier.
 
-- **Phase 1** shipped as v0.1.0 (94 tests green, ECS + four-op API + mock USD target + Protocol-based sequential writer).
-- **Phase 2** closed as tag `moneta-v0.2.0-phase2-closed` with verdict YELLOW — clean in the operational envelope.
-- **Phase 3** shipped as v1.0.0 in Green-adjacent tier. Real USD writer with narrow writer lock (ChangeBlock-only scope per Pass 5 DETERMINISTIC SAFE ruling). Steady-state p95 reader stall projected at ~10–30ms at operational batch sizes.
+Phase 1 shipped as v0.1.0 (94 tests green, ECS + four-op API + mock USD target + Protocol-based sequential writer). Phase 2 closed as tag `moneta-v0.2.0-phase2-closed` with verdict YELLOW — clean in the operational envelope, with documented graceful degradation beyond it.
 
-Phase 3 operational envelope locked in `ARCHITECTURE.md` §15. Agent discipline governed by `docs/agent-commandments.md`. Phase 3 closure record at `docs/phase3-closure.md`.
+Phase 3 hard rules are locked in `ARCHITECTURE.md` §15. Agent discipline is governed by `docs/agent-commandments.md` from Pass 3 onward.
+
+Key Phase 3 constraints (full detail in ARCHITECTURE.md §15):
+- `pxr` imports legal inside `src/moneta/` starting Pass 3
+- Sublayer rotation at 50k prims, idle-window consolidation >5s, 500-prim batch cap
+- LanceDB shadow commit budget ≤ 15ms p99
+- Steady-state p95 stall planning number: ~131ms
+- 94 existing tests must stay green through every pass
+- Human gates between every pair of consecutive passes
 
 ## Locked decisions — do not re-open
 
@@ -98,7 +104,7 @@ Architect drafts the Round 4 brief. Joseph Ibrahim reviews before it goes to Gem
 
 Phase 1 and Phase 3 use Python ≥ 3.11, `pytest`, `ruff`. Phase 1 has zero runtime dependencies (stdlib-only ECS, in-memory vector index). Phase 3 adds `pxr` (OpenUSD Python bindings) and LanceDB.
 
-**pxr requirement (Phase 3 Pass 3+):** OpenUSD's Python bindings (`pxr`) are not pip-installable as `usd-core` on all platforms. Obtain `pxr` from a bundled OpenUSD distribution (tested: OpenUSD 0.25.5, Python 3.11.7) or build from source. If using a pxr-capable interpreter other than your system Python, invoke tests as `<pxr-interpreter> -m pytest` instead of `pytest`.
+**pxr requirement (Phase 3 Pass 3+):** OpenUSD's Python bindings are not pip-installable. Use Houdini's bundled `hython` (tested: Houdini 21.0.512, OpenUSD 0.25.5, Python 3.11.7) or build `pxr` from source against your Python. The Phase 2 benchmark ran on hython. If using hython, invoke tests as `hython -m pytest` instead of `pytest`.
 
 Standard commands:
 
@@ -118,7 +124,7 @@ Tests are discoverable from the repo root via `pytest` because `pyproject.toml` 
 
 ### Dual-interpreter testing (Phase 3 Pass 3+)
 
-The test suite is dual-interpreter. Phase 1 tests (pxr-free) run under plain Python. Phase 3 USD tests require a pxr-capable interpreter (OpenUSD 0.25.5+).
+The test suite is now dual-interpreter. Phase 1 tests (pxr-free) run under plain Python. Phase 3 USD tests require hython.
 
 ```bash
 # Phase 1 pxr-free suite — plain Python (70 unit + 22 integration + 2 load)
@@ -126,7 +132,7 @@ pytest tests/unit
 pytest tests/integration
 pytest tests/load
 
-# Phase 3 USD target tests — pxr-capable interpreter required (local: hython)
+# Phase 3 USD target tests — hython required
 PYTHONPATH="src" "C:/Program Files/Side Effects Software/Houdini 21.0.512/bin/hython3.11.exe" \
     -m pytest tests/unit/test_usd_target.py -v -p no:faulthandler -p no:cacheprovider
 ```
@@ -137,33 +143,25 @@ Both suites must be green at every pass boundary from Pass 3 onward. The `-p no:
 
 ```
 MONETA.md                      # blueprint (source of narrative + phasing)
-ARCHITECTURE.md                # locked spec — §15 Phase 3, §15.6 narrow lock
+ARCHITECTURE.md                # locked spec (Architect) — §15 added Phase 3 Pass 2
 CLAUDE.md                      # this file
 pyproject.toml                 # project metadata, dev deps, tool config
 README.md                      # project README with Mermaid architecture diagrams
-src/moneta/                    # implementation surface (Phase 1 + Phase 3)
-├── usd_target.py              # Phase 3 real USD writer (narrow lock, OpenUSD 0.25.5)
-└── ...                        # Phase 1 substrate modules
-tests/unit/                    # 17 unit tests (11 Phase 1 USD + 6 adversarial)
-tests/integration/             # 28 tests (22 Phase 1 + 6 Phase 3 USD)
-tests/load/                    # 2 tests (synthetic session gate)
+src/moneta/                    # implementation surface (Phase 1 shipped, Phase 3 extends)
+tests/unit/                    # Test Engineer
+tests/integration/
+tests/load/
 scripts/
-└── usd_metabolism_bench_v2.py # Phase 2 benchmark + Pass 5 stress test harness
-results/                       # benchmark and stress test CSVs
+└── usd_metabolism_bench_v2.py # Phase 2 USD benchmark (243-config sweep)
 docs/
 ├── agent-commandments.md      # eight commandments governing MoE agent discipline
 ├── substrate-conventions.md   # shared with Octavius
-├── phase2-benchmark-results.md # Phase 2 analyst data interpretation
-├── phase2-closure.md          # Phase 2 rulings + operational envelope
-├── phase3-closure.md          # Phase 3 closure record
-├── pass5-q6-findings.md       # Q6 thread-safety ruling
-├── patent-evidence/           # dated evidence entries for counsel
-│   ├── pass5-usd-threadsafety-review.md
-│   └── pass6-lock-shrink-implementation.md
+├── phase2-benchmark-results.md # analyst data interpretation
+├── phase2-closure.md          # interpretation session rulings + operational envelope
 └── rounds/
-    ├── round-1.md             # scoping brief placeholder
-    ├── round-2.md             # Gemini Deep Think Round 2
-    └── round-3.md             # Gemini Deep Think Round 3
+    ├── round-1.md             # scoping brief placeholder (content not recovered)
+    ├── round-2.md             # Gemini Deep Think Round 2 architectural scoping
+    └── round-3.md             # Gemini Deep Think Round 3 plan validation
 ```
 
 ## Hard rules for any Claude Code session working in this repo

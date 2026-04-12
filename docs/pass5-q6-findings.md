@@ -100,5 +100,5 @@ lock scope changes.
    portions. The stress test exercises this C++ concurrency.
 
 4. **Platform-specific.** Tested on Windows 11 Pro, Threadripper PRO
-   7965WX, Houdini 21.0.512, OpenUSD 0.25.5, Python 3.11.7. Results
+   7965WX, OpenUSD 0.25.5, Python 3.11.7. Results
    may differ on other platforms or USD versions.

@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "moneta"
-version = "0.2.0"
+version = "1.0.0"
 description = "Memory substrate built on OpenUSD's composition engine. Sibling to Octavius."
 readme = "README.md"
 requires-python = ">=3.11"
@@ -14,7 +14,7 @@ authors = [
 license = { text = "Proprietary" }
 keywords = ["memory", "agents", "openusd", "ecs", "cognitive-substrate"]
 classifiers = [
-    "Development Status :: 3 - Alpha",
+    "Development Status :: 4 - Beta",
     "Intended Audience :: Developers",
     "Programming Language :: Python :: 3",
     "Programming Language :: Python :: 3.11",
@@ -28,11 +28,12 @@ classifiers = [
 # Phase 3 adds LanceDB when the vector index backend ships (Pass 4).
 #
 # pxr (OpenUSD Python bindings) is required for Phase 3 USD authoring
-# (src/moneta/usd_target.py) but is NOT pip-installable. It comes from
-# Houdini's bundled hython (tested: Houdini 21.0.512, OpenUSD 0.25.5,
-# Python 3.11.7). See CLAUDE.md "Build and test commands" for hython
-# invocation details. Phase 3 USD tests require hython; Phase 1 tests
-# run under plain Python without pxr.
+# (src/moneta/usd_target.py) but is NOT pip-installable on all platforms.
+# Obtain pxr from a bundled OpenUSD distribution (tested: OpenUSD 0.25.5,
+# Python 3.11.7) or build from source. See CLAUDE.md "Build and test
+# commands" for pxr-capable interpreter invocation details. Phase 3 USD
+# tests require a pxr-capable interpreter; Phase 1 tests run under plain
+# Python without pxr.
 dependencies = []
 
 [project.optional-dependencies]

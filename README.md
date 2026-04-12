@@ -14,9 +14,9 @@ Sibling project: [Octavius](https://github.com/JosephOIbrahim) (coordination sub
 |-------|--------|------|
 | **Phase 1** — ECS + four-op API | **Shipped** (v0.1.0) | 94 tests green, 30-min synthetic session clean |
 | **Phase 2** — USD benchmark | **Closed** (v0.2.0) | 243-config sweep, Yellow tier verdict |
-| **Phase 3** — USD integration | Pending kickoff | Separate session, updated hard rules |
+| **Phase 3** — USD integration | **Shipped** (v1.0.0) | Real USD writer, narrow lock, 775M-assertion safety verification |
 
-**Current tag:** `moneta-v0.2.0-phase2-closed`
+**Current tag:** `v1.0.0`
 
 ---
 
