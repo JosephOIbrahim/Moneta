@@ -33,24 +33,29 @@ graph TB
         manifest["get_consolidation_manifest()"]
     end
 
-    subgraph hot["Hot Tier (Phase 1 — shipped)"]
+    subgraph hot["Hot Tier (Phase 1)"]
         ECS["ECS<br/>struct-of-arrays<br/>list-backed"]
         Decay["Lazy Exponential Decay<br/>U = max(floor, U·e⁻ᵏᵗ)"]
         AttLog["Attention Log<br/>lock-free append<br/>sleep-pass reduce"]
     end
 
     subgraph shadow["Shadow Index"]
-        VecIdx["VectorIndex<br/>in-memory (Phase 1)<br/>LanceDB (Phase 3)"]
+        VecIdx["VectorIndex<br/>in-memory (v1.0)<br/>LanceDB (v1.1)"]
     end
 
     subgraph consolidation["Consolidation Engine"]
-        Runner["ConsolidationRunner<br/>pressure + idle trigger"]
+        Runner["ConsolidationRunner<br/>pressure + idle trigger<br/>500-prim batch cap"]
         SeqWriter["SequentialWriter<br/>Protocol-based"]
     end
 
     subgraph targets["Authoring Targets"]
-        Mock["MockUsdTarget<br/>JSONL log (Phase 1)"]
-        Real["RealUsdTarget<br/>pxr/Sdf (Phase 3)"]
+        Real["UsdTarget<br/>pxr/Sdf · narrow lock<br/>ChangeBlock-only scope"]
+        Mock["MockUsdTarget<br/>JSONL log (A/B fallback)"]
+    end
+
+    subgraph cold["Cold Tier (Phase 3 — OpenUSD 0.25.5)"]
+        Rolling["cortex_YYYY_MM_DD.usda<br/>rolling daily sublayers<br/>rotation at 50k prims"]
+        Protected["cortex_protected.usda<br/>root-pinned strongest position"]
     end
 
     subgraph durability["Durability"]
@@ -70,9 +75,11 @@ graph TB
     Runner --> AttLog
     Runner --> Decay
     Runner --> SeqWriter
-    SeqWriter -->|"1. USD first"| Mock
+    SeqWriter -->|"1. USD first"| Real
     SeqWriter -->|"2. vector second"| VecIdx
-    Mock -.->|"Phase 3 Protocol swap"| Real
+    Real --> Rolling
+    Real --> Protected
+    Mock -.->|"A/B swap via<br/>MonetaConfig"| Real
 
     Snap --> ECS
 
@@ -81,6 +88,7 @@ graph TB
     style shadow fill:#0f3460,color:#e0e0e0
     style consolidation fill:#533483,color:#e0e0e0
     style targets fill:#2c2c54,color:#e0e0e0
+    style cold fill:#1e3a5f,color:#e0e0e0
     style durability fill:#2d3436,color:#e0e0e0
 ```
 
@@ -107,9 +115,10 @@ stateDiagram-v2
     end note
 
     note right of CONSOLIDATED
-        Phase 1: state flag only
-        Phase 3: written to cortex_YYYY_MM_DD.usda
-        with gist variant via VariantSelection
+        Written to cortex_YYYY_MM_DD.usda
+        via UsdTarget (pxr/Sdf)
+        Narrow lock: ChangeBlock-only scope
+        Sublayer rotation at 50k prims
     end note
 ```
 
@@ -128,7 +137,7 @@ flowchart TD
     classify --> keep{"Otherwise"}
 
     prune -->|prune| remove["Remove from<br/>ECS + vector index"]
-    stage -->|stage| seqwrite["Sequential write:<br/>1. MockUsdTarget.author()<br/>2. MockUsdTarget.flush()<br/>3. VectorIndex.update_state()"]
+    stage -->|stage| seqwrite["Sequential write (≤500/batch):<br/>1. UsdTarget.author_stage_batch()<br/>    Sdf.ChangeBlock (narrow lock)<br/>2. UsdTarget.flush() → layer.Save()<br/>3. VectorIndex.update_state()"]
     keep -->|keep| volatile["Stays VOLATILE<br/>re-evaluated next pass"]
 
     seqwrite --> consolidated["State → CONSOLIDATED"]
@@ -139,11 +148,11 @@ flowchart TD
     style volatile fill:#fdcb6e,color:#000
 ```
 
-### Phase 3 drop-in via Protocol injection
+### Protocol injection — dual-target architecture
 
 ```mermaid
 graph LR
-    subgraph phase1["Phase 1 (current)"]
+    subgraph mock["MockUsdTarget (A/B fallback)"]
         SW1["SequentialWriter"]
         MT["MockUsdTarget<br/><i>JSONL log</i>"]
         VI1["VectorIndex<br/><i>in-memory stdlib</i>"]
@@ -151,19 +160,18 @@ graph LR
         SW1 -->|VectorIndexTarget| VI1
     end
 
-    subgraph phase3["Phase 3 (future)"]
+    subgraph real["UsdTarget (default, v1.0.0)"]
         SW2["SequentialWriter<br/><b>unchanged</b>"]
-        RT["RealUsdTarget<br/><i>pxr/Sdf authoring</i>"]
-        VI2["VectorIndex<br/><i>LanceDB backend</i>"]
+        RT["UsdTarget<br/><i>pxr/Sdf · narrow lock</i>"]
+        VI2["VectorIndex<br/><i>in-memory (LanceDB v1.1)</i>"]
         SW2 -->|AuthoringTarget| RT
         SW2 -->|VectorIndexTarget| VI2
     end
 
-    MT -. "same Protocol<br/>single construction-site swap" .-> RT
-    VI1 -. "same interface<br/>backend replacement" .-> VI2
+    MT -. "same AuthoringTarget Protocol<br/>MonetaConfig.use_real_usd swap" .-> RT
 
-    style phase1 fill:#2d3436,color:#dfe6e9
-    style phase3 fill:#0984e3,color:#fff
+    style mock fill:#2d3436,color:#dfe6e9
+    style real fill:#0984e3,color:#fff
 ```
 
 ### Substrate family
@@ -231,7 +239,7 @@ If you see `OK`, Moneta is installed and the four-op API, decay math, attention 
 pytest
 ```
 
-You should see **94 passed** in green. These cover the decay math, ECS operations, attention reducer, four-op API contract, durability round-trips, sequential-writer ordering, and a 30-minute synthetic agent session (compressed to ~0.3 seconds via virtual clock).
+You should see **94 passed** (and 2 skipped if you don't have OpenUSD/pxr installed). These cover the decay math, ECS operations, attention reducer, four-op API contract, durability round-trips, sequential-writer ordering, and a 30-minute synthetic agent session (compressed to ~0.3 seconds via virtual clock). The 2 skipped modules are Phase 3 USD tests that require a pxr-capable interpreter.
 
 ### If something goes wrong
 
@@ -337,34 +345,38 @@ Tuning guide: [docs/decay-tuning.md](docs/decay-tuning.md)
 
 ```
 src/moneta/
-├── api.py                 # four-op API + init/smoke_check
+├── api.py                 # four-op API + init/smoke_check + dual-target routing
 ├── types.py               # Memory, EntityState
 ├── ecs.py                 # flat struct-of-arrays hot tier
 ├── decay.py               # lazy exponential decay
 ├── attention_log.py       # lock-free append + sleep-pass reducer
-├── vector_index.py        # shadow vector index (in-memory / LanceDB)
+├── vector_index.py        # shadow vector index (in-memory; LanceDB v1.1)
 ├── durability.py          # WAL-lite snapshot + JSONL WAL
 ├── sequential_writer.py   # USD-first, vector-second Protocol
-├── consolidation.py       # sleep-pass trigger + selection
-├── mock_usd_target.py     # Phase 1 JSONL authoring target
+├── consolidation.py       # sleep-pass trigger + selection + 500-prim batch cap
+├── usd_target.py          # Phase 3 real USD writer (narrow lock, OpenUSD 0.25.5)
+├── mock_usd_target.py     # Phase 1 JSONL authoring target (A/B fallback)
 ├── manifest.py            # get_consolidation_manifest delegate
 └── __init__.py            # re-exports
 
 tests/
-├── unit/                  # 70 tests — decay curves, ECS ops, API contract
-├── integration/           # 22 tests — end-to-end, durability, §7 ordering
+├── unit/                  # 87 tests — Phase 1 (70) + Phase 3 USD (17)
+├── integration/           # 28 tests — Phase 1 (22) + Phase 3 USD (6)
 └── load/                  # 2 tests — 30-min synthetic session gate
 
 scripts/
-└── usd_metabolism_bench_v2.py   # Phase 2 USD benchmark (243-config sweep)
+└── usd_metabolism_bench_v2.py   # Phase 2 benchmark + Pass 5 stress test harness
 
 docs/
 ├── api.md                       # four-op reference
 ├── decay-tuning.md              # λ tuning guide
 ├── substrate-conventions.md     # 6 conventions shared with Octavius
-├── testing.md                   # test seeding discipline (hash vs hashlib)
-├── phase2-benchmark-results.md  # analyst interpretation (243 configs)
-├── phase2-closure.md            # interpretation session rulings
+├── agent-commandments.md        # MoE agent discipline (8 commandments)
+├── phase2-benchmark-results.md  # Phase 2 analyst interpretation (243 configs)
+├── phase2-closure.md            # Phase 2 rulings + operational envelope
+├── phase3-closure.md            # Phase 3 closure record
+├── pass5-q6-findings.md         # Q6 thread-safety ruling
+├── patent-evidence/             # dated evidence entries for counsel
 └── rounds/                      # Gemini Deep Think scoping outputs
 ```
 
@@ -401,6 +413,24 @@ Full results: [docs/phase2-benchmark-results.md](docs/phase2-benchmark-results.m
 
 ---
 
+## Phase 3 verdict
+
+**GREEN-ADJACENT — narrow writer lock, ChangeBlock-only scope.**
+
+Phase 3 shipped real USD integration against OpenUSD 0.25.5. The Q6 concurrent Traverse + Save investigation (Pass 5) ruled DETERMINISTIC SAFE: 10,000 iterations, 775M prim-level concurrent read assertions, zero failures. The writer lock was shrunk from full-width (ChangeBlock + Save) to ChangeBlock-only scope (Pass 6).
+
+| Batch size | Wide-lock p95 stall | Narrow-lock p95 stall | Reduction |
+|------------|--------------------|-----------------------|-----------|
+| 10 (typical) | 127–176ms | 0.6–0.8ms | **99.5%** |
+| 100 | ~130ms | ~13ms | ~90% |
+| 1000 | 152–217ms | 148–257ms | ~0% (ChangeBlock dominates) |
+
+At Moneta's operational point (batch ≤ 500, accumulated ≤ 50k prims), the reader stall drops from the Phase 2 Yellow steady-state (~131ms) to a projected 10–30ms.
+
+Full closure: [docs/phase3-closure.md](docs/phase3-closure.md) | Patent evidence: [docs/patent-evidence/](docs/patent-evidence/)
+
+---
+
 ## Novelty claims
 
 Moneta is not novel as a tiered memory architecture. It is novel as a **substrate choice**:
@@ -410,13 +440,13 @@ Moneta is not novel as a tiered memory architecture. It is novel as a **substrat
 3. **Pcp-based resolution as implicit multi-fidelity fallback** — highest surviving fidelity served without routing logic
 4. **Protected memory as root-pinned strong-position sublayer** — non-decaying state falls out of composition, not runtime checks
 
-These four claims are **structural, not temporal** — they hold across Green, Yellow, and Red integration tiers. Patent filing begins in Phase 3 (Stage 3).
+These four claims are **structural, not temporal** — they hold across Green, Yellow, and Red integration tiers. Empirically evidenced in [docs/patent-evidence/](docs/patent-evidence/). Patent filing is the next post-v1.0.0 action.
 
 ---
 
 ## Lineage
 
-Round 1 (scoping brief) → Round 2 (Gemini Deep Think architectural spec) → Round 2.5 (Claude prior-art review) → Round 3 (Gemini Deep Think validation — structural-not-temporal insight) → **Phase 1** (5 passes, 94 tests, v0.1.0) → **Phase 2** (benchmark, interpretation, v0.2.0) → **Phase 3** (pending kickoff)
+Round 1 (scoping brief) → Round 2 (Gemini Deep Think architectural spec) → Round 2.5 (Claude prior-art review) → Round 3 (Gemini Deep Think validation — structural-not-temporal insight) → **Phase 1** (5 passes, 94 tests, v0.1.0) → **Phase 2** (benchmark, interpretation, v0.2.0) → **Phase 3** (7 passes, narrow lock, 775M-assertion safety verification, v1.0.0)
 
 ---
 
@@ -425,11 +455,13 @@ Round 1 (scoping brief) → Round 2 (Gemini Deep Think architectural spec) → R
 | Document | Purpose |
 |----------|---------|
 | [MONETA.md](MONETA.md) | Build blueprint — phasing, risks, roles, escalation |
-| [ARCHITECTURE.md](ARCHITECTURE.md) | Locked spec — the source of truth for implementation |
+| [ARCHITECTURE.md](ARCHITECTURE.md) | Locked spec — source of truth for implementation |
 | [docs/api.md](docs/api.md) | Four-op API reference with examples |
 | [docs/decay-tuning.md](docs/decay-tuning.md) | λ tuning guide with curves |
 | [docs/substrate-conventions.md](docs/substrate-conventions.md) | 6 conventions shared with Octavius |
-| [docs/phase2-closure.md](docs/phase2-closure.md) | Phase 2 verdict + Phase 3 envelope |
+| [docs/phase2-closure.md](docs/phase2-closure.md) | Phase 2 verdict + operational envelope |
+| [docs/phase3-closure.md](docs/phase3-closure.md) | Phase 3 closure + pass-by-pass record |
+| [docs/patent-evidence/](docs/patent-evidence/) | Dated evidence for patent counsel |
 
 ---
 
