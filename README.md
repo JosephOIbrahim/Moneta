@@ -188,22 +188,81 @@ graph TB
 
 ---
 
-## Quick start
+## Installation
+
+### What you need first
+
+- **Python 3.11 or newer.** If you type `python --version` in your terminal and see 3.11+, you're good. If not, grab it from [python.org](https://www.python.org/downloads/).
+- **git.** You used it to get here. You have it.
+- That's it. Moneta has **zero runtime dependencies** in Phase 1 — no numpy, no torch, no database drivers. Just Python's standard library.
+
+### Step by step
+
+**1. Get the code**
 
 ```bash
-# Clone
 git clone https://github.com/JosephOIbrahim/Moneta.git
 cd Moneta
+```
 
-# Install (editable, with dev deps)
+**2. Install Moneta in dev mode**
+
+This makes `import moneta` work from anywhere and pulls in test tools (pytest, ruff):
+
+```bash
 pip install -e .[dev]
+```
 
-# Run the full test suite (94 tests)
-pytest
+> **What does `-e .` mean?** It installs the project in "editable" mode — Python points at your local copy instead of making a separate installation. Changes you make to the code take effect immediately, no reinstall needed.
 
-# End-to-end smoke check
+**3. Verify it works**
+
+Run the smoke check (takes < 1 second):
+
+```bash
 python -c "import moneta; moneta.smoke_check(); print('OK')"
 ```
+
+If you see `OK`, Moneta is installed and the four-op API, decay math, attention log, consolidation engine, and sequential writer are all wired correctly.
+
+**4. Run the tests (optional but satisfying)**
+
+```bash
+pytest
+```
+
+You should see **94 passed** in green. These cover the decay math, ECS operations, attention reducer, four-op API contract, durability round-trips, sequential-writer ordering, and a 30-minute synthetic agent session (compressed to ~0.3 seconds via virtual clock).
+
+### If something goes wrong
+
+| Symptom | Fix |
+|---------|-----|
+| `python: command not found` | Try `python3` instead, or install Python from [python.org](https://www.python.org/downloads/) |
+| `pip install` says "No module named pip" | Run `python -m ensurepip --upgrade` first |
+| `ModuleNotFoundError: No module named 'moneta'` | You forgot step 2. Run `pip install -e .[dev]` from the Moneta directory |
+| `pytest` says "command not found" | Run `python -m pytest` instead, or make sure step 2 completed without errors |
+| Tests fail with import errors | Make sure you're using Python 3.11+. Moneta uses `from __future__ import annotations` and modern type syntax |
+
+### For contributors
+
+```bash
+# Lint check
+ruff check src tests
+
+# Auto-format
+ruff format src tests
+
+# Run just the unit tests (fast, < 0.3s)
+pytest tests/unit
+
+# Run integration tests (durability, sequential writer ordering)
+pytest tests/integration
+
+# Run the synthetic session completion gate
+pytest tests/load
+```
+
+---
 
 ### Minimal usage
 
