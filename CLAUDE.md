@@ -73,6 +73,7 @@ Phase 1 runs in Mixture-of-Experts mode. Six roles, defined in MONETA.md §6. **
 | Architect | `ARCHITECTURE.md`, `CLAUDE.md`, spec-conformance review, §9 escalation briefs |
 | Substrate Engineer | `ecs.py`, `decay.py`, `api.py`, `types.py`, `attention_log.py` |
 | Persistence Engineer | `vector_index.py`, `durability.py`, `sequential_writer.py` |
+| USD Engineer | `usd_target.py` (Phase 3 real USD authoring target) |
 | Consolidation Engineer | `consolidation.py`, `mock_usd_target.py`, `manifest.py` |
 | Test Engineer | `tests/unit/`, `tests/integration/`, `tests/load/`, `tests/conftest.py` |
 | Documentarian | `README.md`, `docs/api.md`, `docs/decay-tuning.md`, inline docstrings; maintains `docs/substrate-conventions.md` after Architect seeds it |
@@ -120,6 +121,23 @@ ruff format src tests
 Tests are discoverable from the repo root via `pytest` because `pyproject.toml` sets `pythonpath = ["src"]` under `[tool.pytest.ini_options]`. For direct `python -c` runs without an editable install, prefix with `PYTHONPATH=src`.
 
 `moneta.smoke_check()` exercises deposit → query → signal_attention → `run_sleep_pass` → manifest end-to-end and is the lowest-friction way to sanity-check after a change. It is NOT a substitute for the Test Engineer suite.
+
+### Dual-interpreter testing (Phase 3 Pass 3+)
+
+The test suite is now dual-interpreter. Phase 1 tests (pxr-free) run under plain Python. Phase 3 USD tests require hython.
+
+```bash
+# Phase 1 pxr-free suite — plain Python (70 unit + 22 integration + 2 load)
+pytest tests/unit
+pytest tests/integration
+pytest tests/load
+
+# Phase 3 USD target tests — hython required
+PYTHONPATH="src" "C:/Program Files/Side Effects Software/Houdini 21.0.512/bin/hython3.11.exe" \
+    -m pytest tests/unit/test_usd_target.py -v -p no:faulthandler -p no:cacheprovider
+```
+
+Both suites must be green at every pass boundary from Pass 3 onward. The `-p no:faulthandler` flag suppresses harmless `os.environ` access violation warnings from hython's patched environment. USD tests use `pytest.importorskip("pxr")` so they are skipped (not failed) under plain Python.
 
 ## Repository structure
 

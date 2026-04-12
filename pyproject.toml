@@ -25,7 +25,14 @@ classifiers = [
 ]
 
 # Runtime dependencies — zero in Phase 1 (stdlib-only ECS).
-# Phase 3 adds LanceDB when the vector index backend ships.
+# Phase 3 adds LanceDB when the vector index backend ships (Pass 4).
+#
+# pxr (OpenUSD Python bindings) is required for Phase 3 USD authoring
+# (src/moneta/usd_target.py) but is NOT pip-installable. It comes from
+# Houdini's bundled hython (tested: Houdini 21.0.512, OpenUSD 0.25.5,
+# Python 3.11.7). See CLAUDE.md "Build and test commands" for hython
+# invocation details. Phase 3 USD tests require hython; Phase 1 tests
+# run under plain Python without pxr.
 dependencies = []
 
 [project.optional-dependencies]
