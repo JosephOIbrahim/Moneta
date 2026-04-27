@@ -1,37 +1,30 @@
 """Moneta — memory substrate built on OpenUSD's composition engine.
 
-Phase 1: ECS hot tier + four-operation agent API. Zero USD dependency.
-See ARCHITECTURE.md for the locked specification.
+Phase 1: ECS hot tier + four-operation agent API. Phase 3: real USD
+authoring. The agent-facing surface lives as instance methods on the
+:class:`Moneta` handle; per DEEP_THINK_BRIEF_substrate_handle.md
+multi-instance is supported by construction (each handle owns its
+``storage_uri``).
 """
 from .api import (
+    Moneta,
     MonetaConfig,
-    MonetaNotInitializedError,
+    MonetaResourceLockedError,
     ProtectedQuotaExceededError,
-    deposit,
-    get_consolidation_manifest,
-    init,
-    query,
-    run_sleep_pass,
-    signal_attention,
     smoke_check,
 )
 from .types import EntityState, Memory
 
 __all__ = [
-    # Four-op API (ARCHITECTURE.md §2)
-    "deposit",
-    "query",
-    "signal_attention",
-    "get_consolidation_manifest",
-    # Harness-level (not part of the agent surface)
-    "init",
-    "run_sleep_pass",
-    "smoke_check",
+    # Substrate handle (DEEP_THINK_BRIEF §5.1, §5.3)
+    "Moneta",
     "MonetaConfig",
+    # Errors
+    "MonetaResourceLockedError",
+    "ProtectedQuotaExceededError",
+    # Free-function smoke check (constructs its own ephemeral handle)
+    "smoke_check",
     # Types
     "Memory",
     "EntityState",
-    # Errors
-    "MonetaNotInitializedError",
-    "ProtectedQuotaExceededError",
 ]

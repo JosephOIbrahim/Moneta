@@ -1,34 +1,45 @@
-"""Moneta agent-facing API — the four operations.
+"""Moneta substrate handle — dependency-injected, URI-locked, context-managed.
 
-ARCHITECTURE.md §2. The entire agent-facing surface consists of exactly
-these four callables:
+DEEP_THINK_BRIEF_substrate_handle.md §5.1 (Q1 shape), §5.3 (Q3 signature),
+§5.4 (Q4 seam), and §6 (G1 ruling clarifications) are the design source
+of truth. This module:
 
-    deposit
-    query
-    signal_attention
-    get_consolidation_manifest
+  - Defines :class:`MonetaConfig` (frozen, ``kw_only=True``) with
+    ``storage_uri`` and ``quota_override`` added per §5.3, all existing
+    fields preserved per §6.1.
+  - Defines :class:`Moneta`, the handle. The four-op surface from
+    ARCHITECTURE.md §2 lives as instance methods. Signatures otherwise
+    verbatim from MONETA.md §2.1 (only the receiver changes —
+    ``self`` is added; param names, types, defaults, and return types
+    are untouched).
+  - Defines ``_ACTIVE_URIS`` and :class:`MonetaResourceLockedError`,
+    the in-memory exclusivity registry from §5.4. Two handles
+    constructed against the same ``storage_uri`` collide synchronously
+    at the second constructor call.
 
-No fifth operation may be added without MONETA.md §9 escalation. The
-signatures below are verbatim from MONETA.md §2.1; parameter names,
-defaults, and type annotations must not drift.
-
-`init()`, `smoke_check()`, `run_sleep_pass()`, and `MonetaConfig` are
-harness-level, not agent-facing. They exist to bootstrap the module-level
-substrate and to satisfy the Persistence / Consolidation handoff
-contracts. Agents call the four operations; harnesses call `init()` first
-and `run_sleep_pass()` when they decide to consolidate.
+What this module is not
+-----------------------
+- Not a singleton. There is no ``_state``. There is no ``init()``. There
+  is no ``_reset_state()``. There is no ``MonetaNotInitializedError`` —
+  in handle world, "not initialized" is unrepresentable.
+- Not a concurrency framework. ``_ACTIVE_URIS`` is an in-memory set
+  intentionally without a lock; per §5.4 the next surgery turns
+  exclusivity into coordination, this one only establishes ownership.
+- Not the cloud surgery. ``tenant_id`` and ``sync_strategy`` appear as
+  commented placeholders only; their implementation is downstream.
 """
 
 from __future__ import annotations
 
 import logging
 import time
-from dataclasses import dataclass, field
+import uuid as _uuid
+from dataclasses import dataclass
 from pathlib import Path
-from typing import Dict, List, Optional
+from typing import Any, Dict, List, Optional
 from uuid import UUID, uuid4
 
-from .attention_log import AttentionEntry, AttentionLog, reduce_attention_log
+from .attention_log import AttentionEntry, AttentionLog
 from .consolidation import (
     DEFAULT_MAX_ENTITIES,
     ConsolidationResult,
@@ -45,353 +56,420 @@ from .vector_index import VectorIndex
 
 _logger = logging.getLogger(__name__)
 
-# ARCHITECTURE.md §10: 100 protected entries per agent, hard cap.
-PROTECTED_QUOTA: int = 100
 
-
-class MonetaNotInitializedError(RuntimeError):
-    """Raised when an agent-facing operation runs before `init()`."""
+# ----------------------------------------------------------------------
+# Errors
+# ----------------------------------------------------------------------
 
 
 class ProtectedQuotaExceededError(RuntimeError):
-    """Raised when a protected deposit would exceed `PROTECTED_QUOTA`.
+    """Raised when a protected deposit would exceed ``config.quota_override``.
 
-    Phase 1 enforcement per ARCHITECTURE.md §10: `deposit` raises on
+    Phase 1 enforcement per ARCHITECTURE.md §10: ``deposit`` raises on
     overflow. Phase 3 adds an operator-facing unpin tool (explicitly NOT
     part of the four-op API) that lets operators reclaim slots.
     """
 
 
-# ----------------------------------------------------------------------
-# Harness-level configuration
-# ----------------------------------------------------------------------
+class MonetaResourceLockedError(RuntimeError):
+    """Raised when a :class:`Moneta` is constructed against a ``storage_uri``
+    already held by another live handle in this process.
 
-
-@dataclass
-class MonetaConfig:
-    """Harness-level configuration for `init()`. Not part of the agent API.
-
-    Sensible defaults let `init()` work with no arguments, producing an
-    in-memory substrate suitable for unit tests and the smoke check.
-    Populate the `*_path` fields to enable durability and persistent
-    mock-USD logging.
+    Per DEEP_THINK_BRIEF_substrate_handle.md §5.4, the in-memory
+    ``_ACTIVE_URIS`` registry physically prevents two handles from
+    pointing at the same underlying state. Release is via the holding
+    handle's :meth:`Moneta.close` (or context-manager exit).
     """
 
-    half_life_seconds: float = DEFAULT_HALF_LIFE_SECONDS
-    embedding_dim: Optional[int] = None  # None → inferred on first deposit
-    max_entities: int = DEFAULT_MAX_ENTITIES
 
-    # Durability (None → ephemeral, no crash recovery)
+# ----------------------------------------------------------------------
+# Configuration
+# ----------------------------------------------------------------------
+
+
+@dataclass(frozen=True, kw_only=True)
+class MonetaConfig:
+    """Frozen, keyword-only handle configuration.
+
+    Per §5.3 (Q3 signature) the constructor accepts exactly one argument
+    of this type. Per §6.1 (G1 ruling) the existing field set is
+    preserved and ``storage_uri`` / ``quota_override`` are additive — the
+    consolidation of path-style fields into ``storage_uri`` semantics is
+    a separate, downstream pass.
+
+    Fields
+    ------
+    storage_uri:
+        Irreducible. The handle's logical identity. Anticipates
+        ``s3://`` or ``moneta://`` routing; today, two handles with the
+        same ``storage_uri`` collide synchronously at the second
+        constructor call (``MonetaResourceLockedError``).
+    quota_override:
+        Per-handle protected-deposit quota. Replaces the module-level
+        ``PROTECTED_QUOTA`` constant from the singleton era.
+    half_life_seconds, embedding_dim, max_entities,
+    snapshot_path, wal_path, vector_persist_path,
+    mock_target_log_path, use_real_usd, usd_target_path:
+        Preserved from the singleton-era ``MonetaConfig``. Semantics
+        unchanged.
+
+    Cloud-anticipated fields appear as commented placeholders; their
+    implementation is out of scope for this surgery.
+
+    Test ergonomics
+    ---------------
+    Use :meth:`MonetaConfig.ephemeral` for short-lived in-process tests.
+    """
+
+    # Irreducible.
+    storage_uri: str
+    quota_override: int = 100
+
+    # Preserved from singleton-era config (semantics unchanged).
+    half_life_seconds: float = DEFAULT_HALF_LIFE_SECONDS
+    embedding_dim: Optional[int] = None
+    max_entities: int = DEFAULT_MAX_ENTITIES
     snapshot_path: Optional[Path] = None
     wal_path: Optional[Path] = None
-
-    # Vector index persistence path — currently ignored (Phase 1 backend
-    # is in-memory). Retained for Phase 2+ LanceDB adoption.
     vector_persist_path: Optional[Path] = None
-
-    # Mock USD log destination. None → in-memory ephemeral buffer.
     mock_target_log_path: Optional[Path] = None
-
-    # Phase 3 real USD target (ARCHITECTURE.md §15).
-    # use_real_usd=True routes consolidation writes through UsdTarget
-    # instead of MockUsdTarget. Default False preserves Phase 1 behavior.
     use_real_usd: bool = False
-    # Rolling sublayer directory for UsdTarget. None → in-memory anonymous
-    # layers (useful for tests). Only used when use_real_usd=True.
     usd_target_path: Optional[Path] = None
 
+    # Cloud-anticipated (do not implement logic yet — see §5.3):
+    # tenant_id: Optional[str] = None
+    # sync_strategy: Optional[str] = None
 
-# ----------------------------------------------------------------------
-# Unified module state
-# ----------------------------------------------------------------------
+    @classmethod
+    def ephemeral(cls, **overrides: Any) -> "MonetaConfig":
+        """Construct a config with a freshly-minted unique ``storage_uri``.
 
-
-@dataclass
-class _ModuleState:
-    """All Moneta substrate state lives here. Replaces the Pass 2 globals."""
-
-    ecs: ECS
-    decay: DecayConfig
-    attention: AttentionLog
-    vector_index: VectorIndex
-    consolidation: ConsolidationRunner
-    sequential_writer: SequentialWriter
-    authoring_target: object  # MockUsdTarget or UsdTarget (AuthoringTarget Protocol)
-    mock_target: Optional[MockUsdTarget] = None  # set only when mock is active; test compat
-    durability: Optional[DurabilityManager] = None
-
-
-_state: Optional[_ModuleState] = None
-
-
-def _require_state() -> _ModuleState:
-    """Return the module state or raise `MonetaNotInitializedError`."""
-    if _state is None:
-        raise MonetaNotInitializedError(
-            "moneta.api is not initialized; call moneta.init() first"
-        )
-    return _state
-
-
-def _reset_state() -> None:
-    """Test-harness hook: discard module state. Not part of the agent API.
-
-    Closes any open files (durability WAL, mock-USD log). Safe to call on
-    uninitialized state.
-    """
-    global _state
-    if _state is not None:
-        if _state.durability is not None:
-            _state.durability.close()
-        if hasattr(_state.authoring_target, "close"):
-            _state.authoring_target.close()
-    _state = None
-
-
-# ----------------------------------------------------------------------
-# init — harness bootstrap
-# ----------------------------------------------------------------------
-
-
-def init(
-    half_life_seconds: float = DEFAULT_HALF_LIFE_SECONDS,
-    *,
-    config: Optional[MonetaConfig] = None,
-) -> None:
-    """Initialize the Moneta substrate. Harness-level, NOT agent-facing.
-
-    Two call styles:
-
-        init()                               # defaults, in-memory only
-        init(half_life_seconds=600)          # quick half-life override
-        init(config=MonetaConfig(...))       # full configuration
-
-    Calling `init()` replaces any existing state. Safe to call multiple
-    times in test harnesses; do not call mid-session in production.
-    """
-    global _state
-
-    if config is None:
-        config = MonetaConfig(half_life_seconds=half_life_seconds)
-    elif half_life_seconds != DEFAULT_HALF_LIFE_SECONDS:
-        # Caller passed both — config wins but flag the conflict.
-        _logger.warning(
-            "init() received both half_life_seconds and config; config wins"
-        )
-
-    _reset_state()
-
-    decay = DecayConfig(half_life_seconds=config.half_life_seconds)
-    attention = AttentionLog()
-
-    vector_index = VectorIndex(
-        embedding_dim=config.embedding_dim,
-        persist_path=config.vector_persist_path,
-    )
-
-    durability: Optional[DurabilityManager] = None
-    if config.snapshot_path is not None and config.wal_path is not None:
-        durability = DurabilityManager(
-            snapshot_path=config.snapshot_path,
-            wal_path=config.wal_path,
-        )
-        ecs, wal_replay = durability.hydrate()
-        # Rebuild vector index from hydrated ECS (shadow rebuild).
-        for memory in ecs.iter_rows():
-            vector_index.upsert(
-                memory.entity_id, memory.semantic_vector, memory.state
+        Test-ergonomics factory per §5.3. Each call returns a config
+        whose URI does not collide with any prior or concurrent
+        ``ephemeral()`` call in the same process. Pass other config
+        fields as keyword overrides (``snapshot_path=...``,
+        ``half_life_seconds=...``); ``storage_uri`` may be overridden
+        as well, in which case the auto-generated URI is replaced.
+        """
+        if "storage_uri" not in overrides:
+            overrides["storage_uri"] = (
+                f"moneta-ephemeral://{_uuid.uuid4().hex}"
             )
-        # Replay WAL entries into attention log for reduction.
-        for entry in wal_replay:
-            attention.append(entry.entity_id, entry.weight, entry.timestamp)
+        return cls(**overrides)
+
+
+# ----------------------------------------------------------------------
+# Process-level URI registry (§5.4)
+# ----------------------------------------------------------------------
+
+
+# In-memory only. Per §5.4: "an ephemeral lock singleton" — structurally
+# correct for single-process exclusivity. Replaced by distributed
+# coordination in the next surgery.
+_ACTIVE_URIS: set[str] = set()
+
+
+# ----------------------------------------------------------------------
+# Moneta — the handle
+# ----------------------------------------------------------------------
+
+
+class Moneta:
+    """Moneta substrate handle.
+
+    Constructor acquires a process-level lock on ``config.storage_uri``;
+    :meth:`close` (or context-manager exit) releases it. Two live
+    handles on the same ``storage_uri`` is a runtime error
+    (:class:`MonetaResourceLockedError`).
+
+    The handle owns all substrate state — ECS, decay config, attention
+    log, shadow vector index, consolidation runner, sequential writer,
+    authoring target, and (optionally) durability. Methods read these
+    via ``self``; there is no module-level fallback.
+
+    Calling :class:`Moneta` with no arguments is a ``TypeError`` by
+    construction (§5.3 — "the no-arg trap"). Pass a
+    :class:`MonetaConfig`.
+    """
+
+    def __init__(self, config: MonetaConfig) -> None:
+        # Acquire URI lock first so a partial init below cannot leak the
+        # lock to a concurrent caller.
+        if config.storage_uri in _ACTIVE_URIS:
+            raise MonetaResourceLockedError(
+                f"storage_uri {config.storage_uri!r} is already held by "
+                f"another live Moneta handle in this process; release it "
+                f"via close() or context-manager exit before reconstructing"
+            )
+        _ACTIVE_URIS.add(config.storage_uri)
+
+        try:
+            self.config: MonetaConfig = config
+            self._closed: bool = False
+
+            self.decay: DecayConfig = DecayConfig(
+                half_life_seconds=config.half_life_seconds
+            )
+            self.attention: AttentionLog = AttentionLog()
+
+            self.vector_index: VectorIndex = VectorIndex(
+                embedding_dim=config.embedding_dim,
+                persist_path=config.vector_persist_path,
+            )
+
+            self.durability: Optional[DurabilityManager] = None
+            if (
+                config.snapshot_path is not None
+                and config.wal_path is not None
+            ):
+                self.durability = DurabilityManager(
+                    snapshot_path=config.snapshot_path,
+                    wal_path=config.wal_path,
+                )
+                self.ecs, wal_replay = self.durability.hydrate()
+                # Rebuild vector index from hydrated ECS (shadow rebuild).
+                for memory in self.ecs.iter_rows():
+                    self.vector_index.upsert(
+                        memory.entity_id,
+                        memory.semantic_vector,
+                        memory.state,
+                    )
+                # Replay WAL entries into the attention log for next reduce.
+                for entry in wal_replay:
+                    self.attention.append(
+                        entry.entity_id, entry.weight, entry.timestamp
+                    )
+                _logger.info(
+                    "Moneta.hydrate uri=%s n=%d wal_replay=%d",
+                    config.storage_uri,
+                    self.ecs.n,
+                    len(wal_replay),
+                )
+            else:
+                self.ecs = ECS()
+
+            # Authoring target: real USD (Phase 3) or mock (Phase 1 / dev).
+            # UsdTarget imported function-level so api.py stays importable
+            # under plain Python where pxr is unavailable.
+            self.mock_target: Optional[MockUsdTarget] = None
+            if config.use_real_usd:
+                from .usd_target import UsdTarget
+
+                self.authoring_target: object = UsdTarget(
+                    log_path=config.usd_target_path
+                )
+            else:
+                self.mock_target = MockUsdTarget(
+                    log_path=config.mock_target_log_path
+                )
+                self.authoring_target = self.mock_target
+
+            self.sequential_writer: SequentialWriter = SequentialWriter(
+                self.authoring_target, self.vector_index
+            )
+            self.consolidation: ConsolidationRunner = ConsolidationRunner(
+                max_entities=config.max_entities
+            )
+        except BaseException:
+            # Partial init — release the lock so the consumer can retry.
+            _ACTIVE_URIS.discard(config.storage_uri)
+            raise
+
         _logger.info(
-            "init.hydrate n=%d wal_replay=%d", ecs.n, len(wal_replay)
-        )
-    else:
-        ecs = ECS()
-
-    # Target selection: real USD (Phase 3) or mock (Phase 1 / dev / test).
-    # UsdTarget imported function-level to keep api.py importable under
-    # plain Python 3.14 where pxr is unavailable. Phase 1 tests never
-    # set use_real_usd=True, so the import never fires for them.
-    mock_target: Optional[MockUsdTarget] = None
-    if config.use_real_usd:
-        from .usd_target import UsdTarget
-
-        authoring_target = UsdTarget(log_path=config.usd_target_path)
-    else:
-        mock_target = MockUsdTarget(log_path=config.mock_target_log_path)
-        authoring_target = mock_target
-
-    sequential_writer = SequentialWriter(authoring_target, vector_index)
-    consolidation = ConsolidationRunner(max_entities=config.max_entities)
-
-    _state = _ModuleState(
-        ecs=ecs,
-        decay=decay,
-        attention=attention,
-        vector_index=vector_index,
-        consolidation=consolidation,
-        sequential_writer=sequential_writer,
-        authoring_target=authoring_target,
-        mock_target=mock_target,
-        durability=durability,
-    )
-    _logger.info(
-        "moneta.init complete half_life=%.1fs max_entities=%d durability=%s target=%s",
-        config.half_life_seconds,
-        config.max_entities,
-        "on" if durability is not None else "off",
-        "usd" if config.use_real_usd else "mock",
-    )
-
-
-# ----------------------------------------------------------------------
-# The four operations (ARCHITECTURE.md §2)
-# Signatures are verbatim from MONETA.md §2.1 — do not drift.
-# ----------------------------------------------------------------------
-
-
-def deposit(payload: str, embedding: List[float], protected_floor: float = 0.0) -> UUID:
-    """Deposit a new memory and return its EntityID.
-
-    Phase 1 convention: fresh memories start at `Utility = 1.0`.
-
-    Persistence wiring: in addition to the ECS row, the shadow vector
-    index receives an upsert of `(entity_id, embedding, VOLATILE)`. Per
-    ARCHITECTURE.md §7 the vector index is authoritative for "what
-    exists," so this upsert is the primary record of the deposit.
-
-    Raises:
-        ProtectedQuotaExceededError: if `protected_floor > 0.0` and the
-            ECS already holds `PROTECTED_QUOTA` protected entries.
-    """
-    state = _require_state()
-
-    if protected_floor > 0.0 and state.ecs.count_protected() >= PROTECTED_QUOTA:
-        raise ProtectedQuotaExceededError(
-            f"protected quota of {PROTECTED_QUOTA} exceeded; "
-            f"Phase 3 unpin tool required (ARCHITECTURE.md §10)"
+            "Moneta.init uri=%s half_life=%.1fs max_entities=%d "
+            "durability=%s target=%s quota=%d",
+            config.storage_uri,
+            config.half_life_seconds,
+            config.max_entities,
+            "on" if self.durability is not None else "off",
+            "usd" if config.use_real_usd else "mock",
+            config.quota_override,
         )
 
-    entity_id = uuid4()
-    now = time.time()
+    # ------------------------------------------------------------------
+    # Context-manager protocol
+    # ------------------------------------------------------------------
 
-    state.ecs.add(
-        entity_id=entity_id,
-        payload=payload,
-        embedding=embedding,
-        utility=1.0,
-        protected_floor=protected_floor,
-        state=EntityState.VOLATILE,
-        now=now,
-    )
-    state.vector_index.upsert(entity_id, embedding, EntityState.VOLATILE)
+    def __enter__(self) -> "Moneta":
+        return self
 
-    state.consolidation.mark_activity(now * 1000)
-    return entity_id
+    def __exit__(self, exc_type: object, exc: object, tb: object) -> bool:
+        self.close()
+        return False  # do not suppress exceptions
 
+    def close(self) -> None:
+        """Release native resources and the URI lock. Idempotent.
 
-def query(embedding: List[float], limit: int = 5) -> List[Memory]:
-    """Retrieve the top-k memories by relevance to `embedding`.
+        Order matters: shut the snapshot daemon thread before closing
+        the authoring target, then discard the URI from
+        ``_ACTIVE_URIS``. Reverse order would let a re-construct on the
+        same URI race against an in-flight snapshot or open file handle.
+        """
+        if self._closed:
+            return
+        self._closed = True
+        try:
+            if self.durability is not None:
+                self.durability.close()
+            if hasattr(self.authoring_target, "close"):
+                self.authoring_target.close()
+        finally:
+            _ACTIVE_URIS.discard(self.config.storage_uri)
+            _logger.info(
+                "Moneta.close uri=%s", self.config.storage_uri
+            )
 
-    ARCHITECTURE.md §4 evaluation point 1: lazy decay is applied to every
-    live entity before scoring.
+    # ------------------------------------------------------------------
+    # The four operations (ARCHITECTURE.md §2 / MONETA.md §2.1)
+    # Signatures verbatim from the spec; only the receiver (``self``)
+    # is added for the OO migration.
+    # ------------------------------------------------------------------
 
-    Retrieval flow (Phase 1):
-      1. Decay all (eval point 1).
-      2. Over-fetch by cosine similarity from the shadow vector index.
-      3. Project hits to `Memory` via ECS (source of truth for utility,
-         attended_count, etc.).
-      4. Rerank by `cosine_similarity * utility` so decayed memories are
-         naturally demoted. This is a Phase 1 convention; Phase 2
-         benchmark work may refine.
-      5. Return the top `limit` after reranking.
-    """
-    state = _require_state()
-    now = time.time()
+    def deposit(
+        self,
+        payload: str,
+        embedding: List[float],
+        protected_floor: float = 0.0,
+    ) -> UUID:
+        """Deposit a new memory and return its EntityID.
 
-    # Eval point 1: decay before retrieval.
-    state.ecs.decay_all(state.decay.lambda_, now)
+        Phase 1 convention: fresh memories start at ``Utility = 1.0``.
 
-    if state.ecs.n == 0:
-        return []
+        Persistence wiring: in addition to the ECS row, the shadow
+        vector index receives an upsert of
+        ``(entity_id, embedding, VOLATILE)``. Per ARCHITECTURE.md §7
+        the vector index is authoritative for "what exists," so this
+        upsert is the primary record of the deposit.
 
-    # Over-fetch the entire index so reranking cannot clip high-utility
-    # entries below the similarity cutoff. Acceptable at Phase 1 scales
-    # (MAX_ENTITIES default 10000); Phase 2 profiling may introduce a
-    # bounded over-fetch heuristic.
-    over_fetch_k = max(len(state.vector_index), 1)
-    hits = state.vector_index.query(embedding, over_fetch_k)
+        Raises
+        ------
+        ProtectedQuotaExceededError
+            If ``protected_floor > 0.0`` and the ECS already holds
+            ``self.config.quota_override`` protected entries.
+        """
+        if (
+            protected_floor > 0.0
+            and self.ecs.count_protected() >= self.config.quota_override
+        ):
+            raise ProtectedQuotaExceededError(
+                f"protected quota of {self.config.quota_override} "
+                f"exceeded; Phase 3 unpin tool required "
+                f"(ARCHITECTURE.md §10)"
+            )
 
-    ranked: list[tuple[float, Memory]] = []
-    for entity_id, cos_sim in hits:
-        memory = state.ecs.get_memory(entity_id)
-        if memory is None:
-            # Orphan in the vector index — benign per §7.
-            continue
-        ranked.append((cos_sim * memory.utility, memory))
-    ranked.sort(key=lambda t: t[0], reverse=True)
+        entity_id = uuid4()
+        now = time.time()
 
-    state.consolidation.mark_activity(now * 1000)
-    return [m for _, m in ranked[:limit]]
+        self.ecs.add(
+            entity_id=entity_id,
+            payload=payload,
+            embedding=embedding,
+            utility=1.0,
+            protected_floor=protected_floor,
+            state=EntityState.VOLATILE,
+            now=now,
+        )
+        self.vector_index.upsert(
+            entity_id, embedding, EntityState.VOLATILE
+        )
 
+        self.consolidation.mark_activity(now * 1000)
+        return entity_id
 
-def signal_attention(weights: Dict[UUID, float]) -> None:
-    """Record agent attention for the given entities.
+    def query(
+        self, embedding: List[float], limit: int = 5
+    ) -> List[Memory]:
+        """Retrieve the top-k memories by relevance to ``embedding``.
 
-    Writes go to the append-only attention log (ARCHITECTURE.md §5.1).
-    If durability is enabled, each signal is also fsync'd to the WAL so
-    that a kill -9 after the return does not lose the signal. The ECS
-    update happens when the sleep-pass reducer drains the log.
-    """
-    state = _require_state()
-    now = time.time()
-    for entity_id, weight in weights.items():
-        w = float(weight)
-        state.attention.append(entity_id, w, now)
-        if state.durability is not None:
-            state.durability.wal_append(AttentionEntry(entity_id, w, now))
-    state.consolidation.mark_activity(now * 1000)
+        ARCHITECTURE.md §4 evaluation point 1: lazy decay is applied
+        to every live entity before scoring.
 
+        Retrieval flow (Phase 1):
+          1. Decay all (eval point 1).
+          2. Over-fetch by cosine similarity from the shadow vector
+             index.
+          3. Project hits to ``Memory`` via ECS (source of truth for
+             utility, attended_count, etc.).
+          4. Rerank by ``cosine_similarity * utility`` so decayed
+             memories are naturally demoted. Phase 1 convention;
+             Phase 2 benchmark work may refine.
+          5. Return the top ``limit`` after reranking.
+        """
+        now = time.time()
 
-def get_consolidation_manifest() -> List[Memory]:
-    """Return the list of entities currently staged for USD consolidation.
+        self.ecs.decay_all(self.decay.lambda_, now)
 
-    ARCHITECTURE.md §2 surface. Delegates to
-    `manifest.build_manifest(ecs)`. Entities become `STAGED_FOR_SYNC`
-    only when a sleep pass has run and selected them per §6 criteria.
-    """
-    state = _require_state()
-    return build_manifest(state.ecs)
+        if self.ecs.n == 0:
+            return []
 
+        over_fetch_k = max(len(self.vector_index), 1)
+        hits = self.vector_index.query(embedding, over_fetch_k)
 
-# ----------------------------------------------------------------------
-# Harness-level operators (not part of the agent-facing surface)
-# ----------------------------------------------------------------------
+        ranked: list[tuple[float, Memory]] = []
+        for entity_id, cos_sim in hits:
+            memory = self.ecs.get_memory(entity_id)
+            if memory is None:
+                continue
+            ranked.append((cos_sim * memory.utility, memory))
+        ranked.sort(key=lambda t: t[0], reverse=True)
 
+        self.consolidation.mark_activity(now * 1000)
+        return [m for _, m in ranked[:limit]]
 
-def run_sleep_pass() -> ConsolidationResult:
-    """Execute one consolidation sleep pass. Harness-level operator.
+    def signal_attention(self, weights: Dict[UUID, float]) -> None:
+        """Record agent attention for the given entities.
 
-    Not part of the agent-facing four-op API. Harnesses, tests, and
-    Consolidation Engineer's scheduler call this. Agents never do.
-    """
-    state = _require_state()
-    now = time.time()
-    result = state.consolidation.run_pass(
-        ecs=state.ecs,
-        decay=state.decay,
-        attention_log=state.attention,
-        vector_index=state.vector_index,
-        sequential_writer=state.sequential_writer,
-        now=now,
-    )
-    if state.durability is not None:
-        # Snapshot after a successful pass so the next restart doesn't
-        # need to replay an unbounded WAL.
-        state.durability.snapshot_ecs(state.ecs)
-    return result
+        Writes go to the append-only attention log (ARCHITECTURE.md
+        §5.1). If durability is enabled, each signal is also fsync'd to
+        the WAL so that a kill -9 after the return does not lose the
+        signal. The ECS update happens when the sleep-pass reducer
+        drains the log.
+        """
+        now = time.time()
+        for entity_id, weight in weights.items():
+            w = float(weight)
+            self.attention.append(entity_id, w, now)
+            if self.durability is not None:
+                self.durability.wal_append(
+                    AttentionEntry(entity_id, w, now)
+                )
+        self.consolidation.mark_activity(now * 1000)
+
+    def get_consolidation_manifest(self) -> List[Memory]:
+        """Return the list of entities currently staged for USD consolidation.
+
+        ARCHITECTURE.md §2 surface. Delegates to
+        :func:`manifest.build_manifest`. Entities become
+        ``STAGED_FOR_SYNC`` only when a sleep pass has run and selected
+        them per §6 criteria.
+        """
+        return build_manifest(self.ecs)
+
+    # ------------------------------------------------------------------
+    # Harness-level operators (not part of the agent-facing surface)
+    # ------------------------------------------------------------------
+
+    def run_sleep_pass(self) -> ConsolidationResult:
+        """Execute one consolidation sleep pass. Harness-level operator.
+
+        Not part of the agent-facing four-op API. Harnesses, tests, and
+        the Consolidation Engineer's scheduler call this. Agents never
+        do.
+        """
+        now = time.time()
+        result = self.consolidation.run_pass(
+            ecs=self.ecs,
+            decay=self.decay,
+            attention_log=self.attention,
+            vector_index=self.vector_index,
+            sequential_writer=self.sequential_writer,
+            now=now,
+        )
+        if self.durability is not None:
+            # Snapshot after a successful pass so the next restart
+            # doesn't need to replay an unbounded WAL.
+            self.durability.snapshot_ecs(self.ecs)
+        return result
 
 
 # ----------------------------------------------------------------------
@@ -400,50 +478,44 @@ def run_sleep_pass() -> ConsolidationResult:
 
 
 def smoke_check() -> None:
-    """End-to-end exercise of the four-op API + consolidation pass.
+    """End-to-end exercise of the four-op API + a consolidation pass.
 
-    Pass 3 coverage: deposit → query → attention → sleep pass → manifest.
-    Exercises every module in src/moneta/ that does not depend on
-    external runtime deps. Raises on any deviation.
+    Pass 3 coverage: deposit -> query -> attention -> sleep pass ->
+    manifest. Constructs its own ephemeral handle so callers do not
+    need to manage lifecycle. Raises on any deviation.
     """
-    init()
+    with Moneta(MonetaConfig.ephemeral()) as m:
+        assert m.query([0.0, 0.0, 0.0]) == []
+        assert m.get_consolidation_manifest() == []
 
-    assert query([0.0, 0.0, 0.0]) == []
-    assert get_consolidation_manifest() == []
+        eid = m.deposit("hello world", [1.0, 0.0, 0.0])
+        assert isinstance(eid, UUID)
 
-    eid = deposit("hello world", [1.0, 0.0, 0.0])
-    assert isinstance(eid, UUID)
+        results = m.query([1.0, 0.0, 0.0], limit=5)
+        assert len(results) == 1
+        assert isinstance(results[0], Memory)
+        assert results[0].entity_id == eid
+        assert results[0].state == EntityState.VOLATILE
+        assert 0.99 <= results[0].utility <= 1.0, (
+            f"expected utility ~ 1.0, got {results[0].utility}"
+        )
+        assert results[0].attended_count == 0
 
-    results = query([1.0, 0.0, 0.0], limit=5)
-    assert len(results) == 1
-    assert isinstance(results[0], Memory)
-    assert results[0].entity_id == eid
-    assert results[0].state == EntityState.VOLATILE
-    # Utility decays by ~1e-10 between deposit and query at 6-hour
-    # half-life (eval point 1). Anything ≥ 0.99 is fine.
-    assert 0.99 <= results[0].utility <= 1.0, (
-        f"expected utility ≈ 1.0, got {results[0].utility}"
-    )
-    assert results[0].attended_count == 0
+        m.signal_attention({eid: 0.2})
+        result = m.run_sleep_pass()
+        assert result.attention_updated == 1
+        assert result.pruned == 0
+        assert result.staged == 0
 
-    signal_attention({eid: 0.2})
-    # Sleep pass: drain log, reduce, classify, (no prune/stage for a
-    # fresh single-entity case), return.
-    result = run_sleep_pass()
-    assert result.attention_updated == 1
-    assert result.pruned == 0
-    assert result.staged == 0
+        results2 = m.query([1.0, 0.0, 0.0], limit=5)
+        assert len(results2) == 1
+        assert results2[0].attended_count == 1, (
+            f"expected attended_count=1, got {results2[0].attended_count}"
+        )
 
-    # After attention reducer: attended_count should be 1.
-    results2 = query([1.0, 0.0, 0.0], limit=5)
-    assert len(results2) == 1
-    assert results2[0].attended_count == 1, (
-        f"expected attended_count=1, got {results2[0].attended_count}"
-    )
-
-    manifest = get_consolidation_manifest()
-    assert manifest == [], (
-        f"fresh high-utility memory must not stage, got {len(manifest)}"
-    )
+        manifest = m.get_consolidation_manifest()
+        assert manifest == [], (
+            f"fresh high-utility memory must not stage, got {len(manifest)}"
+        )
 
     _logger.info("moneta.api.smoke_check OK")

@@ -2,50 +2,170 @@
 
 **Memory substrate for LLM agents built on OpenUSD's composition engine.**
 
-Moneta implements working and consolidated memory for agents using a hot ECS tier for active state and OpenUSD's composition engine as the cold cognitive substrate. The name invokes Juno Moneta — Roman goddess of warning and memory, whose temple housed the mint because she also *reminded*. Memory as advisory, not just storage.
+---
 
-Sibling project: [Octavius](https://github.com/JosephOIbrahim) (coordination substrate on the same USD thesis). Moneta is memory; Octavius is coordination. They share [substrate conventions](docs/substrate-conventions.md) but not Python code — the stage is the interface.
+## TL;DR
+
+You build an LLM agent. It needs memory that:
+
+- **Survives the conversation** — facts the agent learned in turn 3 are still there in turn 30.
+- **Decays gracefully** — old, unused memories fade; reinforced ones stick.
+- **Doesn't drown the prompt** — retrieval ranks by *relevance × utility*, not just similarity.
+- **Has a clean handoff** between hot working memory and durable cold storage.
+
+That's Moneta. It's a Python library. You construct a `Moneta` handle, you `deposit`, you `query`, you `signal_attention` when a memory was useful, and a sleep pass periodically consolidates the survivors to disk.
+
+```python
+import moneta
+
+with moneta.Moneta(moneta.MonetaConfig.ephemeral()) as m:
+    eid = m.deposit("the user prefers concise answers", embedding=[...])
+    results = m.query(embedding=[...], limit=5)
+    m.signal_attention({eid: 0.3})       # this memory was useful
+    m.run_sleep_pass()                   # consolidate survivors
+```
+
+That's it. Four operations. No background threads, no daemons, no LLM calls inside the substrate.
+
+> The name invokes **Juno Moneta** — Roman goddess of warning and memory, whose temple housed the mint because she also *reminded*. Memory as advisory, not just storage.
 
 ---
 
 ## Status
 
-| Phase | Status | Gate |
-|-------|--------|------|
-| **Phase 1** — ECS + four-op API | **Shipped** (v0.1.0) | 94 tests green, 30-min synthetic session clean |
-| **Phase 2** — USD benchmark | **Closed** (v0.2.0) | 243-config sweep, Yellow tier verdict |
-| **Phase 3** — USD integration | **Shipped** (v1.0.0) | Real USD writer, narrow lock, 775M-assertion safety verification |
+| Phase | Tag | What landed |
+|---|---|---|
+| **Phase 1** — ECS + four-op API | `v0.1.0` | 94 tests green, 30-min synthetic session clean |
+| **Phase 2** — USD benchmark | `v0.2.0` | 243-config sweep, Yellow tier verdict |
+| **Phase 3** — Real USD integration | `v1.0.0` | Real USD writer, narrow lock, 775M-assertion safety verification |
+| **Singleton surgery** — handle API | **`v1.1.0`** | Module-level singleton replaced by `Moneta(config)` handle. Multi-instance per process. |
 
-**Current tag:** `v1.0.0`
+**Current version:** `v1.1.0`. **Test count:** 107 plain Python passing + 4 properly-gated pxr cases (run under hython, OpenUSD 0.25.5).
+
+Sibling project: [Octavius](https://github.com/JosephOIbrahim) (coordination substrate on the same USD thesis). Moneta is memory; Octavius is coordination. They share [substrate conventions](docs/substrate-conventions.md) but not Python code — the stage is the interface.
 
 ---
 
-## Architecture
+## Quick start (60 seconds)
+
+### 1. Install
+
+```bash
+git clone https://github.com/JosephOIbrahim/Moneta.git
+cd Moneta
+pip install -e .[dev]
+```
+
+Python ≥ 3.11. **Zero runtime dependencies** — no numpy, torch, or DB drivers. Just stdlib.
+
+### 2. Smoke check
+
+```bash
+python -c "import moneta; moneta.smoke_check(); print('OK')"
+```
+
+If you see `OK`, the four ops, decay math, attention reducer, sleep pass, and consolidation are all wired correctly.
+
+### 3. Run the tests (optional)
+
+```bash
+pytest
+```
+
+You should see **107 passed**, 4 skipped (pxr-gated USD tests). The skipped ones run under hython if you have OpenUSD 0.25.5 installed.
+
+### Stuck?
+
+| Symptom | Fix |
+|---|---|
+| `python: command not found` | Try `python3`, or install Python from [python.org](https://www.python.org/downloads/) |
+| `No module named 'moneta'` | Run `pip install -e .[dev]` from the Moneta directory |
+| `pytest: command not found` | Run `python -m pytest` |
+| `TypeError: Moneta() missing 1 required ... 'config'` | That's by design (§5.3 of the design brief — no implicit defaults). Pass `MonetaConfig.ephemeral()` for tests. |
+
+---
+
+## The four-op API
+
+The entire agent-facing surface. Agents have **zero knowledge** of ECS, USD, vector indices, decay, or consolidation.
+
+| Operation | Signature | Returns |
+|---|---|---|
+| `deposit` | `(payload: str, embedding: List[float], protected_floor: float = 0.0)` | `UUID` |
+| `query` | `(embedding: List[float], limit: int = 5)` | `List[Memory]` |
+| `signal_attention` | `(weights: Dict[UUID, float])` | `None` |
+| `get_consolidation_manifest` | `()` | `List[Memory]` |
+
+These are methods on the `Moneta` handle. Plus one harness-level operator:
+
+| Operation | Signature | What it does |
+|---|---|---|
+| `run_sleep_pass` | `()` | Drains attention log, applies decay, prunes/stages survivors |
+
+### Hello world
+
+```python
+import moneta
+
+# Construct a handle. Each handle owns one storage_uri; two handles
+# on the same URI raise MonetaResourceLockedError.
+with moneta.Moneta(moneta.MonetaConfig.ephemeral()) as m:
+    eid = m.deposit(
+        payload="The user prefers concise explanations.",
+        embedding=[0.12, -0.45, 0.78, ...],   # from your embedder
+    )
+
+    # Retrieve by semantic similarity (utility-weighted)
+    results = m.query(embedding=[0.12, -0.45, 0.78, ...], limit=5)
+    for memory in results:
+        print(memory.payload, f"u={memory.utility:.2f}", f"a={memory.attended_count}")
+
+    # Tell Moneta this memory was useful (async — applied at next sleep pass)
+    m.signal_attention({eid: 0.3})
+
+    # Periodic consolidation (drain attention log, decay, prune/stage)
+    result = m.run_sleep_pass()
+    print(f"pruned={result.pruned} staged={result.staged}")
+```
+
+### Why a handle?
+
+Before `v1.1.0` Moneta exposed module-level functions backed by a singleton — one substrate per process. The handle (`v1.1.0`) lifts that limit:
+
+- **Multiple instances per process.** Run two agents side-by-side, or one substrate per tenant in a hosted setup.
+- **Explicit lifecycle.** `with Moneta(config) as m:` is the canonical form. `__exit__` releases all resources and the in-process URI lock.
+- **No-arg trap.** `Moneta()` raises `TypeError` by design — every consumer declares its storage boundary on line one. Use `MonetaConfig.ephemeral()` for tests.
+- **Two handles on the same `storage_uri` raise.** In-memory `_ACTIVE_URIS` registry. No silent sharing.
+
+Full design rationale: [`DEEP_THINK_BRIEF_substrate_handle.md`](DEEP_THINK_BRIEF_substrate_handle.md). Surgery record: [`SURGERY_complete.md`](SURGERY_complete.md).
+
+Full API reference with usage examples: [`docs/api.md`](docs/api.md).
+
+---
+
+## How it works (architecture)
 
 ### System overview
 
 ```mermaid
 graph TB
-    subgraph agent["Agent (zero USD knowledge)"]
-        deposit["deposit(payload, embedding)"]
-        query["query(embedding, limit)"]
-        signal["signal_attention(weights)"]
-        manifest["get_consolidation_manifest()"]
-    end
+    consumer["<b>Consumer</b><br/>(your agent / app)"]
+    handle["<b>Moneta(config)</b> handle<br/>with __exit__ → lock release"]
+    registry["<b>_ACTIVE_URIS</b><br/>process-level lock<br/>by storage_uri"]
 
-    subgraph hot["Hot Tier (Phase 1)"]
-        ECS["ECS<br/>struct-of-arrays<br/>list-backed"]
+    subgraph hot["Hot Tier — owned by handle"]
+        ECS["ECS<br/>struct-of-arrays"]
         Decay["Lazy Exponential Decay<br/>U = max(floor, U·e⁻ᵏᵗ)"]
         AttLog["Attention Log<br/>lock-free append<br/>sleep-pass reduce"]
     end
 
-    subgraph shadow["Shadow Index"]
-        VecIdx["VectorIndex<br/>in-memory (v1.0)<br/>LanceDB (v1.1)"]
+    subgraph shadow["Shadow Index — owned by handle"]
+        VecIdx["VectorIndex<br/>in-memory (v1.1)<br/>LanceDB future"]
     end
 
-    subgraph consolidation["Consolidation Engine"]
+    subgraph consolidation["Consolidation Engine — owned by handle"]
         Runner["ConsolidationRunner<br/>pressure + idle trigger<br/>500-prim batch cap"]
-        SeqWriter["SequentialWriter<br/>Protocol-based"]
+        SeqWriter["SequentialWriter<br/>USD-first / vector-second"]
     end
 
     subgraph targets["Authoring Targets"]
@@ -53,25 +173,17 @@ graph TB
         Mock["MockUsdTarget<br/>JSONL log (A/B fallback)"]
     end
 
-    subgraph cold["Cold Tier (Phase 3 — OpenUSD 0.25.5)"]
-        Rolling["cortex_YYYY_MM_DD.usda<br/>rolling daily sublayers<br/>rotation at 50k prims"]
-        Protected["cortex_protected.usda<br/>root-pinned strongest position"]
+    subgraph cold["Cold Tier — durable"]
+        Rolling["cortex_YYYY_MM_DD.usda<br/>rolling daily sublayers"]
+        Protected["cortex_protected.usda<br/>root-pinned strongest"]
     end
 
-    subgraph durability["Durability"]
-        WAL["WAL · JSONL<br/>fsync per signal"]
-        Snap["Snapshot · JSON<br/>30s cadence"]
-    end
-
-    deposit --> ECS
-    deposit --> VecIdx
-    query --> Decay
-    Decay --> ECS
-    query --> VecIdx
-    signal --> AttLog
-    signal --> WAL
-    manifest --> ECS
-
+    consumer -->|"with Moneta(cfg) as m:"| handle
+    handle -.->|"acquire URI"| registry
+    handle --> ECS
+    handle --> AttLog
+    handle --> VecIdx
+    handle --> Runner
     Runner --> AttLog
     Runner --> Decay
     Runner --> SeqWriter
@@ -79,17 +191,44 @@ graph TB
     SeqWriter -->|"2. vector second"| VecIdx
     Real --> Rolling
     Real --> Protected
-    Mock -.->|"A/B swap via<br/>MonetaConfig"| Real
+    Mock -.->|"A/B swap via<br/>MonetaConfig.use_real_usd"| Real
 
-    Snap --> ECS
-
-    style agent fill:#1a1a2e,color:#e0e0e0
+    style consumer fill:#1a1a2e,color:#e0e0e0
+    style handle fill:#0984e3,color:#fff
+    style registry fill:#d63031,color:#fff
     style hot fill:#16213e,color:#e0e0e0
     style shadow fill:#0f3460,color:#e0e0e0
     style consolidation fill:#533483,color:#e0e0e0
     style targets fill:#2c2c54,color:#e0e0e0
     style cold fill:#1e3a5f,color:#e0e0e0
-    style durability fill:#2d3436,color:#e0e0e0
+```
+
+### Handle lifecycle (`v1.1.0`)
+
+```mermaid
+stateDiagram-v2
+    [*] --> Constructed: Moneta(config)<br/>acquires _ACTIVE_URIS
+
+    Constructed --> Live: __enter__<br/>(returns self)
+    Live --> Live: deposit / query / signal_attention<br/>get_consolidation_manifest / run_sleep_pass
+
+    Live --> Closing: __exit__<br/>OR raise inside with block<br/>OR explicit close()
+    Closing --> Released: durability.close →<br/>authoring_target.close →<br/>_ACTIVE_URIS.discard
+    Released --> [*]
+
+    note right of Constructed
+        Two handles on the same
+        storage_uri → MonetaResourceLockedError.
+        Verified by test_twin_substrate.py
+        and adversarial Crucible suite.
+    end note
+
+    note left of Released
+        Idempotent. Order matters:
+        snapshot daemon thread first,
+        file pointers second,
+        URI lock last.
+    end note
 ```
 
 ### Memory lifecycle
@@ -97,13 +236,13 @@ graph TB
 ```mermaid
 stateDiagram-v2
     [*] --> VOLATILE: deposit()
-    VOLATILE --> VOLATILE: signal_attention()\nreinforces utility
-    VOLATILE --> VOLATILE: query()\napplies decay
+    VOLATILE --> VOLATILE: signal_attention()<br/>reinforces utility
+    VOLATILE --> VOLATILE: query()<br/>applies decay
 
-    VOLATILE --> Pruned: sleep pass\nU < 0.1 AND AC < 3
-    VOLATILE --> STAGED_FOR_SYNC: sleep pass\nU < 0.3 AND AC ≥ 3
+    VOLATILE --> Pruned: sleep pass<br/>U < 0.1 AND AC < 3
+    VOLATILE --> STAGED_FOR_SYNC: sleep pass<br/>U < 0.3 AND AC ≥ 3
 
-    STAGED_FOR_SYNC --> CONSOLIDATED: sequential write\nUSD first → vector second
+    STAGED_FOR_SYNC --> CONSOLIDATED: sequential write<br/>USD first → vector second
 
     Pruned --> [*]: removed from ECS + vector index
 
@@ -160,10 +299,10 @@ graph LR
         SW1 -->|VectorIndexTarget| VI1
     end
 
-    subgraph real["UsdTarget (default, v1.0.0)"]
+    subgraph real["UsdTarget (default, v1.0.0+)"]
         SW2["SequentialWriter<br/><b>unchanged</b>"]
         RT["UsdTarget<br/><i>pxr/Sdf · narrow lock</i>"]
-        VI2["VectorIndex<br/><i>in-memory (LanceDB v1.1)</i>"]
+        VI2["VectorIndex<br/><i>in-memory (LanceDB future)</i>"]
         SW2 -->|AuthoringTarget| RT
         SW2 -->|VectorIndexTarget| VI2
     end
@@ -196,127 +335,6 @@ graph TB
 
 ---
 
-## Installation
-
-### What you need first
-
-- **Python 3.11 or newer.** If you type `python --version` in your terminal and see 3.11+, you're good. If not, grab it from [python.org](https://www.python.org/downloads/).
-- **git.** You used it to get here. You have it.
-- That's it. Moneta has **zero runtime dependencies** in Phase 1 — no numpy, no torch, no database drivers. Just Python's standard library.
-
-### Step by step
-
-**1. Get the code**
-
-```bash
-git clone https://github.com/JosephOIbrahim/Moneta.git
-cd Moneta
-```
-
-**2. Install Moneta in dev mode**
-
-This makes `import moneta` work from anywhere and pulls in test tools (pytest, ruff):
-
-```bash
-pip install -e .[dev]
-```
-
-> **What does `-e .` mean?** It installs the project in "editable" mode — Python points at your local copy instead of making a separate installation. Changes you make to the code take effect immediately, no reinstall needed.
-
-**3. Verify it works**
-
-Run the smoke check (takes < 1 second):
-
-```bash
-python -c "import moneta; moneta.smoke_check(); print('OK')"
-```
-
-If you see `OK`, Moneta is installed and the four-op API, decay math, attention log, consolidation engine, and sequential writer are all wired correctly.
-
-**4. Run the tests (optional but satisfying)**
-
-```bash
-pytest
-```
-
-You should see **94 passed** (and 2 skipped if you don't have OpenUSD/pxr installed). These cover the decay math, ECS operations, attention reducer, four-op API contract, durability round-trips, sequential-writer ordering, and a 30-minute synthetic agent session (compressed to ~0.3 seconds via virtual clock). The 2 skipped modules are Phase 3 USD tests that require a pxr-capable interpreter.
-
-### If something goes wrong
-
-| Symptom | Fix |
-|---------|-----|
-| `python: command not found` | Try `python3` instead, or install Python from [python.org](https://www.python.org/downloads/) |
-| `pip install` says "No module named pip" | Run `python -m ensurepip --upgrade` first |
-| `ModuleNotFoundError: No module named 'moneta'` | You forgot step 2. Run `pip install -e .[dev]` from the Moneta directory |
-| `pytest` says "command not found" | Run `python -m pytest` instead, or make sure step 2 completed without errors |
-| Tests fail with import errors | Make sure you're using Python 3.11+. Moneta uses `from __future__ import annotations` and modern type syntax |
-
-### For contributors
-
-```bash
-# Lint check
-ruff check src tests
-
-# Auto-format
-ruff format src tests
-
-# Run just the unit tests (fast, < 0.3s)
-pytest tests/unit
-
-# Run integration tests (durability, sequential writer ordering)
-pytest tests/integration
-
-# Run the synthetic session completion gate
-pytest tests/load
-```
-
----
-
-### Minimal usage
-
-```python
-import moneta
-
-moneta.init()
-
-# Deposit a memory
-eid = moneta.deposit(
-    payload="The user prefers concise explanations.",
-    embedding=[0.12, -0.45, 0.78, ...],  # from your embedder
-)
-
-# Query by semantic similarity (utility-weighted)
-results = moneta.query(embedding=[0.12, -0.45, 0.78, ...], limit=5)
-for m in results:
-    print(m.payload, f"utility={m.utility:.2f}", f"attended={m.attended_count}")
-
-# Signal attention (async — applied at next sleep pass)
-moneta.signal_attention({eid: 0.3})
-
-# Run a consolidation sleep pass (harness-level, not agent-facing)
-result = moneta.run_sleep_pass()
-print(f"pruned={result.pruned} staged={result.staged}")
-```
-
----
-
-## The four-op API
-
-The entire agent-facing surface. Agents have zero knowledge of ECS, USD, vector indices, decay, or consolidation.
-
-| Operation | Signature | Returns |
-|-----------|-----------|---------|
-| `deposit` | `(payload: str, embedding: List[float], protected_floor: float = 0.0)` | `UUID` |
-| `query` | `(embedding: List[float], limit: int = 5)` | `List[Memory]` |
-| `signal_attention` | `(weights: Dict[UUID, float])` | `None` |
-| `get_consolidation_manifest` | `()` | `List[Memory]` |
-
-Signatures are locked per [ARCHITECTURE.md §2](ARCHITECTURE.md). No fifth operation may be added without [§9 escalation](MONETA.md).
-
-Full API reference with usage examples: [docs/api.md](docs/api.md)
-
----
-
 ## Decay model
 
 Lazy memoryless exponential, evaluated at access time only — never on a background tick.
@@ -345,12 +363,12 @@ Tuning guide: [docs/decay-tuning.md](docs/decay-tuning.md)
 
 ```
 src/moneta/
-├── api.py                 # four-op API + init/smoke_check + dual-target routing
+├── api.py                 # Moneta handle + MonetaConfig + _ACTIVE_URIS + smoke_check
 ├── types.py               # Memory, EntityState
 ├── ecs.py                 # flat struct-of-arrays hot tier
 ├── decay.py               # lazy exponential decay
 ├── attention_log.py       # lock-free append + sleep-pass reducer
-├── vector_index.py        # shadow vector index (in-memory; LanceDB v1.1)
+├── vector_index.py        # shadow vector index (in-memory; LanceDB future)
 ├── durability.py          # WAL-lite snapshot + JSONL WAL
 ├── sequential_writer.py   # USD-first, vector-second Protocol
 ├── consolidation.py       # sleep-pass trigger + selection + 500-prim batch cap
@@ -360,19 +378,21 @@ src/moneta/
 └── __init__.py            # re-exports
 
 tests/
-├── unit/                  # 87 tests — Phase 1 (70) + Phase 3 USD (17)
-├── integration/           # 28 tests — Phase 1 (22) + Phase 3 USD (6)
-└── load/                  # 2 tests — 30-min synthetic session gate
+├── unit/                          # 70 plain-Python + 17 hython USD
+├── integration/                   # 22 plain-Python + 6 hython USD
+├── load/                          # 2 — 30-min synthetic session gate
+├── test_twin_substrate.py         # 3 mock disk-backed + 1 hython real USD (Forge truth condition)
+└── test_twin_substrate_adversarial.py  # 10 always-run + 1 hython (Crucible adversarial)
 
 scripts/
-└── usd_metabolism_bench_v2.py   # Phase 2 benchmark + Pass 5 stress test harness
+└── usd_metabolism_bench_v2.py    # Phase 2 benchmark + Pass 5 stress test harness
 
 docs/
 ├── api.md                       # four-op reference
 ├── decay-tuning.md              # λ tuning guide
 ├── substrate-conventions.md     # 6 conventions shared with Octavius
 ├── agent-commandments.md        # MoE agent discipline (8 commandments)
-├── phase2-benchmark-results.md  # Phase 2 analyst interpretation (243 configs)
+├── phase2-benchmark-results.md  # Phase 2 analyst interpretation
 ├── phase2-closure.md            # Phase 2 rulings + operational envelope
 ├── phase3-closure.md            # Phase 3 closure record
 ├── pass5-q6-findings.md         # Q6 thread-safety ruling
@@ -390,6 +410,7 @@ These cannot be re-opened without [§9 escalation](MONETA.md):
 2. **Decay math** — `U = max(floor, U·exp(-λ·Δt))`. Three evaluation points, no fourth.
 3. **Concurrency primitive** — append-only attention log, reduced at sleep pass. No locks.
 4. **Atomicity** — sequential write (USD first, vector second). No 2PC. Orphans benign.
+5. **Handle, not singleton** (`v1.1.0`) — `Moneta(config)` is the only constructor. `Moneta()` raises `TypeError`. Two handles on the same `storage_uri` raise `MonetaResourceLockedError`. In-memory `_ACTIVE_URIS` registry, not file locks.
 
 ---
 
@@ -431,6 +452,25 @@ Full closure: [docs/phase3-closure.md](docs/phase3-closure.md) | Patent evidence
 
 ---
 
+## v1.1.0 — singleton surgery verdict
+
+**SHIPPED — handle replaces singleton, multi-instance per process.**
+
+The `v1.1.0` surgery replaced the module-level singleton (`_state` at `api.py:124` plus `PROTECTED_QUOTA = 100`) with a dependency-injected `Moneta` handle. Mixture-of-experts execution: Scout audit, Forge implementation, Crucible adversarial pass, Steward sign-off.
+
+| Surface | Before | After |
+|---|---|---|
+| Plain-Python passing | 94 | **107** |
+| Pxr-gated (run under hython) | 23 | **25** |
+| Substrates per process | 1 | **N** |
+| Two handles same URI | shared, undefined | **`MonetaResourceLockedError`** |
+
+Empirical TOCTOU stress: 480 concurrent-construction attempts on the same URI under CPython GIL, zero double-acquisitions. Evidence under documented runtime, not proof under PEP 703 free-threading. Free-threaded TOCTOU and same-path/different-URI registry collapse are explicitly carried forward to the next surgery.
+
+Surgery record: [SURGERY_complete.md](SURGERY_complete.md) | Audit: [AUDIT_pre_surgery.md](AUDIT_pre_surgery.md) | Design brief: [DEEP_THINK_BRIEF_substrate_handle.md](DEEP_THINK_BRIEF_substrate_handle.md)
+
+---
+
 ## Novelty claims
 
 Moneta is not novel as a tiered memory architecture. It is novel as a **substrate choice**:
@@ -440,20 +480,20 @@ Moneta is not novel as a tiered memory architecture. It is novel as a **substrat
 3. **Pcp-based resolution as implicit multi-fidelity fallback** — highest surviving fidelity served without routing logic
 4. **Protected memory as root-pinned strong-position sublayer** — non-decaying state falls out of composition, not runtime checks
 
-These four claims are **structural, not temporal** — they hold across Green, Yellow, and Red integration tiers. Empirically evidenced in [docs/patent-evidence/](docs/patent-evidence/). Patent filing is the next post-v1.0.0 action.
+These four claims are **structural, not temporal** — they hold across Green, Yellow, and Red integration tiers. Empirically evidenced in [docs/patent-evidence/](docs/patent-evidence/). Patent filing is the next post-`v1.0.0` action.
 
 ---
 
 ## Lineage
 
-Round 1 (scoping brief) → Round 2 (Gemini Deep Think architectural spec) → Round 2.5 (Claude prior-art review) → Round 3 (Gemini Deep Think validation — structural-not-temporal insight) → **Phase 1** (5 passes, 94 tests, v0.1.0) → **Phase 2** (benchmark, interpretation, v0.2.0) → **Phase 3** (7 passes, narrow lock, 775M-assertion safety verification, v1.0.0)
+Round 1 (scoping brief) → Round 2 (Gemini Deep Think architectural spec) → Round 2.5 (Claude prior-art review) → Round 3 (Gemini Deep Think validation) → **Phase 1** (5 passes, 94 tests, `v0.1.0`) → **Phase 2** (benchmark, `v0.2.0`) → **Phase 3** (7 passes, narrow lock, 775M-assertion safety, `v1.0.0`) → **Singleton surgery** (Scout / Forge / Crucible / Steward, `v1.1.0`).
 
 ---
 
 ## Related docs
 
 | Document | Purpose |
-|----------|---------|
+|---|---|
 | [MONETA.md](MONETA.md) | Build blueprint — phasing, risks, roles, escalation |
 | [ARCHITECTURE.md](ARCHITECTURE.md) | Locked spec — source of truth for implementation |
 | [docs/api.md](docs/api.md) | Four-op API reference with examples |
@@ -461,6 +501,7 @@ Round 1 (scoping brief) → Round 2 (Gemini Deep Think architectural spec) → R
 | [docs/substrate-conventions.md](docs/substrate-conventions.md) | 6 conventions shared with Octavius |
 | [docs/phase2-closure.md](docs/phase2-closure.md) | Phase 2 verdict + operational envelope |
 | [docs/phase3-closure.md](docs/phase3-closure.md) | Phase 3 closure + pass-by-pass record |
+| [SURGERY_complete.md](SURGERY_complete.md) | `v1.1.0` singleton-to-handle surgery record |
 | [docs/patent-evidence/](docs/patent-evidence/) | Dated evidence for patent counsel |
 
 ---
