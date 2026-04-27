@@ -38,9 +38,10 @@ That's it. Four operations. No background threads, no daemons, no LLM calls insi
 | **Phase 1** — ECS + four-op API | `v0.1.0` | 94 tests green, 30-min synthetic session clean |
 | **Phase 2** — USD benchmark | `v0.2.0` | 243-config sweep, Yellow tier verdict |
 | **Phase 3** — Real USD integration | `v1.0.0` | Real USD writer, narrow lock, 775M-assertion safety verification |
-| **Singleton surgery** — handle API | **`v1.1.0`** | Module-level singleton replaced by `Moneta(config)` handle. Multi-instance per process. |
+| **Singleton surgery** — handle API | `v1.1.0` | Module-level singleton replaced by `Moneta(config)` handle. Multi-instance per process. |
+| **Codeless schema migration** — typed `MonetaMemory` prims | **`v1.2.0-rc1`** | USD codeless schema; on-disk prims gain `typeName="MonetaMemory"`, USD camelCase attrs, `priorState` as token. Schema-aware in usdview. |
 
-**Current version:** `v1.1.0`. **Test count:** 107 plain Python passing + 4 properly-gated pxr cases (run under hython, OpenUSD 0.25.5).
+**Current version:** `v1.2.0-rc1`. **Test count:** 107 plain Python passing + 7 properly-gated pxr cases under plain Python (skipped); **147 passing total under hython** (OpenUSD 0.25.5).
 
 Sibling project: [Octavius](https://github.com/JosephOIbrahim) (coordination substrate on the same USD thesis). Moneta is memory; Octavius is coordination. They share [substrate conventions](docs/substrate-conventions.md) but not Python code — the stage is the interface.
 
@@ -72,7 +73,7 @@ If you see `OK`, the four ops, decay math, attention reducer, sleep pass, and co
 pytest
 ```
 
-You should see **107 passed**, 4 skipped (pxr-gated USD tests). The skipped ones run under hython if you have OpenUSD 0.25.5 installed.
+You should see **107 passed**, 7 skipped (pxr-gated USD tests). The skipped ones run under hython if you have OpenUSD 0.25.5 installed (147 total under hython).
 
 ### Stuck?
 
@@ -173,9 +174,9 @@ graph TB
         Mock["MockUsdTarget<br/>JSONL log (A/B fallback)"]
     end
 
-    subgraph cold["Cold Tier — durable"]
-        Rolling["cortex_YYYY_MM_DD.usda<br/>rolling daily sublayers"]
-        Protected["cortex_protected.usda<br/>root-pinned strongest"]
+    subgraph cold["Cold Tier — durable, typed prims"]
+        Rolling["cortex_YYYY_MM_DD.usda<br/>rolling daily sublayers<br/><i>typeName=MonetaMemory</i>"]
+        Protected["cortex_protected.usda<br/>root-pinned strongest<br/><i>typeName=MonetaMemory</i>"]
     end
 
     consumer -->|"with Moneta(cfg) as m:"| handle
@@ -370,6 +371,57 @@ graph LR
     style real fill:#0984e3,color:#fff
 ```
 
+### Codeless schema architecture (`v1.2.0-rc1`)
+
+The on-disk shape of consolidated memory prims. Codeless: no C++ build, no Python codegen — pure runtime registration through OpenUSD's plugin system. The Sdf write path is **schema-blind by design** (`Sdf.AttributeSpec` + `prim_spec.typeName = "MonetaMemory"` writes the string regardless of registration); the **`Usd.SchemaRegistry` boundary** is what makes it real. The acceptance gate test asserts both halves in a clean subprocess.
+
+```mermaid
+graph TB
+    subgraph source["Schema source — committed"]
+        SchemaUsda["<b>schema/MonetaSchema.usda</b><br/>class MonetaMemory 'MonetaMemory'<br/>concrete typed · 6 attributes<br/>priorState : 4 allowedTokens"]
+    end
+
+    UsdGen["<b>usdGenSchema</b><br/>(skipCodeGeneration via customData)<br/>one-time generation step"]
+
+    subgraph generated["Runtime artifacts — committed"]
+        PlugInfo["<b>schema/plugInfo.json</b><br/>schemaKind = concreteTyped<br/>schemaIdentifier = MonetaMemory<br/>codeless: LibraryPath = ''"]
+        GenSchema["<b>schema/generatedSchema.usda</b><br/>auto-generated — do not edit"]
+    end
+
+    subgraph runtime["At runtime"]
+        EnvVar["<b>PXR_PLUGINPATH_NAME</b><br/>= path to schema/<br/>(set by gate test subprocess<br/>and operator-side for usdview)"]
+        Registry["<b>Usd.SchemaRegistry</b><br/>FindConcretePrimDefinition('MonetaMemory')<br/>→ non-None when registered"]
+    end
+
+    subgraph write["Substrate write path (schema-blind)"]
+        UsdTarget["<b>UsdTarget.author_stage_batch</b><br/>Sdf.CreatePrimInLayer +<br/>prim_spec.typeName = 'MonetaMemory'<br/>+ 6 typed AttributeSpecs"]
+        TypedPrim["<b>typed prim on disk</b><br/>typeName = MonetaMemory<br/>priorState = 'staged_for_sync' (token)<br/>attendedCount, protectedFloor,<br/>lastEvaluated, payload, utility"]
+    end
+
+    Gate["<b>tests/test_schema_acceptance_gate.py</b><br/>clean subprocess<br/>1. assert FindConcretePrimDefinition not None<br/>2. round-trip 6 attrs<br/>3. assert typeName == 'MonetaMemory'<br/>4. assert priorState SDF type == token"]
+
+    SchemaUsda --> UsdGen
+    UsdGen --> PlugInfo
+    UsdGen --> GenSchema
+    EnvVar -->|points at| PlugInfo
+    EnvVar -->|points at| GenSchema
+    PlugInfo -->|registers| Registry
+    GenSchema -->|registers| Registry
+    UsdTarget --> TypedPrim
+    Registry -.makes typed-aware.-> TypedPrim
+    Gate -.asserts.-> Registry
+    Gate -.asserts.-> TypedPrim
+
+    style source fill:#16213e,color:#e0e0e0
+    style generated fill:#0f3460,color:#e0e0e0
+    style runtime fill:#fdcb6e,color:#000
+    style write fill:#0984e3,color:#fff
+    style Gate fill:#00b894,color:#fff
+    style UsdGen fill:#533483,color:#fff
+```
+
+The C++ `Sdf.Layer` registry (the v1.1.0 trap) and this codeless plugin registry live in the same OpenUSD runtime but are independent. `_ACTIVE_URIS` (v1.1.0) gates handle construction; `Usd.SchemaRegistry` (v1.2.0-rc1) gates type recognition. The `pruned` token in `allowedTokens` is forward-looking — `EntityState` has no `PRUNED` member today; `_token_to_state("pruned")` raises rather than silently mapping to a wrong state.
+
 ### Substrate family
 
 ```mermaid
@@ -429,17 +481,24 @@ src/moneta/
 ├── durability.py          # WAL-lite snapshot + JSONL WAL
 ├── sequential_writer.py   # USD-first, vector-second Protocol
 ├── consolidation.py       # sleep-pass trigger + selection + 500-prim batch cap
-├── usd_target.py          # Phase 3 real USD writer (narrow lock, OpenUSD 0.25.5)
+├── usd_target.py          # Real USD writer (narrow lock + typed MonetaMemory authoring)
 ├── mock_usd_target.py     # Phase 1 JSONL authoring target (A/B fallback)
 ├── manifest.py            # get_consolidation_manifest delegate
 └── __init__.py            # re-exports
 
+schema/                            # Codeless schema artifacts (v1.2.0-rc1)
+├── MonetaSchema.usda              # source: concrete typed schema, 6 attrs + 4 allowedTokens
+├── plugInfo.json                  # codeless plugin registration
+└── generatedSchema.usda           # produced by usdGenSchema
+
 tests/
-├── unit/                          # 70 plain-Python + 17 hython USD
-├── integration/                   # 22 plain-Python + 6 hython USD
-├── load/                          # 2 — 30-min synthetic session gate
-├── test_twin_substrate.py         # 3 mock disk-backed + 1 hython real USD (Forge truth condition)
-└── test_twin_substrate_adversarial.py  # 10 always-run + 1 hython (Crucible adversarial)
+├── unit/                                    # 70 plain-Python + 17 hython USD + 14 hython schema
+├── integration/                             # 22 plain-Python + 6 hython USD
+├── load/                                    # 2 — 30-min synthetic session gate
+├── test_twin_substrate.py                   # 3 mock disk-backed + 1 hython real USD
+├── test_twin_substrate_adversarial.py       # 10 always-run + 1 hython
+├── test_schema_acceptance_gate.py           # 1 hython subprocess-isolated truth condition
+└── _schema_gate_subprocess.py               # subprocess body for the gate test
 
 scripts/
 └── usd_metabolism_bench_v2.py    # Phase 2 benchmark + Pass 5 stress test harness
@@ -468,6 +527,7 @@ These cannot be re-opened without [§9 escalation](MONETA.md):
 3. **Concurrency primitive** — append-only attention log, reduced at sleep pass. No locks.
 4. **Atomicity** — sequential write (USD first, vector second). No 2PC. Orphans benign.
 5. **Handle, not singleton** (`v1.1.0`) — `Moneta(config)` is the only constructor. `Moneta()` raises `TypeError`. Two handles on the same `storage_uri` raise `MonetaResourceLockedError`. In-memory `_ACTIVE_URIS` registry, not file locks.
+6. **Codeless typed schema** (`v1.2.0-rc1`) — on-disk prims have `typeName="MonetaMemory"`, USD camelCase attribute names, and `priorState` as a token with four `allowedTokens` (`volatile`, `staged_for_sync`, `consolidated`, `pruned`). Schema is registered via `plugInfo.json` + `generatedSchema.usda` at runtime; no C++ build step. The schema is an externally-visible contract — changes require a §9 escalation.
 
 ---
 
@@ -528,6 +588,29 @@ Surgery record: [SURGERY_complete.md](SURGERY_complete.md) | Audit: [AUDIT_pre_s
 
 ---
 
+## v1.2.0-rc1 — codeless schema migration verdict
+
+**SHIPPED — typed `MonetaMemory` prims, schema-aware in usdview, gate test green in clean subprocess.**
+
+The `v1.2.0-rc1` surgery layered a USD typed schema onto the v1.1.0 substrate. Untyped `def` memory prims become typed `MonetaMemory` prims registered through OpenUSD's plugin system. Mixture-of-experts execution: Auditor read-path audit, Crucible watched-fail acceptance gate, Schema Author authored the codeless schema, Forge implemented the typeName + token migration in `usd_target.py`, Crucible signed off after §10 conjunctive green.
+
+| Surface | Before | After |
+|---|---|---|
+| Prim `typeName` on disk | `""` (typeless `def`) | `"MonetaMemory"` |
+| `priorState` SDF type | `Int` (`int(EntityState.<n>)`) | `Token` (`allowedTokens` validated) |
+| Attribute names | snake_case | USD camelCase (`attendedCount`, `protectedFloor`, `lastEvaluated`, `priorState`) |
+| Pxr-gated tests under hython | 25 | **40** (1 acceptance gate + 3 read-path branching + 11 helper round-trip) |
+
+Truth condition: the **acceptance gate test** (`tests/test_schema_acceptance_gate.py`) runs in a clean subprocess with `PXR_PLUGINPATH_NAME` pointing at `schema/`, asserts `Usd.SchemaRegistry().FindConcretePrimDefinition("MonetaMemory") is not None` (the false-positive defense — Sdf authoring is schema-blind and would write the typeName string with or without a registered schema), then round-trips all six attributes including the token-typed `priorState`. Operator-confirmed in usdview.
+
+**Locked decisions in scope of this surgery:** the six attributes, the `MonetaMemory` typeName, the four `allowedTokens` (including the forward-looking `"pruned"`), the codeless registration mechanism. The schema is an externally-visible contract from `v1.2.0-rc1` forward.
+
+**Carried forward to next surgery:** `EntityState.PRUNED` (currently absent — the `"pruned"` token is reserved by the schema but not produceable by the substrate); cross-session USD hydration; `moneta-admin upgrade-stages` CLI for legacy typeless stages.
+
+Surgery record: [SURGERY_complete_codeless_schema.md](SURGERY_complete_codeless_schema.md) | Audit: [SCHEMA_read_path_audit.md](SCHEMA_read_path_audit.md) | Design brief: [DEEP_THINK_BRIEF_codeless_schema.md](DEEP_THINK_BRIEF_codeless_schema.md)
+
+---
+
 ## Novelty claims
 
 Moneta is not novel as a tiered memory architecture. It is novel as a **substrate choice**:
@@ -543,7 +626,7 @@ These four claims are **structural, not temporal** — they hold across Green, Y
 
 ## Lineage
 
-Round 1 (scoping brief) → Round 2 (Gemini Deep Think architectural spec) → Round 2.5 (Claude prior-art review) → Round 3 (Gemini Deep Think validation) → **Phase 1** (5 passes, 94 tests, `v0.1.0`) → **Phase 2** (benchmark, `v0.2.0`) → **Phase 3** (7 passes, narrow lock, 775M-assertion safety, `v1.0.0`) → **Singleton surgery** (Scout / Forge / Crucible / Steward, `v1.1.0`).
+Round 1 (scoping brief) → Round 2 (Gemini Deep Think architectural spec) → Round 2.5 (Claude prior-art review) → Round 3 (Gemini Deep Think validation) → **Phase 1** (5 passes, 94 tests, `v0.1.0`) → **Phase 2** (benchmark, `v0.2.0`) → **Phase 3** (7 passes, narrow lock, 775M-assertion safety, `v1.0.0`) → **Singleton surgery** (Scout / Forge / Crucible / Steward, `v1.1.0`) → **Codeless schema migration** (Auditor / Crucible / Schema Author / Forge, `v1.2.0-rc1`).
 
 ---
 
@@ -559,6 +642,8 @@ Round 1 (scoping brief) → Round 2 (Gemini Deep Think architectural spec) → R
 | [docs/phase2-closure.md](docs/phase2-closure.md) | Phase 2 verdict + operational envelope |
 | [docs/phase3-closure.md](docs/phase3-closure.md) | Phase 3 closure + pass-by-pass record |
 | [SURGERY_complete.md](SURGERY_complete.md) | `v1.1.0` singleton-to-handle surgery record |
+| [SURGERY_complete_codeless_schema.md](SURGERY_complete_codeless_schema.md) | `v1.2.0-rc1` codeless schema surgery record |
+| [`schema/`](schema/) | `MonetaSchema.usda` + `plugInfo.json` + `generatedSchema.usda` (codeless typed schema) |
 | [docs/patent-evidence/](docs/patent-evidence/) | Dated evidence for patent counsel |
 
 ---
