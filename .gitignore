@@ -48,6 +48,11 @@ desktop.ini
 *.usda
 *.usdc
 *.usd
+# Schema artifacts ARE source. Re-include schema/ contents.
+!schema/*.usda
+!schema/*.usdc
+!schema/**/*.usda
+!schema/**/*.usdc
 snapshots/
 data/
 cache/
