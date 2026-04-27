@@ -55,10 +55,26 @@ When ``log_path=None``, all layers are anonymous in-memory layers. No
 disk I/O occurs. The stage is still composable for traversal and query
 validation. ``Save()`` calls are skipped in this mode.
 
-Attributes authored per prim
-----------------------------
-payload (String), utility (Float), attended_count (Int),
-protected_floor (Float), last_evaluated (Double), prior_state (Int).
+Attributes authored per prim (USD camelCase per MonetaSchema.usda, v1.2.0)
+-------------------------------------------------------------------------
+payload (String), utility (Float), attendedCount (Int),
+protectedFloor (Float), lastEvaluated (Double), priorState (Token).
+
+Each prim is authored with ``typeName="MonetaMemory"``, the codeless
+schema registered via ``schema/plugInfo.json``. See
+``tests/test_schema_acceptance_gate.py`` for the runtime-registration
+validation gate.
+
+``priorState`` is a token, not an int — see ``_state_to_token`` /
+``_token_to_state`` below. The schema declares four ``allowedTokens``
+values (``volatile``, ``staged_for_sync``, ``consolidated``, ``pruned``);
+the substrate produces only ``staged_for_sync`` today, since the only
+authoring path runs through ``consolidation.run_pass`` ->
+``commit_staging`` at the moment ``EntityState`` is ``STAGED_FOR_SYNC``.
+Other tokens are forward-looking. The substrate cannot author
+``"pruned"`` because the current ``EntityState`` enum has no ``PRUNED``
+member; pruned entities are removed from the ECS rather than
+transitioning state.
 
 semantic_vector is NOT stored in USD — the shadow vector index
 (LanceDB in Phase 3) is authoritative for embeddings. Storing
@@ -79,12 +95,64 @@ from typing import Dict, List, Optional, Tuple
 from pxr import Sdf, Tf, Usd  # noqa: F401 — Tf imported per Phase 3 Pass 3 spec
 
 from .sequential_writer import AuthoringResult
-from .types import Memory
+from .types import EntityState, Memory
 
 _logger = logging.getLogger(__name__)
 
 PROTECTED_SUBLAYER_NAME = "cortex_protected.usda"
 DEFAULT_ROTATION_CAP = 50_000
+
+# ----------------------------------------------------------------------
+# priorState <-> EntityState boundary helpers
+# ----------------------------------------------------------------------
+#
+# MonetaSchema.usda declares ``priorState`` as a token with allowedTokens
+# ["volatile", "staged_for_sync", "consolidated", "pruned"]. The current
+# EntityState enum (src/moneta/types.py) has only the first three
+# members — pruned entities are removed from the ECS rather than
+# transitioning to a PRUNED state, so the substrate does not produce
+# ``"pruned"`` today. The token is reserved for a future
+# PRUNED-as-tombstone surgery; the helper raises on receipt rather than
+# silently returning a wrong EntityState (Auditor's interpretation (a)
+# at the codeless-schema G1 gate).
+
+_STATE_TO_TOKEN: Dict[EntityState, str] = {
+    EntityState.VOLATILE: "volatile",
+    EntityState.STAGED_FOR_SYNC: "staged_for_sync",
+    EntityState.CONSOLIDATED: "consolidated",
+}
+_TOKEN_TO_STATE: Dict[str, EntityState] = {
+    token: state for state, token in _STATE_TO_TOKEN.items()
+}
+
+
+def _state_to_token(state: EntityState) -> str:
+    """Translate an EntityState to its priorState token at the USD write
+    boundary. Raises ``KeyError`` if the state has no token mapping
+    (the safety net for a future EntityState.PRUNED added before this
+    helper is updated)."""
+    return _STATE_TO_TOKEN[state]
+
+
+def _token_to_state(token: str) -> EntityState:
+    """Inverse of :func:`_state_to_token`. Resolves a priorState token
+    read off a typed MonetaMemory prim into an EntityState member.
+
+    Raises ``ValueError`` on tokens outside the substrate-producible
+    set, including the schema-reserved ``"pruned"`` token.
+
+    Imported by test fixtures that read priorState off authored prims.
+    Not invoked from substrate code paths — handoff §3 audit verified
+    that USD reads do not exist on the substrate side.
+    """
+    try:
+        return _TOKEN_TO_STATE[token]
+    except KeyError as exc:
+        raise ValueError(
+            f"unknown priorState token {token!r}; expected one of "
+            f"{sorted(_TOKEN_TO_STATE)} "
+            f"(the schema reserves 'pruned' for a future surgery)"
+        ) from exc
 
 
 def _rolling_sublayer_base(authored_at: float) -> str:
@@ -248,19 +316,22 @@ class UsdTarget:
                     path = _prim_path(m.entity_id)
                     prim_spec = Sdf.CreatePrimInLayer(layer, path)
                     prim_spec.specifier = Sdf.SpecifierDef
+                    prim_spec.typeName = "MonetaMemory"
 
                     _set_attr(prim_spec, "payload", Sdf.ValueTypeNames.String, m.payload)
                     _set_attr(prim_spec, "utility", Sdf.ValueTypeNames.Float, m.utility)
                     _set_attr(
-                        prim_spec, "attended_count", Sdf.ValueTypeNames.Int, m.attended_count
+                        prim_spec, "attendedCount", Sdf.ValueTypeNames.Int, m.attended_count
                     )
                     _set_attr(
-                        prim_spec, "protected_floor", Sdf.ValueTypeNames.Float, m.protected_floor
+                        prim_spec, "protectedFloor", Sdf.ValueTypeNames.Float, m.protected_floor
                     )
                     _set_attr(
-                        prim_spec, "last_evaluated", Sdf.ValueTypeNames.Double, m.last_evaluated
+                        prim_spec, "lastEvaluated", Sdf.ValueTypeNames.Double, m.last_evaluated
                     )
-                    _set_attr(prim_spec, "prior_state", Sdf.ValueTypeNames.Int, int(m.state))
+                    _set_attr(
+                        prim_spec, "priorState", Sdf.ValueTypeNames.Token, _state_to_token(m.state)
+                    )
 
             self._prim_counts[name] = self._prim_counts.get(name, 0) + len(batch)
 

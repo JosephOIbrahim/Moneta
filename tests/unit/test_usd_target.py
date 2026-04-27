@@ -121,10 +121,13 @@ class TestPrimCreation:
         # Verify authored attributes
         assert prim.GetAttribute("payload").Get() == "The user prefers dark themes"
         assert isinstance(prim.GetAttribute("utility").Get(), float)
-        assert prim.GetAttribute("attended_count").Get() == mem.attended_count
-        assert prim.GetAttribute("protected_floor").Get() == mem.protected_floor
-        assert isinstance(prim.GetAttribute("last_evaluated").Get(), float)
-        assert prim.GetAttribute("prior_state").Get() == int(EntityState.STAGED_FOR_SYNC)
+        assert prim.GetAttribute("attendedCount").Get() == mem.attended_count
+        assert prim.GetAttribute("protectedFloor").Get() == mem.protected_floor
+        assert isinstance(prim.GetAttribute("lastEvaluated").Get(), float)
+        # priorState is a token per MonetaSchema.usda allowedTokens.
+        # The substrate authors at STAGED_FOR_SYNC moment in the
+        # consolidation pass; the token round-trips literally.
+        assert prim.GetAttribute("priorState").Get() == "staged_for_sync"
 
     def test_prim_name_is_uuid_not_payload(self) -> None:
         """TfToken OOM trap regression guard (Round 2 §6.3, convention #1).
@@ -373,9 +376,9 @@ class TestAdversarialAttributeValues:
         assert abs(prim.GetAttribute("utility").Get() - 0.42) < 1e-6, (
             "utility value must match authored data, not just be a float"
         )
-        assert prim.GetAttribute("attended_count").Get() == 7
-        assert abs(prim.GetAttribute("protected_floor").Get() - 0.15) < 1e-6
-        assert prim.GetAttribute("prior_state").Get() == int(EntityState.STAGED_FOR_SYNC)
+        assert prim.GetAttribute("attendedCount").Get() == 7
+        assert abs(prim.GetAttribute("protectedFloor").Get() - 0.15) < 1e-6
+        assert prim.GetAttribute("priorState").Get() == "staged_for_sync"
 
 
 class TestAdversarialRotationBoundary:
