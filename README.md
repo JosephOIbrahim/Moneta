@@ -207,7 +207,10 @@ graph TB
 
 ```mermaid
 stateDiagram-v2
-    [*] --> Constructed: Moneta(config)<br/>acquires _ACTIVE_URIS
+    [*] --> CheckUri: Moneta(config)
+    CheckUri --> Collide: storage_uri already in<br/>_ACTIVE_URIS
+    CheckUri --> Constructed: storage_uri free<br/>→ added to _ACTIVE_URIS
+    Collide --> [*]: raise<br/>MonetaResourceLockedError
 
     Constructed --> Live: __enter__<br/>(returns self)
     Live --> Live: deposit / query / signal_attention<br/>get_consolidation_manifest / run_sleep_pass
@@ -216,11 +219,12 @@ stateDiagram-v2
     Closing --> Released: durability.close →<br/>authoring_target.close →<br/>_ACTIVE_URIS.discard
     Released --> [*]
 
-    note right of Constructed
-        Two handles on the same
-        storage_uri → MonetaResourceLockedError.
-        Verified by test_twin_substrate.py
-        and adversarial Crucible suite.
+    note right of CheckUri
+        In-memory exclusivity (§5.4).
+        No file locks. No retry queues.
+        Verified by tests/test_twin_substrate.py
+        + adversarial Crucible suite (480-attempt
+        TOCTOU stress under GIL, zero races).
     end note
 
     note left of Released
@@ -231,13 +235,56 @@ stateDiagram-v2
     end note
 ```
 
+### Multi-instance support (`v1.1.0`)
+
+The marquee `v1.1.0` capability — **N substrates per Python process**. Each handle owns its `storage_uri`; the in-memory `_ACTIVE_URIS` registry refuses any second handle that tries to claim a URI that's already taken.
+
+```mermaid
+graph TB
+    agent_a["<b>Agent A</b><br/>holds m_a"]
+    agent_b["<b>Agent B</b><br/>holds m_b"]
+    agent_collide["<b>Mistaken caller</b><br/>tries Moneta(cfg_a)"]
+
+    registry["<b>_ACTIVE_URIS</b><br/>{ uri_a, uri_b }<br/>process-global set"]
+
+    subgraph m_a["m_a = Moneta(cfg_a) — uri_a"]
+        ecs_a[ECS_a]
+        vec_a[VectorIndex_a]
+        target_a[AuthoringTarget_a]
+    end
+
+    subgraph m_b["m_b = Moneta(cfg_b) — uri_b"]
+        ecs_b[ECS_b]
+        vec_b[VectorIndex_b]
+        target_b[AuthoringTarget_b]
+    end
+
+    collision["<b>MonetaResourceLockedError</b><br/>uri_a already held"]
+
+    agent_a -->|"with Moneta(cfg_a) as m_a"| m_a
+    agent_b -->|"with Moneta(cfg_b) as m_b"| m_b
+    agent_collide -.->|"Moneta(cfg_a)"| collision
+
+    m_a -.->|acquires uri_a| registry
+    m_b -.->|acquires uri_b| registry
+    collision -.->|check fails on uri_a| registry
+
+    style m_a fill:#0984e3,color:#fff
+    style m_b fill:#00b894,color:#fff
+    style registry fill:#fdcb6e,color:#000
+    style collision fill:#d63031,color:#fff
+    style agent_collide fill:#636e72,color:#fff
+```
+
+Substrates are **physically distinct objects** under the hood — `m_a.ecs is not m_b.ecs`, same for `attention`, `vector_index`, `authoring_target`. A deposit on `m_a` is invisible to `m_b`. A protected-quota slot used in `m_a` does not consume `m_b`'s quota. Verified by `tests/test_twin_substrate.py` (mock disk-backed + real-USD under hython) and `tests/test_twin_substrate_adversarial.py` (anonymous mode + three-handle collision + thread-boundary survival + reconstruct-after-close freshness + Sdf.Layer pointer distinctness).
+
 ### Memory lifecycle
 
 ```mermaid
 stateDiagram-v2
-    [*] --> VOLATILE: deposit()
-    VOLATILE --> VOLATILE: signal_attention()<br/>reinforces utility
-    VOLATILE --> VOLATILE: query()<br/>applies decay
+    [*] --> VOLATILE: m.deposit()
+    VOLATILE --> VOLATILE: m.signal_attention()<br/>reinforces utility
+    VOLATILE --> VOLATILE: m.query()<br/>applies decay
 
     VOLATILE --> Pruned: sleep pass<br/>U < 0.1 AND AC < 3
     VOLATILE --> STAGED_FOR_SYNC: sleep pass<br/>U < 0.3 AND AC ≥ 3
@@ -245,6 +292,16 @@ stateDiagram-v2
     STAGED_FOR_SYNC --> CONSOLIDATED: sequential write<br/>USD first → vector second
 
     Pruned --> [*]: removed from ECS + vector index
+
+    classDef live fill:#0984e3,color:#fff,stroke:#0063b1
+    classDef staging fill:#fdcb6e,color:#000,stroke:#b88f25
+    classDef stable fill:#00b894,color:#fff,stroke:#007a63
+    classDef gone fill:#d63031,color:#fff,stroke:#a02224
+
+    class VOLATILE live
+    class STAGED_FOR_SYNC staging
+    class CONSOLIDATED stable
+    class Pruned gone
 
     note right of VOLATILE
         Utility decays via lazy exponential:
@@ -299,7 +356,7 @@ graph LR
         SW1 -->|VectorIndexTarget| VI1
     end
 
-    subgraph real["UsdTarget (default, v1.0.0+)"]
+    subgraph real["UsdTarget (default, v1.0.0+; owned by Moneta handle in v1.1.0+)"]
         SW2["SequentialWriter<br/><b>unchanged</b>"]
         RT["UsdTarget<br/><i>pxr/Sdf · narrow lock</i>"]
         VI2["VectorIndex<br/><i>in-memory (LanceDB future)</i>"]
