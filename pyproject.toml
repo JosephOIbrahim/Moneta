@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "moneta"
-version = "1.1.0"
+version = "1.2.0rc1"
 description = "Memory substrate built on OpenUSD's composition engine. Sibling to Octavius."
 readme = "README.md"
 requires-python = ">=3.11"
