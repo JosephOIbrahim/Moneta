@@ -23,6 +23,10 @@ not hold under free-threaded Python (PEP 703) or sub-interpreters with
 per-interpreter GILs. Phase 1 targets CPython GIL; escalate per MONETA.md
 §9 Trigger 2 if that assumption changes.
 
+The `AttentionLog.__init__` constructor enforces the GIL invariant at
+runtime via `sys._is_gil_enabled()` — converting a silent correctness
+failure under free-threaded Python into a loud escalation.
+
 Single-reducer rule
 -------------------
 
@@ -33,6 +37,7 @@ is the only caller of `drain()` in the production data path.
 """
 from __future__ import annotations
 
+import sys
 from typing import NamedTuple
 from uuid import UUID
 
@@ -52,10 +57,15 @@ class AttentionLog:
     """Append-only log with single-reducer drain.
 
     No locks. No CAS. See module docstring for the CPython-GIL correctness
-    argument.
+    argument. The constructor enforces the GIL invariant at runtime.
     """
 
     def __init__(self) -> None:
+        if hasattr(sys, "_is_gil_enabled") and not sys._is_gil_enabled():
+            raise RuntimeError(
+                "AttentionLog lock-free drain requires CPython GIL; "
+                "free-threaded Python is not supported (MONETA.md §9 Trigger 2)"
+            )
         self._buffer: list[AttentionEntry] = []
 
     def append(self, entity_id: UUID, weight: float, timestamp: float) -> None:
