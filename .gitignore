@@ -53,6 +53,9 @@ desktop.ini
 !schema/*.usdc
 !schema/**/*.usda
 !schema/**/*.usdc
+# Bridge package schema is also source (codeless USD schema for Comfy-Cozy).
+!bridge/schema/**/*.usda
+!bridge/schema/**/*.usdc
 snapshots/
 data/
 cache/
