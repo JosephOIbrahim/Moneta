@@ -133,6 +133,17 @@ PYTHONPATH="src" "C:/Program Files/Side Effects Software/Houdini 21.0.512/bin/hy
 
 Both suites must be green at every pass boundary from Pass 3 onward. The `-p no:faulthandler` flag suppresses harmless `os.environ` access violation warnings from hython's patched environment. USD tests use `pytest.importorskip("pxr")` so they are skipped (not failed) under plain Python.
 
+### Multi-agent review harness (Opus 4.7, MoE roles, 5-loop)
+
+`scripts/review_harness.py` orchestrates a 5-iteration MoE review against `claude-opus-4-7`. The bespoke constitution at `docs/review-constitution.md` regulates every reviewer; per-loop markdown lands in `docs/review/round-*.md` (gitignored), the durable record is `docs/review/synthesis.md`. Install the optional extra and dry-run before any live call:
+
+```bash
+pip install -e .[review]
+python scripts/review_harness.py --dry-run --max-loops 1
+python scripts/review_harness.py --max-loops 1   # live single-loop smoke
+python scripts/review_harness.py                 # full 5-loop run
+```
+
 ## Repository structure
 
 ```
