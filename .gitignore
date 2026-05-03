@@ -64,4 +64,5 @@ docs/review/round-*.md
 docs/review/findings.jsonl
 docs/review/findings.invalid.jsonl
 docs/review/checkpoint.json
+docs/review/run.log
 !docs/review/synthesis.md

@@ -51,7 +51,9 @@ import argparse
 import concurrent.futures
 import hashlib
 import json
+import os
 import re
+import subprocess
 import sys
 import textwrap
 import time
@@ -287,43 +289,111 @@ def _import_anthropic():
     return anthropic
 
 
-def call_reviewer(bundle: PromptBundle, max_tokens: int = REVIEWER_MAX_TOKENS) -> str:
-    """Call Claude Opus 4.7 with one PromptBundle. Returns raw text content.
-
-    Retries up to three times on transient errors (Commandment 3 cap).
-    Caches the system prompt via `cache_control: ephemeral` so subsequent
-    reviewers in the same loop hit the cache.
-    """
+def _call_via_sdk(bundle: PromptBundle, max_tokens: int) -> str:
+    """SDK backend: requires `ANTHROPIC_API_KEY`. Caches the system prompt."""
     anthropic = _import_anthropic()
     client = anthropic.Anthropic()
+    response = client.messages.create(
+        model=MODEL,
+        max_tokens=max_tokens,
+        system=[
+            {
+                "type": "text",
+                "text": bundle.system_prompt,
+                "cache_control": {"type": "ephemeral"},
+            }
+        ],
+        messages=[{"role": "user", "content": bundle.user_prompt}],
+    )
+    parts = [
+        block.text for block in response.content if getattr(block, "type", None) == "text"
+    ]
+    return "\n".join(parts)
+
+
+def _call_via_cli(bundle: PromptBundle, max_tokens: int) -> str:
+    """CLI backend: dispatches via `claude -p` subprocess.
+
+    Useful in environments without ANTHROPIC_API_KEY where the Claude Code
+    CLI is authenticated via keychain/OAuth. The user prompt is piped via
+    stdin to avoid argv length limits (the snapshot is ~520KB). The system
+    prompt is passed via `--system-prompt` (~25KB, fits in argv).
+
+    Returns the raw text of the model's `result` field. The harness then
+    runs `extract_findings_array` on it identically to the SDK path.
+    """
+    cmd = [
+        "claude",
+        "-p",
+        "--model",
+        MODEL,
+        "--system-prompt",
+        bundle.system_prompt,
+        "--output-format",
+        "json",
+        "--no-session-persistence",
+        "--tools",
+        "",
+        "--permission-mode",
+        "default",
+    ]
+    completed = subprocess.run(  # noqa: S603 — internal harness, prompt is constructed locally
+        cmd,
+        input=bundle.user_prompt,
+        capture_output=True,
+        text=True,
+        timeout=600,
+    )
+    if completed.returncode != 0:
+        raise RuntimeError(
+            f"claude CLI exit={completed.returncode}: {completed.stderr[:800]}"
+        )
+    try:
+        payload = json.loads(completed.stdout)
+    except json.JSONDecodeError as exc:
+        raise RuntimeError(
+            f"claude CLI returned non-JSON: {completed.stdout[:400]!r}"
+        ) from exc
+    if payload.get("is_error") or payload.get("subtype") != "success":
+        raise RuntimeError(f"claude CLI returned error payload: {payload}")
+    return payload.get("result", "")
+
+
+def _select_backend() -> str:
+    """Return 'sdk' if ANTHROPIC_API_KEY is set, else 'cli'."""
+    return "sdk" if os.environ.get("ANTHROPIC_API_KEY") else "cli"
+
+
+def call_reviewer(
+    bundle: PromptBundle,
+    max_tokens: int = REVIEWER_MAX_TOKENS,
+    *,
+    backend: str = "auto",
+) -> str:
+    """Call Claude Opus 4.7 with one PromptBundle. Returns raw text content.
+
+    Retries up to three times on transient errors (Commandment 3 cap). The
+    backend is `sdk` (uses anthropic SDK + ANTHROPIC_API_KEY) or `cli`
+    (uses `claude -p` subprocess). `auto` selects sdk if the env var is
+    set, else cli.
+    """
+    if backend == "auto":
+        backend = _select_backend()
+    if backend not in ("sdk", "cli"):
+        raise ValueError(f"unknown backend: {backend!r}")
+
+    impl = _call_via_sdk if backend == "sdk" else _call_via_cli
 
     last_exc: Exception | None = None
     for attempt in range(1, 4):
         try:
-            response = client.messages.create(
-                model=MODEL,
-                max_tokens=max_tokens,
-                system=[
-                    {
-                        "type": "text",
-                        "text": bundle.system_prompt,
-                        "cache_control": {"type": "ephemeral"},
-                    }
-                ],
-                messages=[{"role": "user", "content": bundle.user_prompt}],
-            )
-            parts = [
-                block.text
-                for block in response.content
-                if getattr(block, "type", None) == "text"
-            ]
-            return "\n".join(parts)
-        except Exception as exc:  # noqa: BLE001 — SDK errors are heterogeneous
+            return impl(bundle, max_tokens)
+        except Exception as exc:  # noqa: BLE001 — backend errors are heterogeneous
             last_exc = exc
             sleep_s = 2**attempt
             print(
-                f"  ! {bundle.role.prefix} attempt {attempt}/3 failed: {exc}; "
-                f"backing off {sleep_s}s",
+                f"  ! {bundle.role.prefix} ({backend}) attempt {attempt}/3 "
+                f"failed: {str(exc)[:200]}; backing off {sleep_s}s",
                 file=sys.stderr,
             )
             time.sleep(sleep_s)
@@ -351,6 +421,7 @@ def run_loop(
     prior_synthesis: str,
     *,
     dry_run: bool,
+    backend: str,
 ) -> LoopState:
     """Run one themed loop: parallel role reviewers, then adversarial."""
     theme = theme_for_loop(loop)
@@ -376,7 +447,9 @@ def run_loop(
                   f"user={len(b.user_prompt)} chars)")
     else:
         with concurrent.futures.ThreadPoolExecutor(max_workers=PARALLEL_WORKERS) as pool:
-            futures = {pool.submit(call_reviewer, b): b for b in role_bundles}
+            futures = {
+                pool.submit(call_reviewer, b, backend=backend): b for b in role_bundles
+            }
             for future in concurrent.futures.as_completed(futures):
                 bundle = futures[future]
                 try:
@@ -411,7 +484,7 @@ def run_loop(
         adv_findings: list[dict[str, Any]] = []
     else:
         try:
-            adv_text = call_reviewer(adv_bundle)
+            adv_text = call_reviewer(adv_bundle, backend=backend)
             adv_findings = extract_findings_array(adv_text)
             adv_findings = stamp_constitution_hash(adv_findings, constitution_hash)
             print(f"  ✓ adversarial: {len(adv_findings)} findings emitted")
@@ -472,6 +545,16 @@ def main(argv: list[str] | None = None) -> int:
         action="store_true",
         help="Print the snapshot byte/line count and exit (debugging).",
     )
+    parser.add_argument(
+        "--backend",
+        choices=("auto", "sdk", "cli"),
+        default="auto",
+        help=(
+            "Backend for model calls: 'sdk' uses the anthropic SDK with "
+            "ANTHROPIC_API_KEY; 'cli' shells out to `claude -p`; 'auto' "
+            "(default) picks sdk when ANTHROPIC_API_KEY is set, cli otherwise."
+        ),
+    )
     args = parser.parse_args(argv)
 
     if not CONSTITUTION_PATH.exists():
@@ -485,6 +568,11 @@ def main(argv: list[str] | None = None) -> int:
         print(f"Snapshot bytes: {len(snapshot):,}")
         print(f"Snapshot lines: {snapshot.count(chr(10)):,}")
         return 0
+
+    backend = args.backend
+    if backend == "auto":
+        backend = _select_backend()
+    print(f"Backend: {backend}")
 
     REVIEW_DIR.mkdir(parents=True, exist_ok=True)
 
@@ -528,6 +616,7 @@ def main(argv: list[str] | None = None) -> int:
             snapshot=snapshot,
             prior_synthesis=prior_synthesis,
             dry_run=args.dry_run,
+            backend=backend,
         )
 
         if args.dry_run:
