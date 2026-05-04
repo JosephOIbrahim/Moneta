@@ -32,6 +32,7 @@ What this module is not
 from __future__ import annotations
 
 import logging
+import sys
 import time
 import uuid as _uuid
 from dataclasses import dataclass
@@ -206,6 +207,39 @@ class Moneta:
         try:
             self.config: MonetaConfig = config
             self._closed: bool = False
+            self._lock_fd: Optional[Any] = None
+
+            # Cross-process flock — POSIX-only, opt-in via snapshot_path.
+            # Hardens the in-process _ACTIVE_URIS registry against
+            # multi-process corruption of the same on-disk store.
+            # See docs/bridge-readiness.md §5.
+            if config.snapshot_path is not None:
+                if sys.platform == "win32":
+                    _logger.info(
+                        "Moneta.flock skipped: POSIX-only; storage at %s "
+                        "is NOT cross-process-safe on Windows",
+                        config.snapshot_path,
+                    )
+                else:
+                    import fcntl as _fcntl
+
+                    lock_path = config.snapshot_path.with_suffix(".lock")
+                    lock_path.parent.mkdir(parents=True, exist_ok=True)
+                    fd = open(lock_path, "a")
+                    try:
+                        _fcntl.flock(
+                            fd.fileno(),
+                            _fcntl.LOCK_EX | _fcntl.LOCK_NB,
+                        )
+                    except BlockingIOError:
+                        fd.close()
+                        raise MonetaResourceLockedError(
+                            f"snapshot_path {config.snapshot_path!r} is "
+                            f"held by another process (cross-process "
+                            f"flock on {lock_path}); release the holding "
+                            f"process before reconstructing"
+                        ) from None
+                    self._lock_fd = fd
 
             self.decay: DecayConfig = DecayConfig(
                 half_life_seconds=config.half_life_seconds
@@ -271,7 +305,20 @@ class Moneta:
                 max_entities=config.max_entities
             )
         except BaseException:
-            # Partial init — release the lock so the consumer can retry.
+            # Partial init — release any acquired flock and the URI lock
+            # so the consumer can retry.
+            if getattr(self, "_lock_fd", None) is not None:
+                try:
+                    if sys.platform != "win32":
+                        import fcntl as _fcntl
+
+                        _fcntl.flock(
+                            self._lock_fd.fileno(), _fcntl.LOCK_UN
+                        )
+                    self._lock_fd.close()
+                except Exception:
+                    pass
+                self._lock_fd = None
             _ACTIVE_URIS.discard(config.storage_uri)
             raise
 
@@ -314,6 +361,21 @@ class Moneta:
             if hasattr(self.authoring_target, "close"):
                 self.authoring_target.close()
         finally:
+            # Release cross-process flock before discarding the URI; a
+            # re-construct on the same URI would otherwise race the
+            # holding fd's lifetime.
+            if self._lock_fd is not None:
+                try:
+                    if sys.platform != "win32":
+                        import fcntl as _fcntl
+
+                        _fcntl.flock(
+                            self._lock_fd.fileno(), _fcntl.LOCK_UN
+                        )
+                    self._lock_fd.close()
+                except Exception:
+                    pass
+                self._lock_fd = None
             _ACTIVE_URIS.discard(self.config.storage_uri)
             _logger.info(
                 "Moneta.close uri=%s", self.config.storage_uri
