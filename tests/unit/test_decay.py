@@ -21,7 +21,6 @@ from moneta.decay import (
     lambda_from_half_life,
 )
 
-
 # ---------------------------------------------------------------------
 # lambda_from_half_life
 # ---------------------------------------------------------------------
@@ -147,3 +146,82 @@ class TestDecayConfig:
     def test_max_tuning_range_accepted(self) -> None:
         cfg = DecayConfig(half_life_seconds=MAX_HALF_LIFE_SECONDS)
         assert cfg.half_life_seconds == MAX_HALF_LIFE_SECONDS
+
+
+# ---------------------------------------------------------------------
+# Structural invariant: exactly three decay evaluation points
+# ---------------------------------------------------------------------
+
+
+class TestDecayEvaluationPoints:
+    """ARCHITECTURE.md §16 conformance gate: 'Decay evaluation points:
+    exactly three (§4). A test asserts no fourth call site.'
+
+    The three sanctioned sites are:
+      1. ``api.py``                — query path (pre-retrieval)
+      2. ``attention_log.py``      — reducer (post-aggregate, before set-state)
+      3. ``consolidation.py``      — sleep pass (pre-classification)
+
+    Any new call to ``ecs.decay_all`` (or to ``decay.decay_value``) outside
+    those three modules — or a fourth call inside any sanctioned module —
+    constitutes spec-level surprise and must be escalated per §9, not
+    silenced by adjusting the assertion. Regression for review finding
+    ``test-L1-decay-fourth-callsite-test-missing``.
+    """
+
+    SANCTIONED_MODULES: frozenset[str] = frozenset(
+        {"api.py", "attention_log.py", "consolidation.py"}
+    )
+
+    def _decay_invocations(self) -> list[tuple[str, int, str]]:
+        """Walk every module under src/moneta/ and return (file, line, callee)
+        for each call to ``decay_all`` or ``decay_value``.
+
+        Implementation files (``ecs.py``, ``decay.py``) are excluded — they
+        host the decay machinery; only *callers* count toward the §16 limit.
+        """
+        import ast
+        from pathlib import Path
+
+        import moneta
+
+        moneta_root = Path(moneta.__file__).parent
+        sites: list[tuple[str, int, str]] = []
+        for py in sorted(moneta_root.glob("*.py")):
+            if py.name in {"ecs.py", "decay.py", "__init__.py"}:
+                continue
+            source = py.read_text(encoding="utf-8")
+            tree = ast.parse(source)
+            for node in ast.walk(tree):
+                if not isinstance(node, ast.Call):
+                    continue
+                func = node.func
+                # Match attribute calls: ``ecs.decay_all(...)`` /
+                # ``decay_value(...)`` (rare; bare-name fallback).
+                if isinstance(func, ast.Attribute):
+                    name = func.attr
+                elif isinstance(func, ast.Name):
+                    name = func.id
+                else:
+                    continue
+                if name in {"decay_all", "decay_value"}:
+                    sites.append((py.name, node.lineno, name))
+        return sites
+
+    def test_decay_call_sites_count_exactly_three(self) -> None:
+        sites = self._decay_invocations()
+        assert len(sites) == 3, (
+            "ARCHITECTURE.md §16 locks 'exactly three' decay evaluation "
+            f"points; found {len(sites)} call site(s) outside ecs.py/decay.py: "
+            f"{sites!r}. A fourth site is §9 Trigger 2 (spec-level surprise), "
+            f"not a local fix."
+        )
+
+    def test_decay_call_sites_in_sanctioned_modules_only(self) -> None:
+        sites = self._decay_invocations()
+        offending = [s for s in sites if s[0] not in self.SANCTIONED_MODULES]
+        assert offending == [], (
+            f"decay called from non-sanctioned module(s): {offending!r}. "
+            f"Sanctioned: {sorted(self.SANCTIONED_MODULES)}. Adding a new "
+            f"site is §9 Trigger 2, not a local fix."
+        )

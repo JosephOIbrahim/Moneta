@@ -209,7 +209,12 @@ class ECS:
             if row is None:
                 continue
             new_u = self._utility[row] + sum_weight
-            self._utility[row] = 1.0 if new_u > 1.0 else new_u
+            if new_u > 1.0:
+                new_u = 1.0
+            floor = self._protected_floor[row]
+            if new_u < floor:
+                new_u = floor
+            self._utility[row] = new_u
             self._attended[row] += count
             self._last_evaluated[row] = now
             updated += 1

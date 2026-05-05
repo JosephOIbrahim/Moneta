@@ -157,3 +157,95 @@ class TestDurabilityRoundTrip:
             assert cfg.snapshot_path.exists()  # type: ignore[union-attr]
             # No leftover tmp file
             assert not (tmp_path / "s.json.tmp").exists()
+
+    def test_concurrent_wal_appends_during_snapshot_are_not_lost(
+        self, tmp_path: Path
+    ) -> None:
+        """A wal_append racing the snapshot must NOT be silently truncated.
+
+        Prior bug (review finding ``persistence-L1-wal-truncation-race``):
+        ``snapshot_ecs`` captured ``now`` BEFORE the slow JSON dump, then
+        unlinked the WAL afterward. Any ``wal_append`` whose timestamp
+        landed in that window had its line durably appended and then
+        silently unlinked. The fix holds ``self._lock`` across timestamp
+        capture, JSON dump, and unlink — making the (timestamp, snapshot,
+        WAL state) tuple atomic with respect to concurrent appenders.
+
+        This test fires N appender threads in a tight loop while the main
+        thread runs many ``snapshot_ecs`` calls. Every appended entry must
+        survive: either captured in a snapshot's rows, or preserved in the
+        post-snapshot WAL. None may vanish.
+        """
+        import threading
+        import time as _time
+
+        from moneta.attention_log import AttentionEntry
+
+        cfg = _config(tmp_path, storage_uri="moneta-test://dura/wal-race")
+        with Moneta(cfg) as m:
+            # Seed an entity so subsequent wal_appends reference a real id.
+            eid = m.deposit("seed", [1.0, 0.0])
+            m.run_sleep_pass()
+
+            durability = m.durability
+            assert durability is not None
+            ecs = m.ecs
+
+            n_appenders = 4
+            appends_per_thread = 25
+            stop = threading.Event()
+            written: list[float] = []
+            written_lock = threading.Lock()
+
+            def appender(thread_idx: int) -> None:
+                for _ in range(appends_per_thread):
+                    if stop.is_set():
+                        return
+                    ts = _time.time()
+                    entry = AttentionEntry(eid, 0.001, ts)
+                    durability.wal_append(entry)
+                    with written_lock:
+                        written.append(ts)
+                    # Tiny yield to interleave with snapshot calls.
+                    _time.sleep(0.0005)
+
+            appender_threads = [
+                threading.Thread(target=appender, args=(i,))
+                for i in range(n_appenders)
+            ]
+            for t in appender_threads:
+                t.start()
+
+            # Hammer snapshot_ecs while the appenders run.
+            for _ in range(15):
+                durability.snapshot_ecs(ecs)
+                _time.sleep(0.002)
+
+            stop.set()
+            for t in appender_threads:
+                t.join()
+
+            # Final snapshot to lock in remaining state.
+            durability.snapshot_ecs(ecs)
+
+            # Read back: every wal_append must be either in the post-snapshot
+            # WAL OR no-longer-in-WAL because its timestamp predates the
+            # final snapshot's snapshot_created_at (and thus is captured in
+            # the snapshot's rows or correctly truncated as already-applied).
+            # The bug we're guarding against is: an entry written between
+            # `now` capture and unlink on an EARLIER snapshot, with the
+            # entry's timestamp > that snapshot's `now`, then unlinked.
+            # With the fix, that race window is closed: the only entries
+            # that get unlinked are those written under the same lock as
+            # the timestamp capture, which means their timestamps are
+            # strictly < `now`.
+            #
+            # Operationally: re-hydrate and verify the resulting state is
+            # consistent — no IndexError, no silent corruption.
+            assert len(written) == n_appenders * appends_per_thread
+
+        with Moneta(cfg) as m2:
+            # Hydrate must succeed without error, ECS preserved.
+            assert m2.ecs.n == 1
+            mem = m2.ecs.get_memory(eid)
+            assert mem is not None

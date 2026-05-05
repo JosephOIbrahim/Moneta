@@ -178,12 +178,21 @@ class ConsolidationRunner:
                 memory = ecs.get_memory(eid)
                 if memory is not None:
                     staged_memories.append(memory)
+            # Per-batch transition: hoist the STAGED_FOR_SYNC → CONSOLIDATED
+            # write inside the batch loop so a later-batch failure does not
+            # roll back state for already-committed batches. Without this,
+            # a mid-loop ``commit_staging`` raise (e.g. disk full on batch
+            # 2 of 3) would leave batch 1 entities in STAGED_FOR_SYNC even
+            # though their USD prims and vector index entries are durable —
+            # ``classify()`` only re-considers VOLATILE entities, so they
+            # would be permanently stuck. Review finding
+            # ``consolidation-L2-stage-partial-batch-atomicity-break``.
             for batch_start in range(0, len(staged_memories), MAX_BATCH_SIZE):
                 batch = staged_memories[batch_start : batch_start + MAX_BATCH_SIZE]
                 result = sequential_writer.commit_staging(batch)
                 authoring_at = result.authored_at
-            for eid in stage_ids:
-                ecs.set_state(eid, EntityState.CONSOLIDATED)
+                for memory in batch:
+                    ecs.set_state(memory.entity_id, EntityState.CONSOLIDATED)
 
         summary = ConsolidationResult(
             attention_updated=attention_updated,

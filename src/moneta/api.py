@@ -32,6 +32,7 @@ What this module is not
 from __future__ import annotations
 
 import logging
+import threading
 import time
 import uuid as _uuid
 from dataclasses import dataclass
@@ -207,6 +208,13 @@ class Moneta:
             self.config: MonetaConfig = config
             self._closed: bool = False
 
+            # Protects the protected-quota count-then-add critical section in
+            # deposit(). Without this, two concurrent protected deposits at
+            # quota-1 can both observe count<quota and both succeed, breaking
+            # the §10 hard cap. See review finding
+            # substrate-L2-protected-quota-count-then-add-toctou.
+            self._deposit_lock: threading.Lock = threading.Lock()
+
             self.decay: DecayConfig = DecayConfig(
                 half_life_seconds=config.half_life_seconds
             )
@@ -347,28 +355,35 @@ class Moneta:
             If ``protected_floor > 0.0`` and the ECS already holds
             ``self.config.quota_override`` protected entries.
         """
-        if (
-            protected_floor > 0.0
-            and self.ecs.count_protected() >= self.config.quota_override
-        ):
-            raise ProtectedQuotaExceededError(
-                f"protected quota of {self.config.quota_override} "
-                f"exceeded; Phase 3 unpin tool required "
-                f"(ARCHITECTURE.md §10)"
-            )
-
         entity_id = uuid4()
         now = time.time()
 
-        self.ecs.add(
-            entity_id=entity_id,
-            payload=payload,
-            embedding=embedding,
-            utility=1.0,
-            protected_floor=protected_floor,
-            state=EntityState.VOLATILE,
-            now=now,
-        )
+        # Hold the deposit lock across count_protected() + ecs.add() so two
+        # concurrent protected deposits at quota-1 cannot both observe a
+        # count below quota and both succeed (§10 hard cap). The lock scope
+        # is intentionally narrow: vector_index.upsert runs outside it so
+        # the §7 sequential-write ordering is unaffected.
+        with self._deposit_lock:
+            if (
+                protected_floor > 0.0
+                and self.ecs.count_protected() >= self.config.quota_override
+            ):
+                raise ProtectedQuotaExceededError(
+                    f"protected quota of {self.config.quota_override} "
+                    f"exceeded; Phase 3 unpin tool required "
+                    f"(ARCHITECTURE.md §10)"
+                )
+
+            self.ecs.add(
+                entity_id=entity_id,
+                payload=payload,
+                embedding=embedding,
+                utility=1.0,
+                protected_floor=protected_floor,
+                state=EntityState.VOLATILE,
+                now=now,
+            )
+
         self.vector_index.upsert(
             entity_id, embedding, EntityState.VOLATILE
         )
