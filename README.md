@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="docs/assets/moneta-logo.jpg" alt="Moneta — Memory as Advisory: memory substrate for LLM agents built on OpenUSD's composition engine. Patent Pending." width="800"/>
+</p>
+
 # Moneta
 
 **Memory substrate for LLM agents built on OpenUSD's composition engine.**
@@ -151,32 +155,32 @@ Full API reference with usage examples: [`docs/api.md`](docs/api.md).
 ```mermaid
 graph TB
     consumer["<b>Consumer</b><br/>(your agent / app)"]
-    handle["<b>Moneta(config)</b> handle<br/>with __exit__ → lock release"]
-    registry["<b>_ACTIVE_URIS</b><br/>process-level lock<br/>by storage_uri"]
+    handle["<b>Moneta(config)</b> handle<br/>__exit__ → release lock"]
+    registry["<b>_ACTIVE_URIS</b><br/>process-level set&lt;str&gt;<br/>keyed by storage_uri"]
 
     subgraph hot["Hot Tier — owned by handle"]
-        ECS["ECS<br/>struct-of-arrays"]
-        Decay["Lazy Exponential Decay<br/>U = max(floor, U·e⁻ᵏᵗ)"]
-        AttLog["Attention Log<br/>lock-free append<br/>sleep-pass reduce"]
+        ECS["ECS<br/>struct-of-arrays<br/>(ecs.py)"]
+        Decay["Lazy Exponential Decay<br/>U = max(floor, U·e⁻ᵏᵗ)<br/>(decay.py)"]
+        AttLog["AttentionLog<br/>append + drain<br/>aggregate at sleep pass<br/>(attention_log.py)"]
     end
 
     subgraph shadow["Shadow Index — owned by handle"]
-        VecIdx["VectorIndex<br/>in-memory (v1.1)<br/>LanceDB future"]
+        VecIdx["VectorIndex<br/>in-memory · LanceDB future<br/>(vector_index.py)"]
     end
 
     subgraph consolidation["Consolidation Engine — owned by handle"]
-        Runner["ConsolidationRunner<br/>pressure + idle trigger<br/>500-prim batch cap"]
-        SeqWriter["SequentialWriter<br/>USD-first / vector-second"]
+        Runner["ConsolidationRunner<br/>MAX_ENTITIES (10000) +<br/>idle (5000ms) trigger<br/>MAX_BATCH_SIZE = 500"]
+        SeqWriter["SequentialWriter<br/>USD-first / vector-second<br/>AuthoringTarget Protocol"]
     end
 
     subgraph targets["Authoring Targets"]
-        Real["UsdTarget<br/>pxr/Sdf · narrow lock<br/>ChangeBlock-only scope"]
+        Real["UsdTarget<br/>pxr/Sdf · narrow lock<br/>ChangeBlock-only scope<br/>typeName='MonetaMemory'"]
         Mock["MockUsdTarget<br/>JSONL log (A/B fallback)"]
     end
 
-    subgraph cold["Cold Tier — durable, typed prims"]
-        Rolling["cortex_YYYY_MM_DD.usda<br/>rolling daily sublayers<br/><i>typeName=MonetaMemory</i>"]
-        Protected["cortex_protected.usda<br/>root-pinned strongest<br/><i>typeName=MonetaMemory</i>"]
+    subgraph cold["Cold Tier — typed MonetaMemory prims"]
+        Rolling["cortex_YYYY_MM_DD.usda<br/>rolling daily sublayers<br/>rotation cap 50k prims"]
+        Protected["cortex_protected.usda<br/>root-pinned strongest"]
     end
 
     consumer -->|"with Moneta(cfg) as m:"| handle
@@ -194,14 +198,11 @@ graph TB
     Real --> Protected
     Mock -.->|"A/B swap via<br/>MonetaConfig.use_real_usd"| Real
 
-    style consumer fill:#1a1a2e,color:#e0e0e0
-    style handle fill:#0984e3,color:#fff
-    style registry fill:#d63031,color:#fff
-    style hot fill:#16213e,color:#e0e0e0
-    style shadow fill:#0f3460,color:#e0e0e0
-    style consolidation fill:#533483,color:#e0e0e0
-    style targets fill:#2c2c54,color:#e0e0e0
-    style cold fill:#1e3a5f,color:#e0e0e0
+    classDef green fill:#6E8B6E,color:#fff,stroke:#6E8B6E
+    classDef blue fill:#7E94B0,color:#fff,stroke:#7E94B0
+
+    class handle,ECS,Decay,AttLog,VecIdx,Runner,SeqWriter green
+    class consumer,registry,Real,Mock,Rolling,Protected blue
 ```
 
 ### Handle lifecycle (`v1.1.0`)
@@ -220,6 +221,12 @@ stateDiagram-v2
     Closing --> Released: durability.close →<br/>authoring_target.close →<br/>_ACTIVE_URIS.discard
     Released --> [*]
 
+    classDef live fill:#6E8B6E,color:#fff,stroke:#6E8B6E
+    classDef control fill:#7E94B0,color:#fff,stroke:#7E94B0
+
+    class Constructed,Live live
+    class CheckUri,Collide,Closing,Released control
+
     note right of CheckUri
         In-memory exclusivity (§5.4).
         No file locks. No retry queues.
@@ -229,10 +236,10 @@ stateDiagram-v2
     end note
 
     note left of Released
-        Idempotent. Order matters:
-        snapshot daemon thread first,
-        file pointers second,
-        URI lock last.
+        Idempotent. close() guard via self._closed.
+        Order: durability.close (snapshot daemon)
+        first, authoring_target.close second,
+        _ACTIVE_URIS.discard last.
     end note
 ```
 
@@ -270,11 +277,11 @@ graph TB
     m_b -.->|acquires uri_b| registry
     collision -.->|check fails on uri_a| registry
 
-    style m_a fill:#0984e3,color:#fff
-    style m_b fill:#00b894,color:#fff
-    style registry fill:#fdcb6e,color:#000
-    style collision fill:#d63031,color:#fff
-    style agent_collide fill:#636e72,color:#fff
+    classDef green fill:#6E8B6E,color:#fff,stroke:#6E8B6E
+    classDef blue fill:#7E94B0,color:#fff,stroke:#7E94B0
+
+    class agent_a,agent_b,ecs_a,vec_a,target_a,ecs_b,vec_b,target_b green
+    class agent_collide,registry,collision blue
 ```
 
 Substrates are **physically distinct objects** under the hood — `m_a.ecs is not m_b.ecs`, same for `attention`, `vector_index`, `authoring_target`. A deposit on `m_a` is invisible to `m_b`. A protected-quota slot used in `m_a` does not consume `m_b`'s quota. Verified by `tests/test_twin_substrate.py` (mock disk-backed + real-USD under hython) and `tests/test_twin_substrate_adversarial.py` (anonymous mode + three-handle collision + thread-boundary survival + reconstruct-after-close freshness + Sdf.Layer pointer distinctness).
@@ -294,21 +301,17 @@ stateDiagram-v2
 
     Pruned --> [*]: removed from ECS + vector index
 
-    classDef live fill:#0984e3,color:#fff,stroke:#0063b1
-    classDef staging fill:#fdcb6e,color:#000,stroke:#b88f25
-    classDef stable fill:#00b894,color:#fff,stroke:#007a63
-    classDef gone fill:#d63031,color:#fff,stroke:#a02224
+    classDef live fill:#6E8B6E,color:#fff,stroke:#6E8B6E
+    classDef boundary fill:#7E94B0,color:#fff,stroke:#7E94B0
 
-    class VOLATILE live
-    class STAGED_FOR_SYNC staging
-    class CONSOLIDATED stable
-    class Pruned gone
+    class VOLATILE,CONSOLIDATED live
+    class STAGED_FOR_SYNC,Pruned boundary
 
     note right of VOLATILE
         Utility decays via lazy exponential:
         U_now = max(floor, U_last · exp(-λ · Δt))
         Default half-life: 6 hours
-        Tuning range: 1 min – 24 hours
+        (DEFAULT_HALF_LIFE_SECONDS in decay.py)
     end note
 
     note right of CONSOLIDATED
@@ -316,6 +319,7 @@ stateDiagram-v2
         via UsdTarget (pxr/Sdf)
         Narrow lock: ChangeBlock-only scope
         Sublayer rotation at 50k prims
+        typeName='MonetaMemory' (codeless schema)
     end note
 ```
 
@@ -323,52 +327,54 @@ stateDiagram-v2
 
 ```mermaid
 flowchart TD
-    trigger{"Trigger?<br/>ECS > MAX_ENTITIES<br/>OR idle > 5000ms"} -->|yes| drain["1. Drain attention log"]
-    drain --> reduce["2. Apply aggregated attention<br/>Utility += Σweights<br/>AttendedCount += signal_count"]
-    reduce --> decay2["3. Decay eval point 2<br/>(all entities)"]
-    decay2 --> decay3["4. Decay eval point 3<br/>(explicit, per spec)"]
-    decay3 --> classify["5. Classify volatile entities"]
+    trigger{"ConsolidationRunner.should_run()<br/>volatile_count > MAX_ENTITIES (10000)<br/>OR idle_ms > 5000"} -->|yes| drain_reduce["1. attention.drain_and_reduce()<br/>Utility += Σweights<br/>AttendedCount += signal_count<br/>(includes decay eval point 2)"]
+    drain_reduce --> decay3["2. ecs.decay_all(λ, now)<br/>decay eval point 3 (explicit)"]
+    decay3 --> classify["3. ConsolidationRunner.classify(ecs)<br/>→ (prune_ids, stage_ids)"]
 
-    classify --> prune{"U < 0.1 AND<br/>AC < 3?"}
-    classify --> stage{"U < 0.3 AND<br/>AC ≥ 3?"}
+    classify --> prune{"U &lt; 0.1 AND<br/>AC &lt; 3?<br/>(PRUNE_UTILITY_THRESHOLD)"}
+    classify --> stage{"U &lt; 0.3 AND<br/>AC ≥ 3?<br/>(STAGE_UTILITY_THRESHOLD)"}
     classify --> keep{"Otherwise"}
 
-    prune -->|prune| remove["Remove from<br/>ECS + vector index"]
-    stage -->|stage| seqwrite["Sequential write (≤500/batch):<br/>1. UsdTarget.author_stage_batch()<br/>    Sdf.ChangeBlock (narrow lock)<br/>2. UsdTarget.flush() → layer.Save()<br/>3. VectorIndex.update_state()"]
+    prune -->|prune| remove["ecs.delete + vector_index.delete<br/>(removed from substrate)"]
+    stage -->|stage| seqwrite["SequentialWriter.write_batch (≤500/batch):<br/>1. UsdTarget.author_stage_batch()<br/>    inside Sdf.ChangeBlock (narrow lock)<br/>2. UsdTarget.flush() → layer.Save()<br/>3. VectorIndex.update_state(CONSOLIDATED)"]
     keep -->|keep| volatile["Stays VOLATILE<br/>re-evaluated next pass"]
 
     seqwrite --> consolidated["State → CONSOLIDATED"]
 
-    style trigger fill:#e17055,color:#fff
-    style remove fill:#d63031,color:#fff
-    style consolidated fill:#00b894,color:#fff
-    style volatile fill:#fdcb6e,color:#000
+    classDef green fill:#6E8B6E,color:#fff,stroke:#6E8B6E
+    classDef blue fill:#7E94B0,color:#fff,stroke:#7E94B0
+
+    class drain_reduce,decay3,classify,seqwrite,consolidated,volatile green
+    class trigger,prune,stage,keep,remove blue
 ```
 
 ### Protocol injection — dual-target architecture
 
 ```mermaid
 graph LR
-    subgraph mock["MockUsdTarget (A/B fallback)"]
+    subgraph mock["MockUsdTarget branch (A/B fallback)"]
         SW1["SequentialWriter"]
         MT["MockUsdTarget<br/><i>JSONL log</i>"]
         VI1["VectorIndex<br/><i>in-memory stdlib</i>"]
-        SW1 -->|AuthoringTarget| MT
-        SW1 -->|VectorIndexTarget| VI1
+        SW1 -->|AuthoringTarget Protocol| MT
+        SW1 -->|VectorIndexTarget Protocol| VI1
     end
 
-    subgraph real["UsdTarget (default, v1.0.0+; owned by Moneta handle in v1.1.0+)"]
-        SW2["SequentialWriter<br/><b>unchanged</b>"]
-        RT["UsdTarget<br/><i>pxr/Sdf · narrow lock</i>"]
-        VI2["VectorIndex<br/><i>in-memory (LanceDB future)</i>"]
-        SW2 -->|AuthoringTarget| RT
-        SW2 -->|VectorIndexTarget| VI2
+    subgraph real["UsdTarget branch (default)"]
+        SW2["SequentialWriter<br/><b>identical class</b>"]
+        RT["UsdTarget<br/><i>pxr/Sdf · narrow lock</i><br/><i>typeName='MonetaMemory'</i>"]
+        VI2["VectorIndex<br/><i>in-memory · LanceDB future</i>"]
+        SW2 -->|AuthoringTarget Protocol| RT
+        SW2 -->|VectorIndexTarget Protocol| VI2
     end
 
-    MT -. "same AuthoringTarget Protocol<br/>MonetaConfig.use_real_usd swap" .-> RT
+    MT -. "AuthoringTarget Protocol identical<br/>swap via MonetaConfig.use_real_usd" .-> RT
 
-    style mock fill:#2d3436,color:#dfe6e9
-    style real fill:#0984e3,color:#fff
+    classDef green fill:#6E8B6E,color:#fff,stroke:#6E8B6E
+    classDef blue fill:#7E94B0,color:#fff,stroke:#7E94B0
+
+    class SW1,SW2,VI1,VI2 green
+    class MT,RT blue
 ```
 
 ### Codeless schema architecture (`v1.2.0-rc1`)
@@ -412,12 +418,11 @@ graph TB
     Gate -.asserts.-> Registry
     Gate -.asserts.-> TypedPrim
 
-    style source fill:#16213e,color:#e0e0e0
-    style generated fill:#0f3460,color:#e0e0e0
-    style runtime fill:#fdcb6e,color:#000
-    style write fill:#0984e3,color:#fff
-    style Gate fill:#00b894,color:#fff
-    style UsdGen fill:#533483,color:#fff
+    classDef green fill:#6E8B6E,color:#fff,stroke:#6E8B6E
+    classDef blue fill:#7E94B0,color:#fff,stroke:#7E94B0
+
+    class SchemaUsda,UsdGen,UsdTarget,TypedPrim green
+    class PlugInfo,GenSchema,EnvVar,Registry,Gate blue
 ```
 
 The C++ `Sdf.Layer` registry (the v1.1.0 trap) and this codeless plugin registry live in the same OpenUSD runtime but are independent. `_ACTIVE_URIS` (v1.1.0) gates handle construction; `Usd.SchemaRegistry` (v1.2.0-rc1) gates type recognition. The `pruned` token in `allowedTokens` is forward-looking — `EntityState` has no `PRUNED` member today; `_token_to_state("pruned")` raises rather than silently mapping to a wrong state.
@@ -437,9 +442,11 @@ graph TB
 
     moneta <-. "stage-level composition<br/>no Python imports<br/>UUID-based prim naming<br/>LIVRPS priority discipline<br/>Sdf.ChangeBlock for batch writes<br/>UTC sublayer date routing" .-> octavius
 
-    style thesis fill:#6c5ce7,color:#fff
-    style moneta fill:#00b894,color:#fff
-    style octavius fill:#0984e3,color:#fff
+    classDef green fill:#6E8B6E,color:#fff,stroke:#6E8B6E
+    classDef blue fill:#7E94B0,color:#fff,stroke:#7E94B0
+
+    class moneta green
+    class thesis,octavius blue
 ```
 
 ---
