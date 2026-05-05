@@ -622,59 +622,6 @@ Surgery record: [SURGERY_complete_codeless_schema.md](SURGERY_complete_codeless_
 
 ---
 
-## Novelty claims
-
-Moneta is not novel as a tiered memory architecture. It is novel as a **substrate choice**:
-
-1. **OpenUSD composition arcs as cognitive state substrate** — LIVRPS resolution order implicitly encodes decay priority
-2. **USD variant selection as fidelity LOD primitive** — detail-to-gist transitions via `VariantSelection`
-3. **Pcp-based resolution as implicit multi-fidelity fallback** — highest surviving fidelity served without routing logic
-4. **Protected memory as root-pinned strong-position sublayer** — non-decaying state falls out of composition, not runtime checks
-
-These four claims are **structural, not temporal** — they hold across Green, Yellow, and Red integration tiers. Empirically evidenced in [docs/patent-evidence/](docs/patent-evidence/). Patent filing is the next post-`v1.0.0` action.
-
-### Claim → evidence map
-
-```mermaid
-graph LR
-    subgraph claims["Four structural novelty claims (MONETA.md §3)"]
-        C1["#1 LIVRPS<br/>decay priority"]
-        C2["#2 Variant LOD<br/>fidelity"]
-        C3["#3 Pcp<br/>fallback"]
-        C4["#4 Protected<br/>sublayer"]
-    end
-
-    subgraph claim_ev["Claim-substantiating evidence"]
-        P5["pass5-usd-threadsafety-review.md"]
-        P6["pass6-lock-shrink-implementation.md"]
-    end
-
-    Gap1["no dated entry yet"]
-    Gap2["no dated entry yet"]
-
-    subgraph impl_ev["Implementation maturity evidence<br/>(does not map to claims #1–4 — shows substrate is real, in production)"]
-        S110["v1.1.0 — TOCTOU 480-attempt<br/>SURGERY_complete.md"]
-        S120["v1.2.0-rc1 — acceptance gate<br/>SURGERY_complete_codeless_schema.md"]
-        FTG["Free-threading guard<br/>commit 76da067"]
-    end
-
-    C1 -.->|gap| Gap1
-    C2 -.->|gap| Gap2
-    C3 -.secondary.-> P6
-    C4 --> P5
-    C4 --> P6
-
-    classDef green fill:#6E8B6E,color:#fff,stroke:#6E8B6E
-    classDef blue fill:#7E94B0,color:#fff,stroke:#7E94B0
-
-    class C3,C4,P5,P6 green
-    class C1,C2,Gap1,Gap2,S110,S120,FTG blue
-```
-
-**Pre-filing forward work** (in priority order): primary evidence file for claim #3 (multi-fidelity fallback bench); first dedicated evidence for claim #1 (LIVRPS decay priority — likely a ranked retrieval test against varying sublayer-stack positions); claim #2 stays contingent on Phase 4+ variant-selection work landing. Honest accounting maintained at [`docs/patent-evidence/README.md`](docs/patent-evidence/README.md).
-
----
-
 ## Lineage
 
 Round 1 (scoping brief) → Round 2 (Gemini Deep Think architectural spec) → Round 2.5 (Claude prior-art review) → Round 3 (Gemini Deep Think validation) → **Phase 1** (5 passes, 94 tests, `v0.1.0`) → **Phase 2** (benchmark, `v0.2.0`) → **Phase 3** (7 passes, narrow lock, 775M-assertion safety, `v1.0.0`) → **Singleton surgery** (Scout / Forge / Crucible / Steward, `v1.1.0`) → **Codeless schema migration** (Auditor / Crucible / Schema Author / Forge, `v1.2.0-rc1`) → **Free-threading guard** (PEP 703 sentinel on `AttentionLog`, commit `76da067`) → **Documentarian followup** (api.md handle rewrite + patent-evidence claim/maturity split + CLAUDE.md hard-rule update, commit `6cb1fd1`).
@@ -701,7 +648,7 @@ Round 1 (scoping brief) → Round 2 (Gemini Deep Think architectural spec) → R
 
 ## License
 
-Proprietary. 5 patents pending (including USD cognitive state and digital injection).
+Proprietary. Patents pending.
 
 ---
 
