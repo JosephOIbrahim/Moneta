@@ -28,7 +28,6 @@ from uuid import UUID
 import pytest
 
 from moneta import (
-    EntityState,
     Memory,
     Moneta,
     MonetaConfig,
@@ -36,7 +35,6 @@ from moneta import (
     ProtectedQuotaExceededError,
 )
 from moneta import api as moneta_api
-
 
 # ---------------------------------------------------------------------
 # Signature conformance (AST-level vs MONETA.md §2.1)
@@ -72,7 +70,7 @@ class TestSignatureConformance:
         matches the locked signature. ``self`` is added as the receiver
         for the OO migration; everything else is verbatim.
         """
-        source = open(moneta_api.__file__, "r", encoding="utf-8").read()
+        source = open(moneta_api.__file__, encoding="utf-8").read()
         tree = ast.parse(source)
 
         moneta_class: ast.ClassDef | None = None
@@ -202,6 +200,133 @@ class TestProtectedQuota:
             "ephemeral", [1.0, 0.0], protected_floor=0.0
         )
         assert isinstance(eid, UUID)
+
+    def test_concurrent_protected_deposits_respect_quota(
+        self, fresh_moneta: Moneta
+    ) -> None:
+        """Concurrent protected deposits must not exceed §10 hard cap.
+
+        Without the deposit-lock the count_protected → ecs.add window is a
+        TOCTOU: two threads at quota-1 can both observe count=quota-1 and
+        both call ecs.add, yielding count=quota+1. This test fires N=20
+        threads issuing protected deposits when the count is at quota-1
+        and asserts exactly one succeeds and N-1 raise. Regression for
+        review finding substrate-L2-protected-quota-count-then-add-toctou.
+        """
+        import threading
+
+        # Fill to one slot below quota.
+        for i in range(fresh_moneta.config.quota_override - 1):
+            fresh_moneta.deposit(
+                f"p{i}", [float(i), 1.0], protected_floor=0.1
+            )
+
+        n_threads = 20
+        successes: list[UUID] = []
+        successes_lock = threading.Lock()
+        failures: list[Exception] = []
+        failures_lock = threading.Lock()
+        ready_barrier = threading.Barrier(n_threads)
+
+        def attempt_deposit(idx: int) -> None:
+            ready_barrier.wait()  # release all threads as close together as possible
+            try:
+                eid = fresh_moneta.deposit(
+                    f"contender-{idx}", [float(idx), 9.0], protected_floor=0.1
+                )
+                with successes_lock:
+                    successes.append(eid)
+            except ProtectedQuotaExceededError as exc:
+                with failures_lock:
+                    failures.append(exc)
+
+        threads = [
+            threading.Thread(target=attempt_deposit, args=(i,))
+            for i in range(n_threads)
+        ]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join()
+
+        assert len(successes) == 1, (
+            f"exactly one concurrent deposit must fill the last slot, "
+            f"got {len(successes)} successes"
+        )
+        assert len(failures) == n_threads - 1, (
+            f"all other contenders must raise, got {len(failures)} failures"
+        )
+        assert (
+            fresh_moneta.ecs.count_protected()
+            == fresh_moneta.config.quota_override
+        ), "protected count must settle exactly at quota"
+
+
+# ---------------------------------------------------------------------
+# Round 4 Ruling 5 — quota_override bound
+# ---------------------------------------------------------------------
+
+
+class TestQuotaOverrideBound:
+    """ARCHITECTURE.md §10 + MONETA.md §2.10 (Round 4 closure, Ruling 5).
+
+    `quota_override` must satisfy ``1 <= q <= MAX_QUOTA_OVERRIDE`` (1000).
+    An unbounded override defeats the §10 backstop entirely; an immutable
+    100 ceiling forces consumers into multi-handle workarounds. The
+    bounded override is the disambiguation Round 4 ratified.
+    """
+
+    def test_default_quota_is_100(self) -> None:
+        cfg = MonetaConfig(storage_uri="moneta-test://q/default")
+        assert cfg.quota_override == 100
+
+    def test_quota_override_at_ceiling_accepted(self) -> None:
+        from moneta.api import MAX_QUOTA_OVERRIDE
+
+        cfg = MonetaConfig(
+            storage_uri="moneta-test://q/at-ceiling",
+            quota_override=MAX_QUOTA_OVERRIDE,
+        )
+        assert cfg.quota_override == MAX_QUOTA_OVERRIDE
+
+    def test_quota_override_at_floor_accepted(self) -> None:
+        cfg = MonetaConfig(
+            storage_uri="moneta-test://q/at-floor", quota_override=1
+        )
+        assert cfg.quota_override == 1
+
+    def test_quota_override_zero_rejected(self) -> None:
+        with pytest.raises(ValueError, match="quota_override"):
+            MonetaConfig(storage_uri="moneta-test://q/zero", quota_override=0)
+
+    def test_quota_override_negative_rejected(self) -> None:
+        with pytest.raises(ValueError, match="quota_override"):
+            MonetaConfig(
+                storage_uri="moneta-test://q/neg", quota_override=-1
+            )
+
+    def test_quota_override_above_ceiling_rejected(self) -> None:
+        from moneta.api import MAX_QUOTA_OVERRIDE
+
+        with pytest.raises(ValueError, match="quota_override"):
+            MonetaConfig(
+                storage_uri="moneta-test://q/above",
+                quota_override=MAX_QUOTA_OVERRIDE + 1,
+            )
+
+    def test_unbounded_override_rejected(self) -> None:
+        """The Round 4 finding: caller could previously set 10_000_000."""
+        with pytest.raises(ValueError, match="quota_override"):
+            MonetaConfig(
+                storage_uri="moneta-test://q/unbounded",
+                quota_override=10_000_000,
+            )
+
+    def test_error_message_cites_round4_ruling(self) -> None:
+        with pytest.raises(ValueError, match="Round 4 Ruling 5"):
+            MonetaConfig(
+                storage_uri="moneta-test://q/cite", quota_override=99999
+            )
 
 
 # ---------------------------------------------------------------------

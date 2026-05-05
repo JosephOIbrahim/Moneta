@@ -13,7 +13,7 @@ Sibling project: **Octavius** (coordination substrate on the same OpenUSD thesis
 1. **`MONETA.md`** — the blueprint. Narrative, phasing, lineage, risks, role contracts, escalation protocol. Read §1, §2, §6, §7, §9 before touching code.
 2. **`ARCHITECTURE.md`** — the locked spec. Ported from MONETA.md §1–§2. When implementing, cite clause numbers from ARCHITECTURE.md, not MONETA.md.
 3. **`docs/substrate-conventions.md`** — the five conventions shared with Octavius (MONETA.md §8).
-4. **`docs/rounds/round-{1,2,3}.md`** — Gemini Deep Think outputs from scoping. Round 4+ land here as escalations fire.
+4. **`docs/rounds/round-{1,2,3,4}.md`** — Round 1–3 are Gemini Deep Think outputs from scoping; Round 4 (2026-05-04) closes the v1.0.0 multi-agent review's six §9 candidates without external scoping (post-implementation reconciliation only). Round 5+ will land here if a future trigger fires.
 
 If the blueprint and the spec disagree on a clause, that is a §9 trigger, not a silent edit.
 
@@ -29,7 +29,7 @@ Phase 3 operational envelope locked in `ARCHITECTURE.md` §15. Agent discipline 
 
 ## Locked decisions — do not re-open
 
-The following cannot be patched without MONETA.md §9 escalation. Rounds 2 and 3 are closed:
+The following cannot be patched without MONETA.md §9 escalation. Rounds 2, 3, and 4 are closed:
 
 1. **The four-operation API.** `deposit`, `query`, `signal_attention`, `get_consolidation_manifest`. No fifth op. Signatures in `ARCHITECTURE.md` §2 are verbatim from MONETA.md §2.1.
 2. **Decay math.** `U_now = max(ProtectedFloor, U_last * exp(-λ * (t_now - t_last)))`. Lazy, memoryless, exponential. Never on a background tick. Exactly three evaluation points.
@@ -133,6 +133,17 @@ PYTHONPATH="src" "C:/Program Files/Side Effects Software/Houdini 21.0.512/bin/hy
 
 Both suites must be green at every pass boundary from Pass 3 onward. The `-p no:faulthandler` flag suppresses harmless `os.environ` access violation warnings from hython's patched environment. USD tests use `pytest.importorskip("pxr")` so they are skipped (not failed) under plain Python.
 
+### Multi-agent review harness (Opus 4.7, MoE roles, 5-loop)
+
+`scripts/review_harness.py` orchestrates a 5-iteration MoE review against `claude-opus-4-7`. The bespoke constitution at `docs/review-constitution.md` regulates every reviewer; per-loop markdown lands in `docs/review/round-*.md` (gitignored), the durable record is `docs/review/synthesis.md`. Install the optional extra and dry-run before any live call:
+
+```bash
+pip install -e .[review]
+python scripts/review_harness.py --dry-run --max-loops 1
+python scripts/review_harness.py --max-loops 1   # live single-loop smoke
+python scripts/review_harness.py                 # full 5-loop run
+```
+
 ## Repository structure
 
 ```
@@ -168,7 +179,7 @@ docs/
 
 ## Hard rules for any Claude Code session working in this repo
 
-- Do not re-open Round 2 or Round 3 decisions. Escalate per MONETA.md §9.
+- Do not re-open Round 2, Round 3, or Round 4 decisions. Escalate per MONETA.md §9.
 - Do not import `pxr`, `Usd`, `Sdf`, or `Pcp` outside `src/moneta/`, or before Phase 3 Pass 3.
 - Do not add a fifth operation to the agent API.
 - Do not violate the Phase 3 operational envelope (ARCHITECTURE.md §15.2).

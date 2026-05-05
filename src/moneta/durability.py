@@ -81,7 +81,20 @@ class DurabilityManager:
     # ------------------------------------------------------------------
 
     def snapshot_ecs(self, ecs: ECS) -> None:
-        """Atomically write ECS state to `snapshot_path`."""
+        """Atomically write ECS state to `snapshot_path`.
+
+        Concurrency contract: ``self._lock`` is held across (a) the
+        ``snapshot_created_at`` timestamp capture, (b) the JSON dump +
+        fsync + atomic replace, and (c) the WAL truncation. This makes
+        the (timestamp, snapshot bytes, WAL state) tuple atomic from the
+        perspective of any concurrent ``wal_append``: an appended entry
+        either lands BEFORE ``now`` is read (and is captured in this
+        snapshot's rows or in pre-snapshot WAL) or AFTER the unlink (and
+        starts a fresh WAL whose entries all have timestamps > ``now``).
+        Without the lock-extension, entries written between ``now`` and
+        ``unlink`` were durable on disk, then silently unlinked — see
+        review finding ``persistence-L1-wal-truncation-race``.
+        """
         rows = []
         for memory in ecs.iter_rows():
             rows.append(
@@ -99,25 +112,26 @@ class DurabilityManager:
                     else str(memory.usd_link),
                 }
             )
-        now = time.time()
-        snapshot = {
-            "snapshot_version": SNAPSHOT_VERSION,
-            "snapshot_created_at": now,
-            "rows": rows,
-        }
-        self._snapshot_path.parent.mkdir(parents=True, exist_ok=True)
-        tmp_path = self._snapshot_path.with_suffix(
-            self._snapshot_path.suffix + ".tmp"
-        )
-        with open(tmp_path, "w", encoding="utf-8") as fp:
-            json.dump(snapshot, fp)
-            fp.flush()
-            os.fsync(fp.fileno())
-        os.replace(tmp_path, self._snapshot_path)
-        self._last_snapshot_ts = now
-
-        # Truncate the WAL — everything before `now` is captured in the snapshot.
         with self._lock:
+            now = time.time()
+            snapshot = {
+                "snapshot_version": SNAPSHOT_VERSION,
+                "snapshot_created_at": now,
+                "rows": rows,
+            }
+            self._snapshot_path.parent.mkdir(parents=True, exist_ok=True)
+            tmp_path = self._snapshot_path.with_suffix(
+                self._snapshot_path.suffix + ".tmp"
+            )
+            with open(tmp_path, "w", encoding="utf-8") as fp:
+                json.dump(snapshot, fp)
+                fp.flush()
+                os.fsync(fp.fileno())
+            os.replace(tmp_path, self._snapshot_path)
+            self._last_snapshot_ts = now
+
+            # WAL truncation under the same lock as the timestamp capture —
+            # see method docstring for the atomicity argument.
             if self._wal_fp is not None:
                 self._wal_fp.close()
                 self._wal_fp = None

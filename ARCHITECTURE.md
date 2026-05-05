@@ -30,18 +30,21 @@ Moneta is the memory sibling to **Octavius**, the coordination sibling. Both inh
 
 ## 2. The four-operation API (locked — MONETA.md §2.1)
 
-The entire agent-facing surface consists of exactly these four operations. No fifth operation may be added without §9 escalation.
+The entire agent-facing surface consists of exactly these four operations, exposed as **methods on a `Moneta(config)` handle**. No fifth public method on the agent surface may be added without §9 escalation.
 
 ```python
-def deposit(payload: str, embedding: List[float], protected_floor: float = 0.0) -> UUID
-def query(embedding: List[float], limit: int = 5) -> List[Memory]
-def signal_attention(weights: Dict[UUID, float]) -> None
-def get_consolidation_manifest() -> List[Memory]
+class Moneta:
+    def deposit(self, payload: str, embedding: List[float], protected_floor: float = 0.0) -> UUID
+    def query(self, embedding: List[float], limit: int = 5) -> List[Memory]
+    def signal_attention(self, weights: Dict[UUID, float]) -> None
+    def get_consolidation_manifest(self) -> List[Memory]
 ```
 
 Agents have zero knowledge of ECS, USD, vector indices, decay, or consolidation. All internals are implementation concerns.
 
-**Conformance:** `src/moneta/api.py` must export exactly these four callables with exactly these signatures. Import-time introspection is a Test Engineer harness.
+**Round 4 closure (Ruling 1):** the v1.1.0 surgery converted the pre-existing module-level free functions into methods on a per-`storage_uri` handle. Round 4 ratified the handle pattern as the canonical surface — the pre-v1.1.0 module-level singleton conflated the substrate (a per-`storage_uri` handle) with the module (singleton by definition) and prevented an agent process from holding more than one substrate at a time. The four-op type signatures are locked verbatim from MONETA.md §2.1; the dispatch (method vs. free function) is implementation. See `docs/rounds/round-4.md` Ruling 1.
+
+**Conformance:** `Moneta` must expose exactly these four methods with these signatures. Import-time introspection is a Test Engineer harness.
 
 ### 2.1 Harness-level bootstrap (not part of the agent API)
 
@@ -127,11 +130,13 @@ Phase 1 does not author USD. Phase 1's `mock_usd_target` emits structured log en
 - `Utility < 0.1 AND AttendedCount < 3` → **prune** (delete entirely).
 - `Utility < 0.3 AND AttendedCount >= 3` → **stage for USD authoring**.
 
+**Round 4 closure (Ruling 2 — Pinning):** Selection criteria do not run against entities with `protected_floor > 0`. The decay clamp pins `utility ≥ floor` and the attention-write clamp (`apply_attention`) does the same, so the staging gate (`utility < 0.3`) is unreachable for any entity with `protected_floor ≥ 0.3` by construction. Protected memories are pinned in the hot tier; their consolidation to USD is the explicit Phase 3 unpin tool's responsibility, not the automatic selection. See `docs/rounds/round-4.md` Ruling 2.
+
 **Authoring targets (Phase 3 reference; Phase 1 mock shape must match):**
 
 - **Rolling sublayer:** `cortex_YYYY_MM_DD.usda`, one per day, never per pass.
 - **Gist emergence:** background LLM summarizes payload, authors an `over` on the rolling sublayer, adds a `gist` variant, switches `VariantSelection` to `gist`.
-- **Protected memory:** `cortex_protected.usda`, pinned to the strongest Root stack position.
+- **Protected memory:** `cortex_protected.usda`, pinned to the strongest Root stack position. Routed only by the explicit Phase 3 unpin tool, never by automatic selection (Ruling 2).
 
 **Phase 1 Consolidation Engineer constraint:** Do not tune the 0.1 / 0.3 / 3 thresholds. They are the Round 2 committed defaults and will be empirically adjusted during Phase 1 load testing by Test Engineer's synthetic session harness.
 
@@ -155,9 +160,19 @@ USD orphans from interrupted writes are benign: Pcp never traverses unreferenced
 
 Once the first embedding is upserted into the shadow vector index, its dimension is locked for the lifetime of the instance. Subsequent upserts with a mismatched dimension raise `ValueError`.
 
-This is a Phase 1 Persistence Engineer invariant — it is *not* specified in MONETA.md §2.7, and was added during Phase 1 Pass 3 (Persistence Engineer judgment call #2, approved in Pass 4). Rationale: a shadow vector index cannot meaningfully rank vectors produced by different embedders, and silently accepting mixed dimensions would produce subtly-wrong query rankings. Callers that need to switch embedders must construct a fresh `VectorIndex` — typically via `api.init()`, which replaces the module-level state.
+This is a Phase 1 Persistence Engineer invariant — it is *not* specified in MONETA.md §2.7, and was added during Phase 1 Pass 3 (Persistence Engineer judgment call #2, approved in Pass 4). Rationale: a shadow vector index cannot meaningfully rank vectors produced by different embedders, and silently accepting mixed dimensions would produce subtly-wrong query rankings. Callers that need to switch embedders must construct a fresh `Moneta(config)` handle.
 
 **Locked invariant:** the vector index rejects dim-mismatched upserts. Dim-homogeneity is enforced at upsert time, not at query time, and the error is a hard `ValueError` — not a silent skip.
+
+### 7.2 Dual-authority across restart (Round 4 closure, Ruling 3)
+
+The vector index is **runtime-authoritative** within a session: the sequential-write protocol's no-2PC argument relies on vector being the last writer, so an interrupted deposit (ECS add succeeded, vector upsert raised) leaves a benign "doesn't exist" state at runtime. The vector wins.
+
+Across a **restart boundary**, the ECS snapshot in `durability.py` is the durable record; the vector index begins as a faithful shadow reconstructed from the hydrated ECS. Within-session authority is restored once construction completes.
+
+**Locked invariant:** the §7 atomicity guarantee is a within-session property. The hydrate path's ECS-first ordering does NOT degrade the within-session no-2PC argument; it is a deliberate consequence of Phase 1's in-memory shadow-only `VectorIndex`. Phase 2 LanceDB persistence is the path to making vector authoritative across restart, if needed.
+
+A deposit that raised mid-construction in a prior session re-emerges in the new session as a consistent ECS row + vector record (the vector is rebuilt to match the ECS). There is no entity in a torn state across restart.
 
 ---
 
@@ -182,9 +197,11 @@ No blanket "ECS is authoritative" rule. The timestamp tiebreaker is required.
 
 ## 10. Protected memory quota (locked — MONETA.md §2.10)
 
-Hard cap: **100 protected entries per agent.** On quota full, the agent must explicitly call an unpin tool before adding more. The quota is a backstop against agents flagging everything as protected.
+**Default cap: 100 protected entries per substrate handle. Per-handle override permitted up to a ceiling of 1000.** On quota full, the agent must explicitly call an unpin tool before adding more. The quota is a backstop against agents flagging everything as protected.
 
-**Note:** The unpin tool is not part of the four-op API. It is a Phase 3 operator-facing tool. Phase 1 enforces the quota at deposit time and raises if a `protected_floor > 0` deposit would exceed 100.
+**Round 4 closure (Rulings 5–6):** "Per agent" is disambiguated to "per substrate handle." A substrate is identified by `storage_uri`; each `Moneta(config)` handle is distinct, with its own quota. An agent process holding multiple handles on distinct URIs gets multiple independent quotas — this is by design (Ruling 6). The override is bounded: `MonetaConfig.quota_override` outside `1 ≤ q ≤ 1000` raises `ValueError` at construction (Ruling 5). See `docs/rounds/round-4.md`.
+
+**Note:** The unpin tool is not part of the four-op API. It is a Phase 3 operator-facing tool. Phase 1 enforces the quota at deposit time and raises `ProtectedQuotaExceededError` if a `protected_floor > 0` deposit would exceed `MonetaConfig.quota_override`. The protected-quota check is held under a per-handle deposit lock so concurrent protected deposits at quota-1 cannot both succeed.
 
 ---
 
@@ -333,7 +350,7 @@ All locked invariants from §2–§10 remain in force through Phase 3. Additiona
 
 Before Phase 1 ships, Test Engineer verifies:
 
-- [ ] `src/moneta/api.py` exports `deposit`, `query`, `signal_attention`, `get_consolidation_manifest` with signatures matching §2 exactly (parameter names, defaults, annotations, return types).
+- [ ] `src/moneta/api.py` exposes `Moneta` with public methods `deposit`, `query`, `signal_attention`, `get_consolidation_manifest` whose signatures match §2 exactly (parameter names, defaults, annotations, return types). No fifth public agent-facing method on `Moneta`.
 - [ ] `Memory` type in `src/moneta/types.py` carries every field in §3.
 - [ ] Decay reference test: closed-form `U_last * exp(-λ * Δt)` matches implementation to 1e-9 relative tolerance.
 - [ ] Decay evaluation points: exactly three (§4). A test asserts no fourth call site.
@@ -346,4 +363,34 @@ Before Phase 1 ships, Test Engineer verifies:
 
 ---
 
-*Locked 2026-04-11. §15 added 2026-04-12 (Phase 3 Pass 2). Source: MONETA.md. Changes require MONETA.md §9 escalation.*
+## 17. Handle exclusivity model (Round 4 closure, Ruling 4)
+
+The v1.1.0 surgery introduced a per-process exclusivity registry. Round 4 ratified this as a locked architectural element. The five sub-clauses below specify the model.
+
+### 17.1 Registry and lifecycle
+
+`src/moneta/api.py` holds a module-level `_ACTIVE_URIS: set[str]` of currently-held storage URIs. Two live `Moneta(config)` handles cannot share the same `storage_uri` within one process. Construction does **check-then-add**: if `config.storage_uri ∈ _ACTIVE_URIS`, construction raises `MonetaResourceLockedError`; otherwise the URI is added to the set and construction proceeds. Release happens at `Moneta.close()` (and via `__exit__` when used as a context manager) — the URI is `discard`-ed so it may be re-acquired by a fresh handle.
+
+If a partial construction raises after the URI was added, the `try/except BaseException` block in `__init__` discards the URI before re-raising, so the lock is never leaked.
+
+### 17.2 TOCTOU under CPython GIL
+
+Under CPython 3.11 / 3.12 with the GIL enabled, `set.__contains__` and `set.add` are atomic at the bytecode level. The check-then-add is therefore sequential within a process: two concurrent `Moneta(config)` constructions on the same URI cannot both observe `uri ∉ _ACTIVE_URIS` and both add. The losing thread observes the winning thread's add and raises.
+
+### 17.3 Behavior under `fork()`
+
+The child inherits the parent's `_ACTIVE_URIS` set. If both parent and child attempt to construct on the same URI, both raise `MonetaResourceLockedError` against their respective copies — but they have separate sets, so cross-process exclusion is **not** enforced by `_ACTIVE_URIS`. Cross-process exclusion is the bridge layer's concern (`bridge/`, flock-based, see PR #1 on `claude/audit-moneta-api-nvUfG`).
+
+### 17.4 Behavior under PEP 703 free-threading
+
+The GIL atomicity argument in §17.2 does not hold under free-threaded CPython. A check-then-add race becomes possible across threads. Migration to PEP 703 is a §9 Trigger 2 (spec-level surprise): the registry would need an explicit `threading.Lock` around the check-then-add critical section. Phase 1 explicitly targets the GIL-enabled CPython model; do not silently rely on PEP 703 semantics.
+
+### 17.5 SIGTERM cleanup ordering
+
+When `SIGTERM` arrives mid-`with` block, Python's signal handling runs `__exit__` as part of the bytecode interpreter's frame unwind. `Moneta.__exit__` calls `close()`, which calls `_ACTIVE_URIS.discard(self.config.storage_uri)`. If `__exit__` itself raises (e.g. durability flush failure), `discard` still runs because it lives in the `finally` portion of the cleanup. The lock is never leaked across a clean SIGTERM.
+
+If the process is killed with `SIGKILL` (`kill -9`), Python never runs `__exit__`. The `_ACTIVE_URIS` registry is process-local and dies with the process; the next process starts with an empty registry. The bridge layer's flock is the path to surviving `kill -9` for cross-process exclusion.
+
+---
+
+*Locked 2026-04-11. §15 added 2026-04-12 (Phase 3 Pass 2). §7.2 and §17 added 2026-05-04 (Round 4 closure). Source: MONETA.md. Changes require MONETA.md §9 escalation.*

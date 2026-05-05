@@ -20,7 +20,6 @@ import pytest
 from moneta.ecs import ECS
 from moneta.types import EntityState, Memory
 
-
 # ---------------------------------------------------------------------
 # Basic lifecycle
 # ---------------------------------------------------------------------
@@ -293,6 +292,35 @@ class TestApplyAttention:
         agg = {missing: (0.5, 1)}
         updated = ecs.apply_attention(agg, now=10.0)
         assert updated == 0
+
+    def test_apply_attention_clamps_at_protected_floor(self) -> None:
+        """Negative-weight attention must not drive utility below protected_floor.
+
+        ARCHITECTURE.md §10 promises 'Utility never drops below ProtectedFloor'
+        as the operational contract for protected memory. The decay path
+        already enforces the floor; the attention-write path must too —
+        otherwise a single negative weight (or a batch whose summed weights
+        are negative) defeats §10 protection until the next decay eval point.
+        Regression for review finding substrate-L3-signal-attention-bypasses-protected-floor.
+        """
+        ecs = ECS()
+        eid = uuid4()
+        ecs.add(
+            entity_id=eid,
+            payload="protected",
+            embedding=[1.0, 0.0],
+            utility=0.5,
+            protected_floor=0.4,
+            state=EntityState.VOLATILE,
+            now=0.0,
+        )
+        agg = {eid: (-0.45, 1)}  # would drive utility to 0.05, below floor
+        ecs.apply_attention(agg, now=10.0)
+        memory = ecs.get_memory(eid)
+        assert memory is not None
+        assert memory.utility == pytest.approx(0.4), (
+            "utility must clamp to protected_floor under negative attention"
+        )
 
 
 # ---------------------------------------------------------------------

@@ -155,6 +155,48 @@ def _token_to_state(token: str) -> EntityState:
         ) from exc
 
 
+class FlushPartialFailureError(RuntimeError):
+    """Raised when ``UsdTarget.flush()`` saves some layers and not others.
+
+    A partial flush violates the §7 sequential-write invariant: the vector
+    index ought to be committed only AFTER the USD side is fully durable.
+    If only some layers Saved, the SequentialWriter must NOT proceed to
+    update_state, because doing so would advertise CONSOLIDATED for entities
+    whose USD prims are not on disk — the inverse of the orphan case (which
+    §7 explicitly authorizes) and which §7 does NOT authorize.
+
+    Attributes
+    ----------
+    saved_layers:
+        Layer names whose Save() succeeded before the failure.
+    failed_layer:
+        The first layer name whose Save() raised.
+    pending_layers:
+        Layer names that had not yet been attempted when the failure fired.
+    cause:
+        The underlying exception from the failing Save() call.
+
+    Review finding: ``usd-L2-flush-partial-failure-breaks-sequential-write-atomicity``.
+    """
+
+    def __init__(
+        self,
+        saved_layers: List[str],
+        failed_layer: str,
+        pending_layers: List[str],
+        cause: BaseException,
+    ) -> None:
+        self.saved_layers = list(saved_layers)
+        self.failed_layer = failed_layer
+        self.pending_layers = list(pending_layers)
+        self.cause = cause
+        super().__init__(
+            f"UsdTarget.flush partial failure: layer {failed_layer!r} "
+            f"raised {type(cause).__name__}({cause}); saved={len(saved_layers)} "
+            f"failed=1 pending={len(pending_layers)}"
+        )
+
+
 def _rolling_sublayer_base(authored_at: float) -> str:
     """Date prefix for rolling sublayer. UTC per substrate convention #6."""
     dt = datetime.fromtimestamp(authored_at, tz=timezone.utc)
@@ -360,11 +402,69 @@ class UsdTarget:
         Since Pass 6, ``author_stage_batch`` no longer calls Save()
         itself — this method is the sole Save call site, enabling the
         narrow-lock pattern verified in Pass 5.
+
+        Failure semantics
+        -----------------
+        If any individual ``layer.Save()`` raises (disk full, fsync
+        timeout, permission, network FS hiccup), this method records
+        which layers had already saved and then raises a
+        :class:`FlushPartialFailureError` carrying that bookkeeping.
+        The structured exception lets the ``SequentialWriter`` refuse
+        to proceed to the vector update — the §7 invariant "vector is
+        authoritative for what exists" requires that the vector side
+        ONLY be advanced once the USD side is fully durable. Without
+        this, a partial flush would commit the vector index to
+        CONSOLIDATED for entities whose USD prims never reached disk —
+        the inverse of the orphan case, and not authorized by §7.
+
+        Review finding: ``usd-L2-flush-partial-failure-breaks-sequential-write-atomicity``.
         """
-        if not self._in_memory:
-            for layer in self._layers.values():
+        if self._in_memory:
+            return
+
+        saved: List[str] = []
+        # Stable iteration: capture an explicit list so saved_layers and
+        # pending_layers refer to the same ordering on retry diagnostics.
+        layer_items: List[Tuple[str, Sdf.Layer]] = list(self._layers.items())
+        for idx, (name, layer) in enumerate(layer_items):
+            try:
                 layer.Save()
+            except BaseException as exc:  # USD raises diverse exception types
+                pending = [n for n, _ in layer_items[idx + 1 :]]
+                _logger.error(
+                    "UsdTarget.flush partial failure on layer=%s "
+                    "saved=%d pending=%d cause=%s",
+                    name,
+                    len(saved),
+                    len(pending),
+                    exc,
+                )
+                raise FlushPartialFailureError(
+                    saved_layers=saved,
+                    failed_layer=name,
+                    pending_layers=pending,
+                    cause=exc,
+                ) from exc
+            saved.append(name)
+
+        # Root layer last: if it raises, every sublayer is durable but the
+        # composition handle is not — still a partial-failure event from
+        # §7's perspective.
+        try:
             self._root_layer.Save()
+        except BaseException as exc:
+            _logger.error(
+                "UsdTarget.flush partial failure on root layer "
+                "saved=%d cause=%s",
+                len(saved),
+                exc,
+            )
+            raise FlushPartialFailureError(
+                saved_layers=saved,
+                failed_layer="<root>",
+                pending_layers=[],
+                cause=exc,
+            ) from exc
 
     # ------------------------------------------------------------------
     # Inspection / lifecycle helpers

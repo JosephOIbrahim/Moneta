@@ -42,6 +42,12 @@ dev = [
     "pytest-cov",
     "ruff",
 ]
+# Multi-agent review harness — Opus 4.7 driven, 5-loop MoE review.
+# See scripts/review_harness.py and docs/review-constitution.md.
+# Not pulled into Phase 1/3 runtime; review tooling only.
+review = [
+    "anthropic>=0.40",
+]
 
 [project.urls]
 Repository = "https://github.com/JosephOIbrahim/Moneta"

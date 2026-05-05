@@ -63,6 +63,8 @@ def get_consolidation_manifest() -> List[Memory]
 
 These four operations are the entire agent-facing surface. No other methods are exposed. Agents have zero knowledge of USD, ECS, vector indices, or consolidation mechanics.
 
+**Surface (Round 4 closure):** the four operations are method calls on a `Moneta(config)` handle, e.g. `m.deposit(...)`. The type signatures above are locked verbatim; the dispatch (method vs. free function) is implementation. The fifth-op rule applies to public methods of `Moneta` — adding a fifth public agent-facing method is forbidden without §9 escalation.
+
 ### 2.2 Hot substrate schema (ECS)
 
 Flat, vectorizable, struct-of-arrays or DataFrame-backed. Component fields:
@@ -118,7 +120,7 @@ For reference during Phase 1, so mock targets emit the right shape:
 - **Staging:** Utility < 0.3 and AttendedCount >= 3 → flag for USD authoring
 - **Rolling sublayer:** `cortex_YYYY_MM_DD.usda`, one per day, never per pass
 - **Gist emergence:** background LLM summarizes payload, authors an `over` on rolling sublayer, adds `gist` variant, switches VariantSelection to `gist`
-- **Protected memory:** dedicated `cortex_protected.usda` pinned to strongest Root stack position
+- **Protected memory:** dedicated `cortex_protected.usda` pinned to strongest Root stack position. **Round 4 closure (Ruling 2):** protected memories (`protected_floor > 0`) are pinned and EXEMPT from automatic prune/stage selection — the floor clamp pins utility ≥ floor, so the §6 staging gate (`utility < 0.3`) is unreachable for any entity with `protected_floor ≥ 0.3`. Routing protected entities to `cortex_protected.usda` is the explicit Phase 3 unpin tool's responsibility, not the automatic selection criteria. The unpin tool clears `protected_floor`, after which the entity becomes eligible for normal §6 selection.
 
 ### 2.7 Atomicity protocol
 
@@ -138,9 +140,17 @@ Never blanket "ECS is authoritative." Timestamp tiebreaker required.
 
 ### 2.10 Protected memory quota
 
-Hard cap: 100 protected entries per agent. On quota full, the agent must explicitly call an unpin tool before adding more. Agents will try to flag everything as protected; the quota is the backstop.
+**Default cap: 100 protected entries per substrate handle. Per-handle override permitted up to a ceiling of 1000.** On quota full, the agent must explicitly call an unpin tool before adding more. Agents will try to flag everything as protected; the quota is the backstop.
 
-**Phase 1:** `deposit` raises on overflow. **Phase 3:** operator-facing unpin tool, not part of the four-op API.
+**Round 4 closure (Rulings 5–6):** "Per agent" disambiguates to "per substrate handle." A substrate is identified by `storage_uri`; each `Moneta(config)` handle is a distinct substrate with its own quota. An agent process may hold multiple handles on distinct storage URIs; each handle's quota is independent. The per-handle override (`MonetaConfig.quota_override`) is bounded — a `quota_override` outside `1 ≤ q ≤ 1000` raises `ValueError` at construction. Process-level aggregation is by design, not a backstop violation.
+
+**Phase 1:** `deposit` raises `ProtectedQuotaExceededError` on overflow. **Phase 3:** operator-facing unpin tool, not part of the four-op API.
+
+### 2.11 Handle exclusivity (Round 4 closure, Ruling 4)
+
+A `Moneta(config)` handle holds an exclusive in-process lock on its `storage_uri`. Two live handles cannot share the same URI within one process. Cross-process exclusion is the bridge layer's concern, not the substrate's.
+
+Concurrency model and full sub-clauses live in `ARCHITECTURE.md` §17.
 
 ---
 

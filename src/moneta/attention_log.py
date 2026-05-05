@@ -5,18 +5,33 @@ eventually-consistent attention log. Writes append; the sleep-pass reducer
 drains the current buffer in a single atomic swap and applies the
 aggregated result to the ECS.
 
-Lock-free under CPython GIL
----------------------------
+Lock-free under CPython GIL — and what "eventually consistent" actually buys
+---------------------------------------------------------------------------
 
 `list.append` is atomic at the bytecode level under the CPython GIL. The
 drain uses a single tuple assignment::
 
     drained, self._buffer = self._buffer, []
 
-which rebinds `self._buffer` to a fresh list in one `STORE_ATTR`. A
-concurrent `append` either lands in the old list (and is drained this
-window) or in the new list (and is drained next window). Entries cannot
-be lost.
+which rebinds ``self._buffer`` to a fresh list in one ``STORE_ATTR``. So a
+concurrent ``append`` whose ``LOAD_ATTR self._buffer`` happens AFTER the
+swap lands in the new list (drained next window). An ``append`` whose
+``LOAD_ATTR`` happens BEFORE the swap holds a reference to the *old* list
+and calls ``.append`` on it. The reducer iterates the drained list AFTER
+the swap; if a late ``append`` lands on the drained list AFTER the
+reducer has finished iterating, that entry is **lost**.
+
+This is the at-most-one-loss-per-swap window: a signal racing the
+millisecond-scale swap may not be observed in the current reducer pass
+nor in the next. ``ARCHITECTURE.md`` §5.1's locked language is "lock-free,
+eventually consistent, and has the simplest failure mode" — the loss
+window IS that simplest failure mode, not a violation of it. Best-effort
+delivery, not at-least-once. Review finding
+``adversarial-L2-attention-log-loss-not-section9`` (review-constitution
+hash 3b56e3ffae083c9b) classified this as a Critical implementation
+finding + docstring softening, NOT a §9 trigger; this docstring is the
+softening half of that resolution. The race window is upper-bounded by
+the GIL switch interval (default 5ms via ``sys.setswitchinterval``).
 
 This analysis holds for CPython 3.11 / 3.12 with the GIL enabled. It does
 not hold under free-threaded Python (PEP 703) or sub-interpreters with

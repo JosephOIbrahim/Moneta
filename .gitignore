@@ -57,3 +57,12 @@ snapshots/
 data/
 cache/
 *.lance/
+
+# Multi-agent review harness — per-round artifacts are reproducible.
+# Only the constitution and the final synthesis are tracked.
+docs/review/round-*.md
+docs/review/findings.jsonl
+docs/review/findings.invalid.jsonl
+docs/review/checkpoint.json
+docs/review/run.log
+!docs/review/synthesis.md
