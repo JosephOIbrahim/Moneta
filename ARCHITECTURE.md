@@ -307,7 +307,7 @@ Human gates between every pair of consecutive passes. Pass boundaries are commit
 
 ### 15.6 Pass 5/6 update: narrow writer lock
 
-**Authorized by:** Pass 5 Q6 investigation (commit 500b1dd). Empirical basis: 2,000 stress-test iterations, 70,010,000 concurrent prim-attribute read assertions, zero failures on OpenUSD 0.25.5. See `docs/patent-evidence/pass5-usd-threadsafety-review.md`.
+**Authorized by:** Pass 5 Q6 investigation (commit 500b1dd). Empirical basis: 2,000 stress-test iterations, 70,010,000 concurrent prim-attribute read assertions, zero failures on OpenUSD 0.25.5.
 
 **Change (Pass 6):** The writer lock in `src/moneta/usd_target.py` covers `Sdf.ChangeBlock` only. `layer.Save()` runs outside the lock, concurrent with readers. The sequential-write ordering from §7 is preserved: ChangeBlock completes (prims authored in-memory) → Save completes (prims durable on disk) → vector index committed. Only the reader-blocking scope changes.
 

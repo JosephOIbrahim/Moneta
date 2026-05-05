@@ -80,10 +80,6 @@ deferred to v1.0.1 if needed.
 - **23 Phase 3 tests**: 17 unit (11 original + 6 adversarial) +
   6 integration, all under hython dual-interpreter protocol.
 
-- **Patent evidence**: `docs/patent-evidence/` with dated entries
-  for Pass 5 (thread-safety review) and Pass 6 (lock-shrink
-  implementation), counsel-ready.
-
 - **Agent commandments**: `docs/agent-commandments.md` — eight
   commandments governing MoE role discipline, zero violations
   across 5 active passes (3-7).
@@ -118,30 +114,8 @@ deferred to v1.0.1 if needed.
 
 ---
 
-## 5. Patent evidence status
+## 5. Next actions
 
-`docs/patent-evidence/` contains dated entries for:
-- **Pass 5** (`pass5-usd-threadsafety-review.md`): OpenUSD
-  documentation review, stress test methodology, DETERMINISTIC
-  SAFE ruling. Strengthens claim #4.
-- **Pass 6** (`pass6-lock-shrink-implementation.md`): Narrow-lock
-  implementation, 775M-assertion post-commit addendum. Strengthens
-  claims #3 and #4.
-
-Four structural novelty claims intact and empirically evidenced:
-1. OpenUSD composition arcs as cognitive state substrate
-2. USD variant selection as fidelity LOD primitive
-3. Pcp-based resolution as implicit multi-fidelity fallback
-4. Protected memory as root-pinned strong-position sublayer
-
-Counsel engagement is a separate post-Phase-3 task.
-
----
-
-## 6. Next actions
-
-- Engage patent counsel for provisional filing (claims in
-  MONETA.md §3, evidence in `docs/patent-evidence/`)
 - Optional: Round 5 Gemini Deep Think brief (doc-only, no code)
   after provisional filing to review the prior art landscape
   post-Q1-2026 wave
@@ -154,7 +128,7 @@ Counsel engagement is a separate post-Phase-3 task.
 
 ---
 
-## 7. Lineage
+## 6. Lineage
 
 - **Round 1** (Claude + Joseph): Initial scoping brief
 - **Round 2** (Gemini Deep Think): Architectural spec, four-op API,

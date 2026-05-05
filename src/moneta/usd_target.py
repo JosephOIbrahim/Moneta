@@ -14,8 +14,7 @@ only. ``layer.Save()`` is deferred to ``flush()``, which the
 narrow-lock pattern allows concurrent ``stage.Traverse()`` during the
 Save window without data corruption — empirically verified at 2,000
 iterations / 70M concurrent prim-attribute reads on OpenUSD 0.25.5
-(see ``docs/patent-evidence/pass5-usd-threadsafety-review.md``,
-commit 500b1dd). The sequential-write ordering from ARCHITECTURE.md §7
+(commit 500b1dd). The sequential-write ordering from ARCHITECTURE.md §7
 is preserved: ChangeBlock completes, Save completes, then the shadow
 vector index is committed. Only the reader-blocking scope changes.
 
