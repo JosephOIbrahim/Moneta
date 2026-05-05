@@ -523,7 +523,6 @@ docs/
 ├── phase2-closure.md            # Phase 2 rulings + operational envelope
 ├── phase3-closure.md            # Phase 3 closure record
 ├── pass5-q6-findings.md         # Q6 thread-safety ruling
-├── patent-evidence/             # dated evidence entries for counsel
 └── rounds/                      # Gemini Deep Think scoping outputs
 ```
 
@@ -576,7 +575,7 @@ Phase 3 shipped real USD integration against OpenUSD 0.25.5. The Q6 concurrent T
 
 At Moneta's operational point (batch ≤ 500, accumulated ≤ 50k prims), the reader stall drops from the Phase 2 Yellow steady-state (~131ms) to a projected 10–30ms.
 
-Full closure: [docs/phase3-closure.md](docs/phase3-closure.md) | Patent evidence: [docs/patent-evidence/](docs/patent-evidence/)
+Full closure: [docs/phase3-closure.md](docs/phase3-closure.md)
 
 ---
 
@@ -624,7 +623,7 @@ Surgery record: [SURGERY_complete_codeless_schema.md](SURGERY_complete_codeless_
 
 ## Lineage
 
-Round 1 (scoping brief) → Round 2 (Gemini Deep Think architectural spec) → Round 2.5 (Claude prior-art review) → Round 3 (Gemini Deep Think validation) → **Phase 1** (5 passes, 94 tests, `v0.1.0`) → **Phase 2** (benchmark, `v0.2.0`) → **Phase 3** (7 passes, narrow lock, 775M-assertion safety, `v1.0.0`) → **Singleton surgery** (Scout / Forge / Crucible / Steward, `v1.1.0`) → **Codeless schema migration** (Auditor / Crucible / Schema Author / Forge, `v1.2.0-rc1`) → **Free-threading guard** (PEP 703 sentinel on `AttentionLog`, commit `76da067`) → **Documentarian followup** (api.md handle rewrite + patent-evidence claim/maturity split + CLAUDE.md hard-rule update, commit `6cb1fd1`).
+Round 1 (scoping brief) → Round 2 (Gemini Deep Think architectural spec) → Round 2.5 (Claude prior-art review) → Round 3 (Gemini Deep Think validation) → **Phase 1** (5 passes, 94 tests, `v0.1.0`) → **Phase 2** (benchmark, `v0.2.0`) → **Phase 3** (7 passes, narrow lock, 775M-assertion safety, `v1.0.0`) → **Singleton surgery** (Scout / Forge / Crucible / Steward, `v1.1.0`) → **Codeless schema migration** (Auditor / Crucible / Schema Author / Forge, `v1.2.0-rc1`) → **Free-threading guard** (PEP 703 sentinel on `AttentionLog`, commit `76da067`) → **Documentarian followup** (api.md handle rewrite + CLAUDE.md hard-rule update, commit `6cb1fd1`).
 
 ---
 
@@ -642,7 +641,6 @@ Round 1 (scoping brief) → Round 2 (Gemini Deep Think architectural spec) → R
 | [SURGERY_complete.md](SURGERY_complete.md) | `v1.1.0` singleton-to-handle surgery record |
 | [SURGERY_complete_codeless_schema.md](SURGERY_complete_codeless_schema.md) | `v1.2.0-rc1` codeless schema surgery record |
 | [`schema/`](schema/) | `MonetaSchema.usda` + `plugInfo.json` + `generatedSchema.usda` (codeless typed schema) |
-| [docs/patent-evidence/](docs/patent-evidence/) | Dated evidence for patent counsel |
 
 ---
 

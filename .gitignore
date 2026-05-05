@@ -57,3 +57,6 @@ snapshots/
 data/
 cache/
 *.lance/
+
+# Patent surface — kept local-only at C:/Users/User/Moneta-private/patent-evidence/
+docs/patent-evidence/

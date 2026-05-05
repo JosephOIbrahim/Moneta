@@ -157,9 +157,6 @@ docs/
 ├── phase2-closure.md          # Phase 2 rulings + operational envelope
 ├── phase3-closure.md          # Phase 3 closure record
 ├── pass5-q6-findings.md       # Q6 thread-safety ruling
-├── patent-evidence/           # dated evidence entries for counsel
-│   ├── pass5-usd-threadsafety-review.md
-│   └── pass6-lock-shrink-implementation.md
 └── rounds/
     ├── round-1.md             # scoping brief placeholder
     ├── round-2.md             # Gemini Deep Think Round 2
