@@ -88,6 +88,19 @@ class MonetaResourceLockedError(RuntimeError):
 # ----------------------------------------------------------------------
 
 
+MAX_QUOTA_OVERRIDE = 1000
+"""Per-handle protected-quota ceiling (Round 4 closure, Ruling 5).
+
+`MonetaConfig.quota_override` must satisfy ``1 <= q <= MAX_QUOTA_OVERRIDE``.
+Default value is 100 (the historical hard cap from `ARCHITECTURE.md` §10
+prior to Round 4). Construction with a value outside this range raises
+``ValueError``. See ``docs/rounds/round-4.md`` Ruling 5 for the rationale —
+an unbounded override defeats the §10 backstop, while an immutable 100
+ceiling pushes consumers toward multi-handle workarounds that complicate
+the per-substrate isolation model.
+"""
+
+
 @dataclass(frozen=True, kw_only=True)
 class MonetaConfig:
     """Frozen, keyword-only handle configuration.
@@ -107,7 +120,9 @@ class MonetaConfig:
         constructor call (``MonetaResourceLockedError``).
     quota_override:
         Per-handle protected-deposit quota. Replaces the module-level
-        ``PROTECTED_QUOTA`` constant from the singleton era.
+        ``PROTECTED_QUOTA`` constant from the singleton era. Bounded
+        by Round 4 closure (Ruling 5): ``1 <= q <= MAX_QUOTA_OVERRIDE``
+        (default 100, ceiling 1000).
     half_life_seconds, embedding_dim, max_entities,
     snapshot_path, wal_path, vector_persist_path,
     mock_target_log_path, use_real_usd, usd_target_path:
@@ -140,6 +155,16 @@ class MonetaConfig:
     # Cloud-anticipated (do not implement logic yet — see §5.3):
     # tenant_id: Optional[str] = None
     # sync_strategy: Optional[str] = None
+
+    def __post_init__(self) -> None:
+        # Round 4 closure (Ruling 5): bound quota_override to prevent
+        # silent §10 backstop bypass via an unbounded per-handle override.
+        if not (1 <= self.quota_override <= MAX_QUOTA_OVERRIDE):
+            raise ValueError(
+                f"quota_override={self.quota_override!r} out of range; "
+                f"must satisfy 1 <= q <= {MAX_QUOTA_OVERRIDE} "
+                f"(ARCHITECTURE.md §10, Round 4 Ruling 5)"
+            )
 
     @classmethod
     def ephemeral(cls, **overrides: Any) -> "MonetaConfig":

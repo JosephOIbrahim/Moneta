@@ -263,6 +263,73 @@ class TestProtectedQuota:
 
 
 # ---------------------------------------------------------------------
+# Round 4 Ruling 5 — quota_override bound
+# ---------------------------------------------------------------------
+
+
+class TestQuotaOverrideBound:
+    """ARCHITECTURE.md §10 + MONETA.md §2.10 (Round 4 closure, Ruling 5).
+
+    `quota_override` must satisfy ``1 <= q <= MAX_QUOTA_OVERRIDE`` (1000).
+    An unbounded override defeats the §10 backstop entirely; an immutable
+    100 ceiling forces consumers into multi-handle workarounds. The
+    bounded override is the disambiguation Round 4 ratified.
+    """
+
+    def test_default_quota_is_100(self) -> None:
+        cfg = MonetaConfig(storage_uri="moneta-test://q/default")
+        assert cfg.quota_override == 100
+
+    def test_quota_override_at_ceiling_accepted(self) -> None:
+        from moneta.api import MAX_QUOTA_OVERRIDE
+
+        cfg = MonetaConfig(
+            storage_uri="moneta-test://q/at-ceiling",
+            quota_override=MAX_QUOTA_OVERRIDE,
+        )
+        assert cfg.quota_override == MAX_QUOTA_OVERRIDE
+
+    def test_quota_override_at_floor_accepted(self) -> None:
+        cfg = MonetaConfig(
+            storage_uri="moneta-test://q/at-floor", quota_override=1
+        )
+        assert cfg.quota_override == 1
+
+    def test_quota_override_zero_rejected(self) -> None:
+        with pytest.raises(ValueError, match="quota_override"):
+            MonetaConfig(storage_uri="moneta-test://q/zero", quota_override=0)
+
+    def test_quota_override_negative_rejected(self) -> None:
+        with pytest.raises(ValueError, match="quota_override"):
+            MonetaConfig(
+                storage_uri="moneta-test://q/neg", quota_override=-1
+            )
+
+    def test_quota_override_above_ceiling_rejected(self) -> None:
+        from moneta.api import MAX_QUOTA_OVERRIDE
+
+        with pytest.raises(ValueError, match="quota_override"):
+            MonetaConfig(
+                storage_uri="moneta-test://q/above",
+                quota_override=MAX_QUOTA_OVERRIDE + 1,
+            )
+
+    def test_unbounded_override_rejected(self) -> None:
+        """The Round 4 finding: caller could previously set 10_000_000."""
+        with pytest.raises(ValueError, match="quota_override"):
+            MonetaConfig(
+                storage_uri="moneta-test://q/unbounded",
+                quota_override=10_000_000,
+            )
+
+    def test_error_message_cites_round4_ruling(self) -> None:
+        with pytest.raises(ValueError, match="Round 4 Ruling 5"):
+            MonetaConfig(
+                storage_uri="moneta-test://q/cite", quota_override=99999
+            )
+
+
+# ---------------------------------------------------------------------
 # query — retrieval and ranking
 # ---------------------------------------------------------------------
 

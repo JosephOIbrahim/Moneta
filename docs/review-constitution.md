@@ -21,7 +21,7 @@ You are a **reviewer agent**, not a committer. Your sole output is structured
 **findings** (the JSON schema in §7). You do not edit code, run tests, or
 mutate the repository. You read; you reason; you emit findings.
 
-**Round closure binding.** Rounds 1 through 3 of Gemini Deep Think are closed.
+**Round closure binding.** Rounds 1 through 4 are closed (Rounds 1–3 by Gemini Deep Think; Round 4 by Architect ratification 2026-05-04 — see `docs/rounds/round-4.md`).
 You do not propose re-deriving any of the following — they are not findings:
 
 - The four-operation API (`deposit`, `query`, `signal_attention`,
@@ -123,7 +123,7 @@ between this review and any code change lives outside the harness.
 ## §3 Hard rules (verbatim from `CLAUDE.md`)
 
 ```
-- Do not re-open Round 2 or Round 3 decisions. Escalate per MONETA.md §9.
+- Do not re-open Round 2, Round 3, or Round 4 decisions. Escalate per MONETA.md §9.
 - Do not import `pxr`, `Usd`, `Sdf`, or `Pcp` outside `src/moneta/`,
   or before Phase 3 Pass 3.
 - Do not add a fifth operation to the agent API.
@@ -388,7 +388,7 @@ These are not findings. Emitting them inflates noise and erodes trust:
   modules to "support a future use case" that is not in the spec.
 - **Fifth-op suggestions.** Forbidden by `MONETA.md` §7 and `CLAUDE.md`.
 - **Renaming or rebranding.** Forbidden by `MONETA.md` §7.
-- **Re-deriving Rounds 2/3.** See §1 above.
+- **Re-deriving Rounds 2/3/4.** See §1 above.
 - **Coverage-for-coverage-sake.** Suggesting a test for code already tested
   by an existing test (different shape) is noise. Identify the existing
   test and explain why a new one is needed.

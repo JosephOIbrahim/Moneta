@@ -1,9 +1,22 @@
 # Round 4 escalation brief — surfaced by multi-agent review v1.0.0
 
-**Status:** Draft. The Architect role drafts this brief per `MONETA.md`
-§9 protocol; Joseph Ibrahim reviews before it goes to Gemini Deep Think.
-No implementation proceeds on the affected subsystems until each numbered
-item closes.
+**Status:** SUPERSEDED. Round 4 closed 2026-05-04; this brief is
+historical. Closure document: `docs/rounds/round-4.md`. Spec amendments
+landed in lockstep (`MONETA.md` §2.1 / §2.6 / §2.10 / §2.11;
+`ARCHITECTURE.md` §2 / §6 / §7.2 / §10 / §16 / §17). One code change
+applied: `MonetaConfig.quota_override` bound to `1 ≤ q ≤ 1000`
+(`MAX_QUOTA_OVERRIDE`).
+
+This file is retained as the authoring record — what the brief looked
+like at the moment Round 4 was opened. The rulings themselves live in
+`docs/rounds/round-4.md`.
+
+---
+
+**Original status (pre-closure):** Draft. The Architect role drafts this
+brief per `MONETA.md` §9 protocol; Joseph Ibrahim reviews before it goes
+to Gemini Deep Think. No implementation proceeds on the affected
+subsystems until each numbered item closes.
 
 **Source:** `docs/review/synthesis.md` (constitution hash
 `3b56e3ffae083c9b`). Of 466 open findings, eight were tagged
