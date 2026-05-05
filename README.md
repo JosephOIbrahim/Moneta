@@ -4,20 +4,20 @@
 
 # Moneta
 
-**Memory substrate for LLM agents built on OpenUSD's composition engine.**
+**Long-term memory for LLM agents — forgets the noise, keeps what matters.** Built on OpenUSD's composition engine.
 
 ---
 
 ## TL;DR
 
-You build an LLM agent. It needs memory that:
+**You're building an LLM agent.** It needs memory that:
 
-- **Survives the conversation** — facts the agent learned in turn 3 are still there in turn 30.
-- **Decays gracefully** — old, unused memories fade; reinforced ones stick.
-- **Doesn't drown the prompt** — retrieval ranks by *relevance × utility*, not just similarity.
-- **Has a clean handoff** between hot working memory and durable cold storage.
+- **Lasts past turn 30.** Facts learned in turn 3 are still there.
+- **Forgets the noise.** Old, unused memories fade; reinforced ones stick.
+- **Doesn't drown the prompt.** Retrieval ranks by *relevance × utility*, not raw similarity.
+- **Splits hot from cold.** Working memory in RAM. Durable storage on disk.
 
-That's Moneta. It's a Python library. You construct a `Moneta` handle, you `deposit`, you `query`, you `signal_attention` when a memory was useful, and a sleep pass periodically consolidates the survivors to disk.
+**Moneta is a Python library.** You hold a handle, you call four operations:
 
 ```python
 import moneta
@@ -29,9 +29,9 @@ with moneta.Moneta(moneta.MonetaConfig.ephemeral()) as m:
     m.run_sleep_pass()                   # consolidate survivors
 ```
 
-That's it. Four operations. No background threads, no daemons, no LLM calls inside the substrate.
+**No background threads. No daemons. No LLM calls inside.** Four operations, full stop.
 
-> The name invokes **Juno Moneta** — Roman goddess of warning and memory, whose temple housed the mint because she also *reminded*. Memory as advisory, not just storage.
+> The name invokes **Juno Moneta** — Roman goddess of warning and memory, whose temple housed the Roman mint because she also *reminded*. Memory as advisory, not just storage.
 
 ---
 
@@ -51,7 +51,9 @@ Sibling project: [Octavius](https://github.com/JosephOIbrahim) (coordination sub
 
 ---
 
-## Quick start (60 seconds)
+## Quick start — about 60 seconds, three steps
+
+You'll have it cloned, smoke-tested, and (optionally) green on the test suite by the end of this section.
 
 ### 1. Install
 
@@ -61,7 +63,7 @@ cd Moneta
 pip install -e .[dev]
 ```
 
-Python ≥ 3.11. **Zero runtime dependencies** — no numpy, torch, or DB drivers. Just stdlib.
+Python ≥ 3.11. **Zero runtime dependencies** for the hot tier — no numpy, no torch, no DB drivers. Stdlib only. The Phase 3 USD writer needs `pxr` from a bundled OpenUSD distribution, but you can ignore that until you want to write to disk.
 
 ### 2. Smoke check
 
@@ -69,7 +71,7 @@ Python ≥ 3.11. **Zero runtime dependencies** — no numpy, torch, or DB driver
 python -c "import moneta; moneta.smoke_check(); print('OK')"
 ```
 
-If you see `OK`, the four ops, decay math, attention reducer, sleep pass, and consolidation are all wired correctly.
+**You're good when you see `OK`.** That means the four ops, decay math, attention reducer, sleep pass, and consolidation are all wired.
 
 ### 3. Run the tests (optional)
 
@@ -77,7 +79,7 @@ If you see `OK`, the four ops, decay math, attention reducer, sleep pass, and co
 pytest
 ```
 
-You should see **107 passed**, 7 skipped (pxr-gated USD tests). The skipped ones run under hython if you have OpenUSD 0.25.5 installed (147 total under hython).
+**You should see 107 passed, 7 skipped.** The skipped ones are pxr-gated USD tests — they run under hython if you have OpenUSD 0.25.5 installed (147 total under hython).
 
 ### Stuck?
 
