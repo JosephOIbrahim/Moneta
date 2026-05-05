@@ -701,7 +701,7 @@ Round 1 (scoping brief) → Round 2 (Gemini Deep Think architectural spec) → R
 
 ## License
 
-Proprietary. 3 patents pending (USD cognitive state, digital injection, Cosmos predictive lighting).
+Proprietary. 5 patents pending (including USD cognitive state and digital injection).
 
 ---
 
