@@ -45,7 +45,7 @@ with moneta.Moneta(moneta.MonetaConfig.ephemeral()) as m:
 | **Singleton surgery** — handle API | `v1.1.0` | Module-level singleton replaced by `Moneta(config)` handle. Multi-instance per process. |
 | **Codeless schema migration** — typed `MonetaMemory` prims | **`v1.2.0-rc1`** | USD codeless schema; on-disk prims gain `typeName="MonetaMemory"`, USD camelCase attrs, `priorState` as token. Schema-aware in usdview. |
 
-**Current version:** `v1.2.0-rc1`. **Test count:** 107 plain Python passing + 7 properly-gated pxr cases under plain Python (skipped); **147 passing total under hython** (OpenUSD 0.25.5).
+**Current version:** `v1.2.0-rc1`. **Test count:** 109 plain Python passing + 7 properly-gated pxr cases under plain Python (skipped); **149 passing total under hython** (OpenUSD 0.25.5).
 
 Sibling project: [Octavius](https://github.com/JosephOIbrahim) (coordination substrate on the same USD thesis). Moneta is memory; Octavius is coordination. They share [substrate conventions](docs/substrate-conventions.md) but not Python code — the stage is the interface.
 
@@ -79,7 +79,7 @@ python -c "import moneta; moneta.smoke_check(); print('OK')"
 pytest
 ```
 
-**You should see 107 passed, 7 skipped.** The skipped ones are pxr-gated USD tests — they run under hython if you have OpenUSD 0.25.5 installed (147 total under hython).
+**You should see 109 passed, 7 skipped.** The skipped ones are pxr-gated USD tests — they run under hython if you have OpenUSD 0.25.5 installed (149 total under hython).
 
 ### Stuck?
 

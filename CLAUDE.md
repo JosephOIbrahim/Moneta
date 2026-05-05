@@ -174,7 +174,8 @@ docs/
 - Do not violate the Phase 3 operational envelope (ARCHITECTURE.md §15.2).
 - Do not let documentation lag implementation by more than one PR (Documentarian contract).
 - Do not cross role boundaries without Architect review.
-- Do not break the 94 existing Phase 1 tests. Regression is higher priority than new work.
+- Do not break the existing test suite (109 plain Python passing + 7 pxr-gated skips under plain Python; 149 total under hython at `v1.2.0-rc1`). Regression is higher priority than new work.
+- Do not assume free-threaded Python (PEP 703) support. `AttentionLog.__init__` raises `RuntimeError` under `sys._is_gil_enabled() is False` because the lock-free swap-and-drain correctness argument requires the GIL. Removing the guard requires MONETA.md §9 Trigger 2 escalation; rewriting the attention log to be free-threaded-safe is in-scope for that escalation.
 - Follow `docs/agent-commandments.md` from Phase 3 Pass 3 onward.
 
 Ship Moneta.
