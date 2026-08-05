@@ -390,9 +390,10 @@ class Moneta:
              index.
           3. Project hits to ``Memory`` via ECS (source of truth for
              utility, attended_count, etc.).
-          4. Rerank by ``cosine_similarity * utility`` so decayed
-             memories are naturally demoted. Phase 1 convention;
-             Phase 2 benchmark work may refine.
+          4. Rerank by ``max(cosine_similarity, 0.0) * utility`` so
+             negative cosine (anti-correlated) never inverts the ranking.
+             Clamped at the query level; the vector index returns raw
+             cosine values.
           5. Return the top ``limit`` after reranking.
         """
         now = time.time()
@@ -410,7 +411,7 @@ class Moneta:
             memory = self.ecs.get_memory(entity_id)
             if memory is None:
                 continue
-            ranked.append((cos_sim * memory.utility, memory))
+            ranked.append((max(cos_sim, 0.0) * memory.utility, memory))
         ranked.sort(key=lambda t: t[0], reverse=True)
 
         self.consolidation.mark_activity(now * 1000)
