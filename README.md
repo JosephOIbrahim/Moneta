@@ -149,6 +149,11 @@ Full design rationale: [`DEEP_THINK_BRIEF_substrate_handle.md`](DEEP_THINK_BRIEF
 
 Full API reference with usage examples: [`docs/api.md`](docs/api.md).
 
+SYNAPSE's optional three-substrate memory LOOP borrows its existing Moneta owner
+and recalls durable outcomes on subsequent operations. See the
+[SYNAPSE v5.67.2 integration record](docs/synapse-loop.md) for qualified source
+versions, ownership rules, recovery checks and artist-control boundaries.
+
 ---
 
 ## How it works (architecture)
