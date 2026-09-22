@@ -207,7 +207,7 @@ def test_i4_rejected_deposit_leaves_no_trace(world):
     s, _ = world
     seq, count = s.seq, s.recallable_count()
     size = s.journal_path.stat().st_size
-    for bad in ([1.0, 0.0], [math.nan, 0, 0, 0], [0.0, 0.0, 0.0, 0.0], "text"):
+    for bad in ([1.0, 0.0], [math.nan, 0, 0, 0], [math.inf, 0, 0, 0], [], "text"):
         with pytest.raises((ValueError, TypeError)):
             s.deposit("bad", bad, t=T0)
     assert (s.seq, s.recallable_count(), s.journal_path.stat().st_size) == (seq, count, size)
@@ -393,3 +393,35 @@ def test_vectors_round_trip_bit_exact(world):
     s.close()
     with Substrate(Config(path=path, half_life_seconds=HALF_LIFE)) as again:
         assert again._fold.records[eid].vector == tuple(tricky)
+
+
+def test_i4_direction_less_memory_is_stored_enumerable_and_explained(world):
+    s, ids = world
+    eid = s.deposit("empty note", [0.0, 0.0, 0.0, 0.0], scope="projA", t=T0)
+    assert eid not in [i.memory.entity_id for i in s.recall(QUERY, 50, t=T0).items]
+    assert eid in [m.entity_id for m in s.records(t=T0)]
+    e = s.explain(eid, t=T0)
+    assert e.verdict == Verdict.UNRANKABLE and "no direction" in e.detail
+    with pytest.raises(ValueError):
+        s.recall([0.0, 0.0, 0.0, 0.0], t=T0)  # a direction-less *query* is still an error
+
+
+def test_revector_changes_dimension_atomically_and_durably(world):
+    s, ids = world
+    live = [m.entity_id for m in s.records(t=T0)]
+    new = {eid: [1.0, 0.0] if eid == ids["B1"] else [0.0, 1.0] for eid in live}
+    with pytest.raises(ValueError):
+        s.revector({k: v for k, v in list(new.items())[:-1]}, t=T0)  # incomplete: rejected
+    with pytest.raises(DimensionMismatchError):
+        s.revector({**new, live[0]: [1.0, 0.0, 0.0]}, t=T0)  # mixed dims: rejected
+    seq = s.seq
+    s.revector(new, t=T0)
+    assert s.seq == seq + 1 and s.dim == 2
+    assert s.recall([1.0, 0.0], 1, t=T0).items[0].memory.entity_id == ids["B1"]
+    with pytest.raises(DimensionMismatchError):
+        s.recall(QUERY, t=T0)
+    path = s.journal_path
+    s.close()
+    with Substrate(Config(path=path, half_life_seconds=HALF_LIFE)) as again:
+        assert again.dim == 2
+        assert again.recall([1.0, 0.0], 1, t=T0).items[0].memory.entity_id == ids["B1"]

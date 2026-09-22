@@ -237,6 +237,7 @@ class Verdict:
     EXCLUDED_SCOPE = "excluded_scope"
     EXCLUDED_RECORD = "excluded_record"
     SLOT_LOSER = "slot_loser"
+    UNRANKABLE = "unrankable"
     TOMBSTONED = "tombstoned"
     ERASED = "erased"
     UNKNOWN = "unknown"
@@ -431,6 +432,8 @@ class Substrate:
         for rec in candidates:
             if rec.slot is not None and winners[rec.slot] != rec.entity_id:
                 verdicts[rec.entity_id] = Verdict.SLOT_LOSER
+            elif rec.unit is None:
+                verdicts[rec.entity_id] = Verdict.UNRANKABLE
             else:
                 verdicts[rec.entity_id] = Verdict.ELIGIBLE
         return verdicts, winners
@@ -472,7 +475,7 @@ class Substrate:
             floor = _finite("protected_floor", protected_floor)
             if not 0.0 <= floor <= 1.0:
                 raise ValueError("protected_floor must be in [0, 1]")
-            vec = validate_vector(embedding, self._fold.dim)
+            vec = validate_vector(embedding, self._fold.dim, allow_zero=True)
             when = self._t(t)
 
             if key is not None and key in self._fold.by_key:
@@ -507,7 +510,8 @@ class Substrate:
             self._append(event)
             rec = self._fold.records[entity_id]
             self._index.dim = self._fold.dim
-            self._index.add(entity_id, rec.unit)
+            if rec.unit is not None:
+                self._index.add(entity_id, rec.unit)
             return entity_id
 
     def query(self, embedding: list[float], limit: int = 5, **kwargs: Any) -> list[Memory]:
@@ -716,8 +720,14 @@ class Substrate:
                 Verdict.SLOT_LOSER: f"slot {rec.slot!r} resolves to {winner} in context {policy.context!r}",
                 Verdict.TOMBSTONED: f"tombstoned ({rec.status_reason}) at seq {rec.status_seq}",
                 Verdict.ERASED: f"erased at seq {rec.status_seq}; payload and vector removed",
+                Verdict.UNRANKABLE: "admitted, but its embedding has no direction (zero or "
+                "missing), so similarity ranking can never return it; it is enumerable",
             }[verdict]
-            if rec.slot is not None and verdict in (Verdict.ELIGIBLE, Verdict.SLOT_LOSER):
+            if rec.slot is not None and verdict in (
+                Verdict.ELIGIBLE,
+                Verdict.SLOT_LOSER,
+                Verdict.UNRANKABLE,
+            ):
                 selected = policy.slots.get(rec.slot)
                 if selected is None:
                     detail += "; no selection authored, latest eligible claim wins"
@@ -741,6 +751,48 @@ class Substrate:
                 seq=rec.seq,
                 payload=None if rec.status == Status.ERASED else rec.payload,
             )
+
+    def revector(self, vectors: dict[UUID, Sequence[float]], *, t: float | None = None) -> int:
+        """Re-embed the store: one atomic event carrying a new vector for every
+        recallable record, possibly at a new dimension.
+
+        This is how an embedder swap happens in v5. Tombstoned records are not
+        re-embedded; their old vectors are dropped. Validation is all-or-nothing.
+        """
+        with self._lock:
+            self._check_open()
+            when = self._t(t)
+            wanted = {r.entity_id for r in self._fold.records.values() if r.status in RECALLABLE}
+            given: dict[UUID, tuple[float, ...]] = {}
+            dim: int | None = None
+            for raw_id, vec in vectors.items():
+                eid = raw_id if isinstance(raw_id, UUID) else UUID(str(raw_id))
+                values = validate_vector(vec, dim, allow_zero=True)
+                dim = len(values)
+                given[eid] = values
+            missing = wanted - set(given)
+            extra = set(given) - wanted
+            if missing or extra:
+                raise ValueError(
+                    f"revector must cover exactly the recallable records "
+                    f"({len(missing)} missing, {len(extra)} not recallable)"
+                )
+            if dim is None:
+                raise ValueError("revector needs at least one record")
+            seq = self._append(
+                {
+                    "op": "revector",
+                    "t": when,
+                    "dim": dim,
+                    "vectors": {str(k): encode_vector(v) for k, v in sorted(given.items())},
+                }
+            )
+            self._index = ExactIndex()
+            self._index.dim = dim
+            for rec in self._fold.records.values():
+                if rec.status in RECALLABLE and rec.unit is not None:
+                    self._index.add(rec.entity_id, rec.unit)
+            return seq
 
     def use_policy(self, resolver: PolicyResolver) -> None:
         """Swap the policy source (host-owned). Takes effect for the next read."""

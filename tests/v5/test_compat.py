@@ -209,3 +209,74 @@ def test_use_real_usd_projects_typed_prims(tmp_path):
     prim = stage.GetPrimAtPath(f"/Memory_{eid.hex}")
     assert prim and prim.GetTypeName() == "MonetaMemory"
     assert prim.GetAttribute("payload").Get() == "consolidate me"
+
+
+# ----------------------------------------------------------------------
+# snapshot.json as a derived v1-format export
+# ----------------------------------------------------------------------
+
+
+def test_snapshot_export_is_readable_by_v1_itself(tmp_path):
+    with Moneta(_cfg(tmp_path)) as m:
+        a = m.deposit("alpha", [1.0, 0.0])
+        m.deposit("empty", [0.0, 0.0])  # direction-less, still exported
+        m.signal_attention({a: 0.1})
+        m.durability.snapshot_ecs(m.ecs)
+    # Real v1, reading only the export (no journal awareness at all).
+    with moneta.Moneta(_cfg(tmp_path, uri="v1-reader")) as v1:
+        assert sorted(r.payload for r in v1.ecs.iter_rows()) == ["alpha", "empty"]
+        assert v1.ecs.get_memory(a).attended_count == 1
+
+
+def test_deleting_or_corrupting_the_snapshot_loses_nothing(tmp_path):
+    with Moneta(_cfg(tmp_path)) as m:
+        m.deposit("kept", [1.0, 0.0])
+        m.durability.snapshot_ecs(m.ecs)
+    (tmp_path / "snapshot.json").unlink()
+    with Moneta(_cfg(tmp_path)) as m:
+        assert [r.payload for r in m.ecs.iter_rows()] == ["kept"]
+
+
+def test_a_second_writer_on_the_snapshot_is_refused(tmp_path):
+    from moneta.v5.compat import SnapshotDivergedError
+
+    with Moneta(_cfg(tmp_path)) as m:
+        m.deposit("kept", [1.0, 0.0])
+        m.durability.snapshot_ecs(m.ecs)
+    # v1 writes behind v5's back.
+    with moneta.Moneta(_cfg(tmp_path, uri="rogue-v1")) as v1:
+        v1.deposit("written by v1", [0.0, 1.0])
+        v1.run_sleep_pass()
+    with pytest.raises(SnapshotDivergedError):
+        Moneta(_cfg(tmp_path))
+    # The URI and journal lock are released after the refusal.
+    (tmp_path / "snapshot.json").rename(tmp_path / "snapshot.json.aside")
+    with Moneta(_cfg(tmp_path)) as m:
+        assert [r.payload for r in m.ecs.iter_rows()] == ["kept"]
+
+
+def test_embedder_swap_rewrite_becomes_a_journaled_revector(tmp_path):
+    with Moneta(_cfg(tmp_path, embedding_dim=2)) as m:
+        a = m.deposit("alpha", [1.0, 0.0])
+        b = m.deposit("beta", [0.0, 1.0])
+        m.durability.snapshot_ecs(m.ecs)
+    snap = json.loads((tmp_path / "snapshot.json").read_text())
+    for row in snap["rows"]:  # the consumer re-embeds from payloads at dim 3
+        row["semantic_vector"] = [0.0, 0.0, 1.0] if row["payload"] == "beta" else [1.0, 0.0, 0.0]
+    (tmp_path / "snapshot.json").write_text(json.dumps(snap))
+    with Moneta(_cfg(tmp_path, embedding_dim=3)) as m:
+        assert m.revector["records"] == 2 and m.v5.dim == 3
+        assert m.query([0.0, 0.0, 1.0], limit=1)[0].entity_id == b
+        assert m.v5.explain(a).payload == "alpha"
+    with Moneta(_cfg(tmp_path, embedding_dim=3)) as m:  # accepted once, then it is known
+        assert m.revector is None and m.v5.dim == 3
+
+
+def test_configured_dim_must_match_the_journal(tmp_path):
+    from moneta.v5 import DimensionMismatchError
+
+    with Moneta(_cfg(tmp_path, embedding_dim=2)) as m:
+        m.deposit("alpha", [1.0, 0.0])
+    with pytest.raises(DimensionMismatchError):
+        Moneta(_cfg(tmp_path, embedding_dim=3))
+    Moneta(_cfg(tmp_path, embedding_dim=2)).close()

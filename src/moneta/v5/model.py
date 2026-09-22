@@ -77,8 +77,14 @@ def decode_vector(text: str) -> tuple[float, ...]:
     return struct.unpack(f"<{len(raw) // 8}d", raw)
 
 
-def validate_vector(vec: Any, dim: int | None) -> tuple[float, ...]:
-    """Return a tuple of finite floats or raise ValueError. Never partial."""
+def validate_vector(vec: Any, dim: int | None, *, allow_zero: bool = False) -> tuple[float, ...]:
+    """Return a tuple of finite floats or raise ValueError. Never partial.
+
+    ``allow_zero`` admits a zero-norm vector. Deposits allow it: the memory
+    is stored and enumerable but has no direction, so it is never ranked
+    by similarity and :meth:`Substrate.explain` says so (verdict
+    ``unrankable``). Queries never allow it.
+    """
     if isinstance(vec, (str, bytes)) or not hasattr(vec, "__iter__"):
         raise ValueError("embedding must be a sequence of floats")
     try:
@@ -91,8 +97,8 @@ def validate_vector(vec: Any, dim: int | None) -> tuple[float, ...]:
         raise ValueError("embedding contains NaN or infinity")
     if dim is not None and len(values) != dim:
         raise DimensionMismatchError(dim, len(values))
-    if sum(x * x for x in values) == 0.0:
-        raise ValueError("embedding has zero norm and could never be recalled")
+    if not allow_zero and sum(x * x for x in values) == 0.0:
+        raise ValueError("embedding has zero norm")
     return values
 
 
@@ -151,7 +157,7 @@ class Record:
 
 
 def _unit(vec: tuple[float, ...]) -> tuple[float, ...] | None:
-    """Unit vector, or None when no direction exists (only reachable via v1 import)."""
+    """Unit vector, or None when the vector has no direction (zero or non-finite)."""
     if not all(math.isfinite(x) for x in vec):
         return None
     norm = math.sqrt(sum(x * x for x in vec))
@@ -244,8 +250,12 @@ class Fold:
         rec = self._new_record(
             e, float(e["u"]), float(e["anchor_t"]), int(e.get("attended", 0)), status
         )
-        if rec.status in RECALLABLE and rec.unit is None:
-            rec.status = Status.TOMBSTONED  # a v1 row with no usable direction
+        if (
+            rec.status in RECALLABLE
+            and rec.vector is not None
+            and not all(math.isfinite(x) for x in rec.vector)
+        ):
+            rec.status = Status.TOMBSTONED  # a v1 row whose vector holds NaN/inf
             rec.status_reason = "v1_import_invalid_vector"
         elif e.get("reason"):
             rec.status_reason = e["reason"]
@@ -303,6 +313,19 @@ class Fold:
             rec.status_seq = e["seq"]
             rec.payload = ""
             rec.vector = rec.unit = None
+
+    def _op_revector(self, e: dict[str, Any]) -> None:
+        """Re-embedding: new dimension, new vector for every recallable record.
+
+        Records not in the event (tombstoned ones) lose their old-dimension
+        vector; they were never going to be ranked again.
+        """
+        vectors = {UUID(k): decode_vector(v) for k, v in e["vectors"].items()}
+        self.dim = int(e["dim"])
+        for eid, rec in self.records.items():
+            vec = vectors.get(eid)
+            rec.vector = vec
+            rec.unit = _unit(vec) if vec is not None else None
 
     def _op_note(self, e: dict[str, Any]) -> None:
         """Informational events (migration provenance, etc.). No state change."""
