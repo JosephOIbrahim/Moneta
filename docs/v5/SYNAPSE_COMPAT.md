@@ -16,10 +16,10 @@
 Test files (17): `test_moneta_store`, `test_moneta_crucible`, `test_moneta_fc4_audit`, `test_moneta_integration`, `test_moneta_runtime`, `test_moneta_search_serialization`, `test_w3_store_contract`, `test_w3_dim_contract`, `test_w3_harden_crash_recovery`, `test_w3_harden_concurrency`, `test_sleep_pass_gate`, `test_memory_lifecycle`, `test_memory_seam_defects`, `test_store_backend_health`, `test_w3_migrate`, `test_ledger_moneta_seam`, `test_moneta_substrate_truth`.
 
 ```text
-# baseline, v1
+# baseline, v1 (v1 code is unchanged on this branch)
 python -m pytest -o addopts="" <files>                                        253 passed, 5 xfailed
 
-# v5 facade, SYNAPSE untouched
+# v5 facade, SYNAPSE untouched (re-run after the review fixes)
 PYTHONPATH=<moneta>/scripts/v5 python -m pytest -p synapse_v5_swap -o addopts="" <files>
                                                                                237 passed, 16 failed, 5 xfailed
 
@@ -30,7 +30,7 @@ PYTHONPATH=<moneta>/scripts/v5 python -m pytest -p synapse_v5_swap -o addopts=""
 ## The first run found two real incompatibilities, both fixed in v5
 
 1. **Zero vectors.** SYNAPSE deposits a zero embedding for empty content, and v1 stored it. v5 first rejected it; it now stores it as *unrankable*. The memory is enumerable, never similarity-ranked, and `explain()` says why.
-2. **`snapshot.json` is a de facto public file.** SYNAPSE reads it for dim reconcile, quarantine, export, backfill and cross-process reads, and rewrites it on an embedder swap. Under the facade it is now a derived v1-format export, written by `durability.snapshot_ecs()` with v1's own tmp → fsync → replace primitive. The embedder-swap rewrite is accepted as a journaled `revector`. Any other foreign write is refused (`SnapshotDivergedError`).
+2. **`snapshot.json` is a de facto public file.** SYNAPSE reads it for dim reconcile, quarantine, export, backfill and cross-process reads, and rewrites it on an embedder swap. Under the facade it is now a derived v1-format export, written by `durability.snapshot_ecs()`, after sleep passes and on close, with v1's own tmp → fsync → replace primitive. The v1 original is preserved as `snapshot.json.v1-original` at migration. The embedder-swap rewrite is accepted as a journaled `revector`. Any other foreign write is refused (`SnapshotDivergedError`).
 
 ## The 10 helper-only failures
 
@@ -40,7 +40,7 @@ PYTHONPATH=<moneta>/scripts/v5 python -m pytest -p synapse_v5_swap -o addopts=""
 
 | Test | v1 expectation | v5 result |
 |---|---|---|
-| `test_corrupt_snapshot_is_quarantined_not_fatal` ×5 | a corrupt `snapshot.json` means a **fresh, empty store** | the store still holds its memory: the snapshot is derived and the journal is intact |
+| `test_corrupt_snapshot_is_quarantined_not_fatal` ×5 | a corrupt `snapshot.json` means a **fresh, empty store** | the store still holds its memory: the snapshot is derived, the facade ignores an unreadable one (with a journal note), and the journal is intact |
 | `test_interrupted_replace_leaves_prior_durable_state_readable` | a crash during the 2nd save **loses the 2nd memory** (`['mem_A']`) | both memories survive (`['mem_A', 'mem_B']`): the deposit was journaled before `add()` returned |
 
 These tests pin v1's failure modes as the contract. Under v5 they should be updated to assert the stronger guarantee.

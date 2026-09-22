@@ -1,8 +1,10 @@
 """Records, events, and the fold that derives state from the journal.
 
 The fold is the whole semantic core of v5. Every piece of record state is
-a deterministic function of the journal prefix, so replaying the same
-journal always reproduces the same state, bit for bit.
+a deterministic function of the journal prefix and the configured
+half-life, so replaying the same journal with the same half-life always
+reproduces the same state, bit for bit. (Changing the half-life
+reinterprets history on purpose; the journal notes when that happens.)
 
 Utility semantics (the fix for v1's decay skip)
 -----------------------------------------------
@@ -183,6 +185,7 @@ class Fold:
         self.records: dict[UUID, Record] = {}
         self.by_key: dict[str, UUID] = {}
         self.dim: int | None = None
+        self.half_life_seconds: float | None = None
         self.last_seq = 0
         self.attended_since_pass: set = set()
 
@@ -208,14 +211,19 @@ class Fold:
     def _op_genesis(self, e: dict[str, Any]) -> None:
         if e.get("dim") is not None:
             self.dim = int(e["dim"])
+        if e.get("half_life_seconds") is not None:
+            self.half_life_seconds = float(e["half_life_seconds"])
 
     def _new_record(
         self, e: dict[str, Any], anchor_u: float, anchor_t: float, attended: int, status: Status
     ) -> Record:
         eid = UUID(e["id"])
         vec = decode_vector(e["emb"]) if e.get("emb") is not None else None
-        if vec is not None and self.dim is None:
-            self.dim = len(vec)
+        if self.dim is None:
+            if vec is not None:
+                self.dim = len(vec)
+            elif e.get("dim") is not None:  # a compacted (erased) deposit keeps its dim
+                self.dim = int(e["dim"])
         rec = Record(
             entity_id=eid,
             seq=e["seq"],
@@ -328,7 +336,10 @@ class Fold:
             rec.unit = _unit(vec) if vec is not None else None
 
     def _op_note(self, e: dict[str, Any]) -> None:
-        """Informational events (migration provenance, etc.). No state change."""
+        """Informational events (migration provenance, etc.). No state change
+        except recording which half-life the journal was last run with."""
+        if e.get("kind") == "half_life_change":
+            self.half_life_seconds = float(e["half_life_seconds"])
 
     # -- queries -------------------------------------------------------
 

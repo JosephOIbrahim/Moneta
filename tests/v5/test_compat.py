@@ -141,8 +141,11 @@ def test_migration_imports_v1_rows_and_wal_tail(tmp_path):
                 assert e.attended == rows[str(eid)]["attended_count"]
         assert m.v5.explain(ids["a"], t=T0 + 1000).attended == 1
         assert m.ecs.count_protected() == 1
-    # v1 files are inputs only.
-    assert {p: _sha(tmp_path / p) for p in before} == before
+    # The v1 originals are preserved byte-for-byte; snapshot.json itself is
+    # now a v5 export (written on close) that v1 can still read.
+    assert _sha(tmp_path / "snapshot.json.v1-original") == before["snapshot.json"]
+    assert _sha(tmp_path / "wal.log") == before["wal.log"]
+    assert report["original_preserved_at"].endswith("snapshot.json.v1-original")
     # A second open replays the journal; it does not migrate again.
     with Moneta(_cfg(tmp_path, half_life_seconds=H), clock=clock) as m:
         assert m.migration is None
@@ -280,3 +283,66 @@ def test_configured_dim_must_match_the_journal(tmp_path):
     with pytest.raises(DimensionMismatchError):
         Moneta(_cfg(tmp_path, embedding_dim=3))
     Moneta(_cfg(tmp_path, embedding_dim=2)).close()
+
+
+# -- review regressions: the snapshot guard must not refuse legitimate stores ----
+
+
+def test_corrupt_snapshot_is_ignored_not_fatal(tmp_path):
+    with Moneta(_cfg(tmp_path)) as m:
+        m.deposit("kept", [1.0, 0.0])
+    (tmp_path / "snapshot.json").write_text("{not json")
+    with Moneta(_cfg(tmp_path)) as m:
+        assert m.revector == {"ignored_unreadable_snapshot": True}
+        assert [r.payload for r in m.ecs.iter_rows()] == ["kept"]
+    json.loads((tmp_path / "snapshot.json").read_text())  # close() rewrote a valid export
+
+
+def test_embedder_swap_from_a_stale_export_keeps_every_memory(tmp_path):
+    with Moneta(_cfg(tmp_path, embedding_dim=2)) as m:
+        a = m.deposit("alpha", [1.0, 0.0])
+        m.durability.snapshot_ecs(m.ecs)
+        late = m.deposit("late", [0.0, 1.0])
+        stale = (tmp_path / "snapshot.json").read_bytes()
+    (tmp_path / "snapshot.json").write_bytes(stale)  # crash before the close-time export
+    snap = json.loads(stale)
+    snap["rows"][0]["semantic_vector"] = [1.0, 0.0, 0.0]
+    (tmp_path / "snapshot.json").write_text(json.dumps(snap))
+    with Moneta(_cfg(tmp_path, embedding_dim=3)) as m:
+        assert m.revector["unembedded"] == [str(late)]
+        assert m.v5.explain(late).verdict == "unrankable"
+        assert m.query([1.0, 0.0, 0.0], 5)[0].entity_id == a
+        assert m.ecs.n == 2
+
+
+def test_missing_sidecar_after_a_crash_is_not_a_second_writer(tmp_path):
+    ids, _ = _build_v1_store(tmp_path)
+    with Moneta(_cfg(tmp_path, half_life_seconds=H), fsync=False) as m:
+        m.v5.close()  # simulate a crash: no close-time export
+        m.durability = None
+    journal = journal_path_for(_cfg(tmp_path))
+    journal.with_name(journal.name + ".v1export").unlink()  # crash before the sidecar
+    with Moneta(_cfg(tmp_path, half_life_seconds=H)) as m:
+        assert m.ecs.n == 3
+
+
+def test_empty_store_embedder_swap(tmp_path):
+    with Moneta(_cfg(tmp_path, embedding_dim=2)):
+        pass
+    snap = json.loads((tmp_path / "snapshot.json").read_text())
+    snap["snapshot_created_at"] += 1  # a consumer rewrite of an empty export
+    (tmp_path / "snapshot.json").write_text(json.dumps(snap))
+    with Moneta(_cfg(tmp_path, embedding_dim=3)) as m:
+        assert m.v5.dim == 3
+
+
+def test_wal_line_with_nan_timestamp_is_counted_not_fatal(tmp_path):
+    _build_v1_store(tmp_path)
+    with open(tmp_path / "wal.log", "a", encoding="utf-8") as fp:
+        fp.write(
+            json.dumps({"wal_version": 1, "entity_id": str(UUID(int=9)), "weight": 0.1})[:-1]
+            + ', "timestamp": NaN}\n'
+        )
+    with Moneta(_cfg(tmp_path, half_life_seconds=H)) as m:
+        assert m.migration["wal_malformed"] == 2
+        assert m.ecs.n == 3

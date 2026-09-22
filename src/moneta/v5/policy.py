@@ -143,14 +143,26 @@ def validate_spec(spec: Mapping[str, Mapping[str, Any]]) -> None:
         extra = set(layer) - allowed
         if extra:
             raise ValueError(f"context {name!r} has unknown fields {sorted(extra)}")
+        parent = layer.get("parent")
+        if parent is not None and not isinstance(parent, str):
+            raise ValueError(f"context {name!r} parent must be a str")
         for f in FIELDS:
-            if f in layer and not isinstance(layer[f], (list, tuple)):
+            if f not in layer:
+                continue
+            if not isinstance(layer[f], (list, tuple)):
                 raise ValueError(f"context {name!r} field {f} must be a list")
+            if not all(isinstance(v, str) for v in layer[f]):
+                raise ValueError(f"context {name!r} field {f} must contain only strings")
         for u in layer.get("exclude_records", []) or []:
             UUID(u)
-        for slot, u in (layer.get("slots") or {}).items():
+        slots = layer.get("slots") or {}
+        if not isinstance(slots, Mapping):
+            raise ValueError(f"context {name!r} slots must be a mapping")
+        for slot, u in slots.items():
             if not isinstance(slot, str) or not slot:
-                raise ValueError(f"context {name!r} has an empty slot name")
+                raise ValueError(f"context {name!r} has an empty or non-string slot name")
+            if not isinstance(u, str):
+                raise ValueError(f"context {name!r} slot {slot!r} selection must be a UUID str")
             UUID(u)
         context_chain(spec, name)
 

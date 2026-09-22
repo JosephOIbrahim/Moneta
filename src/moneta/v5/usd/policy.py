@@ -209,12 +209,30 @@ class UsdPolicyResolver:
 
     # -- authoring -----------------------------------------------------
 
+    def _parent_of(self, name: str) -> str | None:
+        paths = list(self._layers[name].subLayerPaths)
+        if not paths:
+            return None
+        parent_layer = Sdf.Layer.FindOrOpenRelativeToLayer(self._layers[name], paths[0])
+        return dict(parent_layer.customLayerData).get("monetaContext") if parent_layer else None
+
     def set_layer(self, name: str, body: Mapping[str, Any]) -> None:
-        """Author (replace) one context's opinions. Parent changes need a rebuild."""
+        """Author (replace) one existing context's opinions.
+
+        Unlike the plain resolver, this cannot create a context or re-parent
+        one: those change the sublayer graph, so they go through
+        :meth:`from_spec`. Both refusals raise rather than being ignored.
+        """
         with self._lock:
             layer = self._layers.get(name)
             if layer is None:
                 raise UnknownContextError(name)
+            current_parent = self._parent_of(name)
+            if "parent" in body and body["parent"] != current_parent:
+                raise ValueError(
+                    f"context {name!r} has parent {current_parent!r}; re-parenting to "
+                    f"{body['parent']!r} needs UsdPolicyResolver.from_spec"
+                )
             spec = {n: {} for n in self._layers}
             validate_spec({**spec, name: {k: v for k, v in body.items() if k != "parent"}})
             _author_body(layer, name, body)

@@ -62,6 +62,7 @@ from .model import (
     Fold,
     Record,
     Status,
+    decode_vector,
     encode_vector,
     validate_vector,
 )
@@ -283,14 +284,22 @@ class Substrate:
 
     def __init__(self, config: Config) -> None:
         self.config = config
+        # Everything that reaches the journal is validated before the journal
+        # is opened: a bad config must never be able to write a genesis event
+        # that a later open cannot replay.
         self._decay = DecayConfig(half_life_seconds=config.half_life_seconds)  # range-checked
+        dim = config.embedding_dim
+        if dim is not None and (isinstance(dim, bool) or not isinstance(dim, int) or dim < 1):
+            raise ValueError(f"embedding_dim must be a positive int or None, got {dim!r}")
+        quota = config.protected_quota
+        if isinstance(quota, bool) or not isinstance(quota, int) or quota < 0:
+            raise ValueError(f"protected_quota must be an int >= 0, got {quota!r}")
         self._lock = threading.RLock()
         self._closed = False
+        self._poisoned: str | None = None
         self._clock = config.clock
         self._policy: PolicyResolver = config.policy or PlainPolicyResolver()
         self._projector: Projector | None = config.projector
-        if config.protected_quota < 0:
-            raise ValueError("protected_quota must be >= 0")
 
         self._journal = (
             FileJournal(Path(config.path), fsync=config.fsync)
@@ -310,9 +319,28 @@ class Substrate:
                         "op": "genesis",
                         "format": FORMAT,
                         "version": VERSION,
-                        "t": self._clock.now(),
+                        "t": _finite("clock.now()", self._clock.now()),
                         "dim": config.embedding_dim,
-                        "half_life_seconds": config.half_life_seconds,
+                        "half_life_seconds": float(config.half_life_seconds),
+                    }
+                )
+            elif self._fold.half_life_seconds not in (None, float(config.half_life_seconds)):
+                # Utility is a function of (journal, half-life). Changing the
+                # half-life reinterprets history deterministically; the journal
+                # records that it happened so a replay can say which value ran.
+                _logger.warning(
+                    "moneta.v5 half-life changed from %ss (journal) to %ss (config); "
+                    "utilities are re-evaluated with the new value",
+                    self._fold.half_life_seconds,
+                    config.half_life_seconds,
+                )
+                self._append(
+                    {
+                        "op": "note",
+                        "t": _finite("clock.now()", self._clock.now()),
+                        "kind": "half_life_change",
+                        "from": self._fold.half_life_seconds,
+                        "half_life_seconds": float(config.half_life_seconds),
                     }
                 )
             self._index = ExactIndex()
@@ -384,6 +412,11 @@ class Substrate:
     def _check_open(self) -> None:
         if self._closed:
             raise SubstrateClosedError("Moneta v5 handle is closed")
+        if self._poisoned is not None:
+            raise SubstrateClosedError(
+                f"Moneta v5 handle stopped after an internal error ({self._poisoned}); "
+                f"reopen it: the journal is intact and replay rebuilds state"
+            )
 
     def _t(self, t: float | None) -> float:
         return self._clock.now() if t is None else _finite("t", t)
@@ -391,7 +424,15 @@ class Substrate:
     def _append(self, event: dict[str, Any]) -> int:
         """Journal first, then fold. The only write path in v5."""
         seq = self._journal.append(event)
-        self._fold.apply(dict(event, seq=seq))
+        try:
+            self._fold.apply(dict(event, seq=seq))
+        except BaseException as exc:
+            # The event is durable but live state did not absorb it. Serving
+            # reads from a fold that lags the journal would break I1, so the
+            # handle stops; reopening replays the journal.
+            self._poisoned = f"fold failed on seq {seq}: {exc!r}"
+            _logger.error("moneta.v5 %s", self._poisoned)
+            raise
         return seq
 
     def _resolve(self, context: str | None) -> ResolvedPolicy:
@@ -480,13 +521,14 @@ class Substrate:
 
             if key is not None and key in self._fold.by_key:
                 existing = self._fold.records[self._fold.by_key[key]]
-                if existing.status != Status.ERASED and (
-                    existing.payload != payload or existing.vector != vec
-                ):
-                    raise IdempotencyConflictError(
-                        f"key {key!r} already names {existing.entity_id} with different content"
-                    )
-                return existing.entity_id
+                if existing.status in RECALLABLE:
+                    if existing.payload != payload or existing.vector != vec:
+                        raise IdempotencyConflictError(
+                            f"key {key!r} already names {existing.entity_id} with different content"
+                        )
+                    return existing.entity_id
+                # The key names a tombstoned or erased memory: depositing again
+                # is a new memory under the same key, not a silent no-op.
 
             if floor > 0.0 and self._fold.count_protected() >= self.config.protected_quota:
                 raise ProtectedQuotaExceededError(
@@ -752,19 +794,32 @@ class Substrate:
                 payload=None if rec.status == Status.ERASED else rec.payload,
             )
 
-    def revector(self, vectors: dict[UUID, Sequence[float]], *, t: float | None = None) -> int:
+    def revector(
+        self,
+        vectors: dict[UUID, Sequence[float]],
+        *,
+        dim: int | None = None,
+        allow_missing: bool = False,
+        t: float | None = None,
+    ) -> int:
         """Re-embed the store: one atomic event carrying a new vector for every
         recallable record, possibly at a new dimension.
 
         This is how an embedder swap happens in v5. Tombstoned records are not
         re-embedded; their old vectors are dropped. Validation is all-or-nothing.
+
+        ``dim`` is required when ``vectors`` is empty (an empty store changing
+        dimension). ``allow_missing`` lets recallable records without a new
+        vector stay recallable but *unrankable*; they are named in the event
+        and ``explain()`` reports them, so a later revector can fill them in.
         """
         with self._lock:
             self._check_open()
             when = self._t(t)
+            if dim is not None and (isinstance(dim, bool) or not isinstance(dim, int) or dim < 1):
+                raise ValueError(f"dim must be a positive int, got {dim!r}")
             wanted = {r.entity_id for r in self._fold.records.values() if r.status in RECALLABLE}
             given: dict[UUID, tuple[float, ...]] = {}
-            dim: int | None = None
             for raw_id, vec in vectors.items():
                 eid = raw_id if isinstance(raw_id, UUID) else UUID(str(raw_id))
                 values = validate_vector(vec, dim, allow_zero=True)
@@ -772,21 +827,22 @@ class Substrate:
                 given[eid] = values
             missing = wanted - set(given)
             extra = set(given) - wanted
-            if missing or extra:
+            if extra or (missing and not allow_missing):
                 raise ValueError(
                     f"revector must cover exactly the recallable records "
                     f"({len(missing)} missing, {len(extra)} not recallable)"
                 )
             if dim is None:
-                raise ValueError("revector needs at least one record")
-            seq = self._append(
-                {
-                    "op": "revector",
-                    "t": when,
-                    "dim": dim,
-                    "vectors": {str(k): encode_vector(v) for k, v in sorted(given.items())},
-                }
-            )
+                raise ValueError("revector with no vectors needs an explicit dim")
+            event: dict[str, Any] = {
+                "op": "revector",
+                "t": when,
+                "dim": dim,
+                "vectors": {str(k): encode_vector(v) for k, v in sorted(given.items())},
+            }
+            if missing:
+                event["unembedded"] = sorted(str(k) for k in missing)
+            seq = self._append(event)
             self._index = ExactIndex()
             self._index.dim = dim
             for rec in self._fold.records.values():
@@ -809,6 +865,8 @@ class Substrate:
         self, ids: Iterable[UUID], *, reason: str = "operator", t: float | None = None
     ) -> int | None:
         """Retire memories from recall. They stay in the journal and in explain()."""
+        if not isinstance(reason, str):
+            raise TypeError("reason must be a str")
         with self._lock:
             self._check_open()
             keys = self._known(ids)
@@ -828,6 +886,8 @@ class Substrate:
         :meth:`compact` rewrites it. ``erase`` + ``compact`` is the
         physical-deletion path.
         """
+        if not isinstance(reason, str):
+            raise TypeError("reason must be a str")
         with self._lock:
             self._check_open()
             keys = self._known(ids)
@@ -849,12 +909,23 @@ class Substrate:
 
             def transform(event: dict[str, Any]) -> dict[str, Any]:
                 nonlocal scrubbed
-                if event.get("op") in ("deposit", "import") and event.get("id") in erased:
+                op = event.get("op")
+                if op in ("deposit", "import") and event.get("id") in erased:
                     if event.get("payload") or event.get("emb") is not None:
                         scrubbed += 1
+                    if event.get("emb") is not None:
+                        # Keep the dimension so replay locks the same dim even
+                        # when every vector in the store has been erased.
+                        event["dim"] = len(decode_vector(event["emb"]))
                     event["payload"] = ""
                     event["emb"] = None
                     event["erased"] = True
+                elif op == "revector":
+                    vectors = event.get("vectors", {})
+                    gone = [k for k in vectors if k in erased]
+                    if gone:
+                        scrubbed += 1
+                        event["vectors"] = {k: v for k, v in vectors.items() if k not in erased}
                 return event
 
             self._journal.rewrite(transform)

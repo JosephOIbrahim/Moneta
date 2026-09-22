@@ -14,7 +14,7 @@
 
 ## 0. You are here
 
-v5 exists as working code: `src/moneta/v5/`, about 2,900 lines, with 85 new tests. The full suite is 234 green under OpenUSD 26.08, and all 149 v1 tests are untouched `[V]`.
+v5 exists as working code: `src/moneta/v5/`, about 3,150 lines, with 124 new tests. The full suite is 273 green under OpenUSD 26.08, and all 149 v1 tests are untouched `[V]`.
 
 SYNAPSE 5.80.0 was run unchanged against the v5 facade. 247 of its 253 Moneta tests pass. The 6 that fail assert v1 data loss, which v5 no longer has `[V]` (see `SYNAPSE_COMPAT.md`).
 
@@ -112,7 +112,7 @@ Every line in the journal is one of these:
 | `revector` | `revector()` | embedder swap: a new vector for every recallable record |
 | `note` | migration, compat | provenance only |
 
-`compact()` is the one rewrite. It removes erased payloads and vectors from the file, keeps every `seq`, and uses tmp → fsync → replace → fsync(dir).
+`compact()` is the one rewrite. It removes erased payloads and vectors from every event that carries them (`deposit`, `import` and `revector`), keeps every `seq` and each erased record's dimension, and uses tmp → fsync → replace → fsync(dir). If the replace fails, the handle keeps working on the old file.
 
 ---
 
@@ -158,14 +158,14 @@ U(t) = max(floor, U_anchor · e^(−λ(t − t_anchor)))
 
 | Invariant | Test (`tests/v5/`) |
 |---|---|
-| I1 recoverability | `test_i1_reopen_reproduces_results_exactly` (no sleep pass, no checkpoint), `test_i1_index_is_rebuilt_not_trusted` |
+| I1 recoverability | `test_i1_reopen_reproduces_results_exactly` (no sleep pass, no checkpoint), `test_a_fold_failure_after_a_durable_append_stops_the_handle` |
 | I2 generation purity | `test_i2_writes_and_policy_edits_cannot_interleave_a_query` (a paused resolver while another thread edits policy and deposits a top-scoring record), `test_i2_every_result_echoes_its_generation` |
 | I3 append-only claims | `test_i3_contradictory_claims_coexist_and_context_picks`, `test_i3_journal_bytes_only_ever_grow` |
-| I4 no silent empties | `test_i4_wrong_dimension_query_raises`, `test_i4_rejected_deposit_leaves_no_trace`, `test_i4_attention_is_all_or_nothing`, `test_i4_direction_less_memory_is_stored_enumerable_and_explained` |
+| I4 no silent empties | `test_i4_wrong_dimension_query_raises`, `test_i4_rejected_deposit_leaves_no_trace`, `test_i4_attention_is_all_or_nothing`, `test_i4_direction_less_memory_is_stored_enumerable_and_explained`, `test_index_miss_raises_instead_of_dropping_a_memory` |
 | I5 authorization narrows | `test_i5_caller_scopes_narrow_a_permissive_policy`, `test_i5_caller_scopes_cannot_widen_a_policy` |
-| I6 determinism | `test_i6_same_journal_same_answers_in_another_process`, `test_i6_reads_never_write`, `test_i6_ties_break_by_deposit_order` |
+| I6 determinism | `test_i6_same_journal_same_answers_in_another_process`, `test_i6_reads_never_write`, `test_reads_leave_all_record_state_untouched` (every field of every record), `test_i6_ties_break_by_deposit_order` |
 | I7 four states | `test_i7_resident_excluded_tombstoned_erased_are_distinct`, `test_i7_erase_plus_compact_removes_bytes` |
-| I8 ordering without a GIL | `test_i8_concurrent_signals_reduce_in_journal_order` (8 threads × 50 signals), `test_i8_no_gil_sentinel_in_v5` |
+| I8 ordering without a GIL | `test_every_fold_apply_holds_the_substrate_lock` (6 threads mixing deposits and signals; live state must equal replay exactly), `test_i8_concurrent_signals_reduce_in_journal_order`, `test_i8_no_gil_sentinel_in_v5` |
 
 The oracle is the twelve-record, two-project fixture from the capsule. It has a protected record, a contradictory slot pair, a scoped exclusion and a record two half-lives old. Its orderings and scores were written by hand from closed-form cosines, not produced by running the code (`fixture.py`).
 
@@ -189,7 +189,7 @@ The oracle is the twelve-record, two-project fixture from the capsule. It has a 
 
 **E2: decay evaluation.** The spec order in §4/§5 erases decay (P4). v5 applies attention at its own timestamp and never mutates on read. The locked formula is untouched.
 
-**E3: concurrency.** The GIL argument is replaced by a total order: one lock, gap-free `seq`. That proves I8 on free-threaded Python too. The trade is that attention is visible immediately, not at the next sleep pass.
+**E3: concurrency.** The GIL argument is replaced by a total order: one lock, gap-free `seq`. The argument no longer depends on the GIL, and a test asserts that every fold mutation happens under the lock and that live state equals replay. It has not been run on a free-threaded CPython build `[U]`. The trade is that attention is visible immediately, not at the next sleep pass.
 
 **E4: forgetting.** Prune becomes a tombstone, so pruned memories stay explainable. `erase` + `compact` is the only physical delete, which also gives Moneta a real "forget this" for privacy.
 
@@ -199,7 +199,7 @@ The oracle is the twelve-record, two-project fixture from the capsule. It has a 
 
 USD's first job is **policy**, not storage. `UsdPolicyResolver` turns each context into a layer and each parent into its sublayer, so `projA.review → projA → default` is an ordinary sublayer stack. Pcp computes the answer to "which memories may this session see, and which claim wins each slot".
 
-For every context in the fixture, the USD resolver and the plain Python resolver produce identical resolved policies, with identical fingerprints and identical recall results `[V]` (`test_usd.py`). That makes the plain resolver a fair control (the capsule's arm C) and the USD one the treatment (arm D), with correctness settled before any benchmark.
+For every context in the fixture, and for 60 randomly generated validated specs, the USD resolver and the plain Python resolver produce identical resolved policies and identical fingerprints. On the fixture they also produce identical recall results `[V]` (`test_usd.py`, `test_review_regressions.py`). That makes the plain resolver a fair control (the capsule's arm C) and the USD one the treatment (arm D), with correctness settled before any benchmark.
 
 Slot prims are named `s_<sha1>`, never from the slot's text, following substrate convention #1. Layers edited on disk by another tool (a Solaris session, say) are picked up by `reload()` `[V]`.
 
@@ -211,11 +211,15 @@ Composition is still used only for policy. Records stay one prim each. Variants 
 
 ## 9. Compatibility and cutover
 
-`moneta.v5.compat.Moneta` takes the unchanged `MonetaConfig`. On the first open of a v1 store it migrates the snapshot and WAL tail into `snapshot.v5.journal`, and every skipped item is counted in a journaled note. v1 files are never modified by migration.
+`moneta.v5.compat.Moneta` takes the unchanged `MonetaConfig`. On the first open of a v1 store, it first copies the original snapshot byte-for-byte to `snapshot.json.v1-original`. Then it migrates the snapshot and WAL tail into `snapshot.v5.journal`. Every skipped or repaired item is counted in a journaled note, including WAL lines with non-finite values. The WAL and the preserved original are never modified.
 
-After that, `snapshot.json` is a **derived v1-format export**. It is written by `durability.snapshot_ecs()` and after every sleep pass, and even v1 itself can read it.
+After that, `snapshot.json` is a **derived v1-format export**. It is written by `durability.snapshot_ecs()`, after every sleep pass, and on `close()`, and even v1 itself can read it.
 
-If a foreign write to `snapshot.json` appears, v5 refuses to open (`SnapshotDivergedError`). There is one exception: SYNAPSE's embedder-swap rewrite, meaning the same ids and payloads with every vector at the newly configured dimension. That rewrite becomes a journaled `revector`.
+On open, the facade checks `snapshot.json` against the hashes it wrote or journaled:
+
+- **Unreadable** (corrupt, truncated, wrong shape): ignored with a warning and a journal note. The memory is intact, and the next export replaces the file.
+- **Embedder-swap rewrite** (same ids, same payloads, every vector at the newly configured dimension): becomes a journaled `revector`. If the rewrite came from a stale export, the journal records it was missing stay recallable but *unrankable*, are named in the event, and are explained until re-embedded.
+- **Anything else** (records the journal doesn't have, changed payloads, a non-swap rewrite): `SnapshotDivergedError`, because that is a second writer.
 
 Every intentional behavior change is listed in `compat.BEHAVIOR_CHANGES`.
 
@@ -271,16 +275,32 @@ oxideav-usdz stays parked. It is an adapter question, and the USD adapters now p
 - **In-process USD reopen.** v1's `UsdTarget` collides with the Sdf layer registry. This is inherited; v5 now reports it as `projection_error` instead of failing to open.
 - **List fields in policy replace rather than merge.** That is a design choice `[P]`. USD list-edit ops are not used.
 - **Retention thresholds** are still the untuned Round 2 defaults.
+- **Recovering from `SnapshotDivergedError` is manual:** move the snapshot aside, or remove the journal to re-migrate.
 - **Octavius** and its shared stage conventions are untouched.
 
 ---
 
-## 13. Run it
+## 13. Independent review
+
+A reviewer who had not written the code read it, reproduced defects by running code, and mutation-tested the suite. It found one critical issue plus several major and minor ones. All are fixed, each pinned by a test in `tests/v5/test_review_regressions.py` or `test_compat.py`:
+
+- **Critical: an invalid `embedding_dim` could write a genesis event that never reopens.** Config is now validated before the journal is opened.
+- **Compaction left erased vectors inside `revector` events.** They are now scrubbed, and a compacted store keeps its dimension.
+- **The snapshot guard refused four legitimate cases:** a corrupt file, a stale export, a missing sidecar after a crash, and an empty store. See §9.
+- **A failed compaction left a dead handle,** and `sync()` could silently no-op. Both fixed.
+- **An idempotency key could return a tombstoned or erased id** and store nothing. It now deposits a new memory.
+- **Replay could differ from live state in three ways:** a non-string `reason`, dim after erasing everything, and an undocumented half-life change. All fixed, and half-life changes are now noted in the journal.
+- **A NaN timestamp in the v1 WAL aborted migration.** It is now counted as malformed.
+- **The plain and USD resolvers diverged on non-string specs.** Specs are now type-checked, and equivalence is also asserted on 60 random specs.
+- **A double fault in rollback or release** could leave the journal writable after a partial frame, or leave a path locked. Fixed.
+- **Five tests passed with their property removed** (mutations M5–M8 and M2b/c). The strengthened tests catch all of them. Thirteen mutations now run against the suite, and none survive.
+
+## 14. Run it
 
 ```bash
 git checkout v5
 pip install -e .[dev] usd-core          # usd-core 26.08 gives pxr on CPython 3.11
-python -m pytest                        # 234 passed
+python -m pytest                        # 273 passed
 python -m pytest tests/v5 -q            # the v5 suite alone
 python scripts/v5/bench_v5_vs_v1.py --n 10000 --dim 384
 # SYNAPSE against v5, SYNAPSE unchanged:

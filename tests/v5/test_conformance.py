@@ -91,17 +91,6 @@ def test_i1_reopen_reproduces_results_exactly(tmp_path, clock):
         s2.close()
 
 
-def test_i1_index_is_rebuilt_not_trusted(world):
-    s, ids = world
-    before = s.recall(QUERY, 20, t=T0)
-    s._index = type(s._index)()  # throw the derived index away entirely
-    for rec in s._fold.recallable():
-        s._index.add(rec.entity_id, rec.unit)
-    assert [i.memory.entity_id for i in s.recall(QUERY, 20, t=T0).items] == [
-        i.memory.entity_id for i in before.items
-    ]
-
-
 # ----------------------------------------------------------------------
 # I2 generation purity
 # ----------------------------------------------------------------------

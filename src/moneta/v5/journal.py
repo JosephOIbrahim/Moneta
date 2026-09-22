@@ -214,7 +214,13 @@ class MemoryJournal:
 
     def rewrite(self, transform: Callable[[dict[str, Any]], dict[str, Any]]) -> None:
         with self._lock:
-            self._events = [transform(dict(e)) for e in self._events]
+            out = []
+            for e in self._events:
+                new = transform(dict(e))
+                new["seq"] = e["seq"]
+                encode_frame(new)
+                out.append(new)
+            self._events = out
 
     def sync(self) -> None:
         pass
@@ -233,6 +239,7 @@ class FileJournal:
         self._fd: int | None = None
         self._lock_fd: int | None = None
         self._registered = False
+        self._broken: str | None = None
         self.recovered_tail_bytes = 0
 
         key = str(self.path)
@@ -295,10 +302,19 @@ class FileJournal:
 
     # -- writing -------------------------------------------------------
 
+    def _writable(self) -> int:
+        if self._broken is not None:
+            raise JournalError(
+                f"journal {self.path} refused further writes: {self._broken}. "
+                f"Close and reopen it; recovery on open will repair the tail."
+            )
+        if self._fd is None:
+            raise JournalError("journal is closed")
+        return self._fd
+
     def append(self, event: dict[str, Any]) -> int:
         with self._lock:
-            if self._fd is None:
-                raise JournalError("journal is closed")
+            self._writable()
             seq = self._last_seq + 1
             framed = dict(event, seq=seq)
             frame = encode_frame(framed)  # raises before any byte is written
@@ -315,8 +331,12 @@ class FileJournal:
                 try:
                     os.ftruncate(self._fd, start)
                     os.lseek(self._fd, start, os.SEEK_SET)
-                except OSError:
-                    _logger.exception("journal %s: rollback after failed append failed", self.path)
+                except OSError as rollback_error:
+                    # The file may now end in a partial frame. Appending after
+                    # it would turn a torn tail into mid-file corruption, so
+                    # this handle stops writing; reopening truncates the tail.
+                    self._broken = f"rollback after a failed append failed ({rollback_error})"
+                    _logger.exception("journal %s: %s", self.path, self._broken)
                 raise
             self._size = start + len(frame)
             self._last_seq = seq
@@ -324,8 +344,7 @@ class FileJournal:
 
     def sync(self) -> None:
         with self._lock:
-            if self._fd is not None:
-                os.fsync(self._fd)
+            os.fsync(self._writable())
 
     def rewrite(self, transform: Callable[[dict[str, Any]], dict[str, Any]]) -> None:
         """Atomically rewrite every event through ``transform`` (seq preserved).
@@ -334,6 +353,7 @@ class FileJournal:
         Writes a temp file, fsyncs it, replaces the journal, fsyncs the dir.
         """
         with self._lock:
+            self._writable()
             self._initial = None
             old, _, _ = scan(self.path.read_bytes()[: self._size], self.path)
             new_events = []
@@ -343,38 +363,61 @@ class FileJournal:
                 out["seq"] = seq
                 new_events.append(out)
             tmp = self.path.with_name(self.path.name + ".compact.tmp")
-            with open(tmp, "wb") as fp:
-                for e in new_events:
-                    fp.write(encode_frame(e))
-                fp.flush()
-                os.fsync(fp.fileno())
-            os.close(self._fd)
-            self._fd = None
-            os.replace(tmp, self.path)
+            try:
+                with open(tmp, "wb") as fp:
+                    for e in new_events:
+                        fp.write(encode_frame(e))
+                    fp.flush()
+                    os.fsync(fp.fileno())
+                # Windows cannot replace a file that is open; POSIX can, and
+                # keeping the old descriptor there means a failed replace
+                # leaves the handle exactly as it was.
+                if os.name == "nt":  # pragma: no cover
+                    os.close(self._fd)
+                    self._fd = None
+                os.replace(tmp, self.path)
+            except BaseException:
+                if self._fd is None:  # pragma: no cover - Windows path
+                    self._fd = os.open(str(self.path), os.O_RDWR | getattr(os, "O_BINARY", 0))
+                    os.lseek(self._fd, 0, os.SEEK_END)
+                try:
+                    tmp.unlink()
+                except OSError:
+                    pass
+                raise
+            # The replace succeeded: from here on the new file is the journal.
+            old_fd, self._fd = self._fd, None
+            try:
+                self._fd = os.open(str(self.path), os.O_RDWR | getattr(os, "O_BINARY", 0))
+                self._size = os.lseek(self._fd, 0, os.SEEK_END)
+            finally:
+                if old_fd is not None:
+                    os.close(old_fd)
             _fsync_dir(self.path.parent)
-            self._fd = os.open(str(self.path), os.O_RDWR | getattr(os, "O_BINARY", 0))
-            self._size = os.lseek(self._fd, 0, os.SEEK_END)
 
     def close(self) -> None:
         with self._lock:
             self._release()
 
     def _release(self) -> None:
-        if self._fd is not None:
+        """Release everything; one failure never skips the rest."""
+        fd, self._fd = self._fd, None
+        lock_fd, self._lock_fd = self._lock_fd, None
+        try:
+            if fd is not None:
+                os.close(fd)
+        finally:
             try:
-                os.close(self._fd)
+                if lock_fd is not None:
+                    try:
+                        _unlock_fd(lock_fd)
+                    finally:
+                        os.close(lock_fd)
             finally:
-                self._fd = None
-        if self._lock_fd is not None:
-            try:
-                _unlock_fd(self._lock_fd)
-                os.close(self._lock_fd)
-            finally:
-                self._lock_fd = None
-        if self._registered:
-            with _OPEN_PATHS_LOCK:
-                _OPEN_PATHS.discard(str(self.path))
-            self._registered = False
+                if self._registered:
+                    with _OPEN_PATHS_LOCK:
+                        _OPEN_PATHS.discard(str(self.path))
+                    self._registered = False
 
 
 def repair(path: Path) -> dict[str, Any]:

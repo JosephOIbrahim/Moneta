@@ -16,12 +16,13 @@ reconcile, quarantine, export and backfill paths), so under the facade
 that file becomes a **derived v1-format export**:
 
 - The first open of a store that has only v1 files migrates the v1
-  snapshot and WAL into the journal. Migration reads v1 files and never
-  modifies them.
-- ``durability.snapshot_ecs()`` and ``run_sleep_pass()`` write a fresh
-  v1-format export (tmp -> fsync -> atomic replace, as v1 did) and record
-  its hash in ``<journal>.v1export``. Any v1-format reader, including v1
-  itself, can read it.
+  snapshot and WAL into the journal. Migration first copies the original
+  snapshot byte-for-byte to ``snapshot.json.v1-original`` and never touches
+  that copy or the WAL again.
+- ``durability.snapshot_ecs()``, ``run_sleep_pass()`` and ``close()`` write
+  a fresh v1-format export (tmp -> fsync -> atomic replace, as v1 did) and
+  record its hash in ``<journal>.v1export``. Any v1-format reader,
+  including v1 itself, can read it.
 - On open, a ``snapshot.json`` whose hash is not the one v5 last wrote or
   migrated from means someone else wrote it. One such rewrite is accepted
   as input: the embedder-swap rewrite (same ids, same payloads, every
@@ -149,7 +150,11 @@ def export_v1_snapshot(substrate: Substrate, snapshot_path: Path) -> str:
                 {
                     "entity_id": str(rec.entity_id),
                     "payload": rec.payload,
-                    "semantic_vector": list(rec.vector or ()),
+                    # A record left unembedded by a partial revector exports as
+                    # a zero vector: v1 readers accept it and never rank it.
+                    "semantic_vector": (
+                        list(rec.vector) if rec.vector is not None else [0.0] * (substrate.dim or 0)
+                    ),
                     "utility": rec.anchor_u,
                     "attended_count": rec.attended,
                     "protected_floor": rec.protected_floor,
@@ -173,16 +178,40 @@ def export_v1_snapshot(substrate: Substrate, snapshot_path: Path) -> str:
         return sha
 
 
+def _journal_known_shas(substrate: Substrate) -> set[str]:
+    """Snapshot hashes the journal itself vouches for (migration source, accepted rewrites).
+
+    Covers a crash between journaling a migration or revector and writing the
+    sidecar, so v5 never refuses a snapshot it produced or consumed itself.
+    """
+    shas = set()
+    for event in substrate._journal.events():
+        if event.get("op") == "note" and event.get("snapshot_sha256"):
+            shas.add(event["snapshot_sha256"])
+    return shas
+
+
 def _reconcile_snapshot(
     substrate: Substrate, snapshot_path: Path, configured_dim: int | None
 ) -> dict[str, Any] | None:
-    """Guard against a second writer; accept an embedder-swap rewrite."""
+    """Guard against a second writer; accept what a consumer may legitimately do.
+
+    Accepted, in order:
+      1. a snapshot v5 wrote or migrated from (hash known to sidecar or journal);
+      2. an unreadable snapshot (it is derived; the journal is intact). Warned,
+         noted in the journal, and overwritten by the next export;
+      3. an embedder-swap rewrite: every row is a journal record with the same
+         payload, every vector is at the configured new dimension. Journal
+         records missing from a stale export stay recallable but unrankable
+         until re-embedded.
+    Anything else is a second writer and raises SnapshotDivergedError.
+    """
     journal = substrate.journal_path
     if journal is None or not snapshot_path.exists():
         return None
     raw = snapshot_path.read_bytes()
     sha = hashlib.sha256(raw).hexdigest()
-    if sha in _read_known_shas(journal):
+    if sha in _read_known_shas(journal) or sha in _journal_known_shas(substrate):
         return None
 
     def diverged(why: str) -> SnapshotDivergedError:
@@ -196,23 +225,43 @@ def _reconcile_snapshot(
         snap = json.loads(raw.decode("utf-8"))
         rows = snap["rows"]
         by_id = {UUID(r["entity_id"]): r for r in rows}
-    except (ValueError, KeyError, TypeError) as exc:
-        raise diverged(f"unreadable: {exc}") from None
+        vectors = {eid: [float(x) for x in r["semantic_vector"]] for eid, r in by_id.items()}
+        payloads = {eid: r["payload"] for eid, r in by_id.items()}
+    except (ValueError, KeyError, TypeError, AttributeError, UnicodeDecodeError) as exc:
+        substrate._append(
+            {
+                "op": "note",
+                "t": substrate._t(None),
+                "kind": "snapshot_unreadable",
+                "snapshot_sha256": sha,
+                "error": str(exc)[:200],
+            }
+        )
+        _logger.warning(
+            "moneta.v5 ignored an unreadable %s (%s); the journal is intact and the next "
+            "export will replace it",
+            snapshot_path,
+            exc,
+        )
+        return {"ignored_unreadable_snapshot": True}
+
     live = {r.entity_id: r for r in substrate._fold.records.values() if r.status in RECALLABLE}
-    if set(by_id) != set(live):
-        raise diverged("its record set differs from the journal")
-    if any(by_id[eid]["payload"] != rec.payload for eid, rec in live.items()):
+    unknown = set(by_id) - set(live)
+    if unknown:
+        raise diverged(f"it holds {len(unknown)} records the journal does not")
+    if any(payloads[eid] != live[eid].payload for eid in by_id):
         raise diverged("payloads differ from the journal")
-    vectors = {eid: [float(x) for x in r["semantic_vector"]] for eid, r in by_id.items()}
     dims = {len(v) for v in vectors.values()}
+    target = dims.pop() if len(dims) == 1 else (configured_dim if not dims else None)
     if (
-        len(dims) != 1
+        target is None
         or configured_dim is None
-        or dims != {configured_dim}
+        or target != configured_dim
         or configured_dim == substrate.dim
     ):
         raise diverged("it is not an embedder-swap rewrite to the configured dimension")
-    seq = substrate.revector(vectors)
+    unembedded = sorted(set(live) - set(by_id))
+    seq = substrate.revector(vectors, dim=configured_dim, allow_missing=True)
     substrate._append(
         {
             "op": "note",
@@ -221,16 +270,27 @@ def _reconcile_snapshot(
             "snapshot_sha256": sha,
             "dim": configured_dim,
             "records": len(vectors),
+            "unembedded": len(unembedded),
         }
     )
     _write_known_sha(journal, sha, "consumer_revector", substrate.seq)
-    _logger.warning(
-        "moneta.v5 accepted an embedder-swap rewrite of %s: %d records re-embedded to dim %d",
+    log = _logger.warning
+    log(
+        "moneta.v5 accepted an embedder-swap rewrite of %s: %d records re-embedded to dim %d%s",
         snapshot_path,
         len(vectors),
         configured_dim,
+        f"; {len(unembedded)} journal records were not in the (stale) export and are "
+        f"unrankable until re-embedded"
+        if unembedded
+        else "",
     )
-    return {"revector_seq": seq, "dim": configured_dim, "records": len(vectors)}
+    return {
+        "revector_seq": seq,
+        "dim": configured_dim,
+        "records": len(vectors),
+        "unembedded": [str(u) for u in unembedded],
+    }
 
 
 class TargetProjector:
@@ -433,9 +493,18 @@ class Moneta:
             return
         self._closed = True
         try:
-            self.v5.close()
+            if self.durability is not None and not self.v5.closed:
+                try:
+                    # Leave file-level readers a current export. Failure here
+                    # loses nothing: the journal already holds every write.
+                    self.durability.snapshot_ecs()
+                except Exception:  # noqa: BLE001
+                    _logger.warning("moneta.v5 export on close failed", exc_info=True)
         finally:
-            _v1api._ACTIVE_URIS.discard(self.config.storage_uri)
+            try:
+                self.v5.close()
+            finally:
+                _v1api._ACTIVE_URIS.discard(self.config.storage_uri)
 
     # -- the four operations (v1 signatures) ---------------------------
 
@@ -484,22 +553,30 @@ def migrate_v1(substrate: Substrate, snapshot_path: Path, wal_path: Path | None)
     attended counts and states. WAL entries newer than the snapshot become
     attention events at their own timestamps. Anything unusable is counted
     and recorded in a journaled ``note`` event; nothing is dropped silently.
-    Reads v1 files; never modifies them.
+    The original snapshot is preserved as ``<snapshot>.v1-original`` before
+    anything else happens; v1 files are never modified.
     """
     raw = snapshot_path.read_bytes()
+    original = snapshot_path.with_name(snapshot_path.name + ".v1-original")
+    if not original.exists():
+        _atomic_write(original, raw)
     snapshot = json.loads(raw.decode("utf-8"))
     if not isinstance(snapshot, dict) or not isinstance(snapshot.get("rows"), list):
         raise ValueError(f"{snapshot_path} is not a v1 snapshot")
     snap_ts = float(snapshot.get("snapshot_created_at", 0.0))
+    if not math.isfinite(snap_ts):
+        snap_ts = 0.0
     sha = hashlib.sha256(raw).hexdigest()
     report: dict[str, Any] = {
         "kind": "v1_migration",
         "snapshot": str(snapshot_path),
         "snapshot_sha256": sha,
+        "original_preserved_at": str(original),
         "snapshot_version": snapshot.get("snapshot_version"),
         "rows": 0,
         "rows_invalid_vector": 0,
         "rows_zero_vector": 0,
+        "rows_repaired": 0,
         "wal_applied": 0,
         "wal_malformed": 0,
         "wal_unknown_id": 0,
@@ -519,16 +596,27 @@ def migrate_v1(substrate: Substrate, snapshot_path: Path, wal_path: Path | None)
             report["rows_zero_vector"] += 1
         status = _V1_STATUS.get(int(row["state"]), Status.LIVE)
         u = float(row["utility"])
+        floor = float(row.get("protected_floor", 0.0))
+        anchor_t = float(row["last_evaluated"])
+        repaired = False
+        if not math.isfinite(u):
+            u, repaired = 0.0, True
+        if not math.isfinite(floor) or not 0.0 <= floor <= 1.0:
+            floor, repaired = (min(max(floor, 0.0), 1.0) if math.isfinite(floor) else 0.0), True
+        if not math.isfinite(anchor_t):
+            anchor_t, repaired = snap_ts, True
+        if repaired:
+            report["rows_repaired"] += 1
         event = {
             "op": "import",
             "id": str(UUID(row["entity_id"])),
-            "t": float(row["last_evaluated"]),
+            "t": anchor_t,
             "payload": row["payload"],
             "emb": encode_vector(vec),
-            "floor": float(row.get("protected_floor", 0.0)),
+            "floor": floor,
             "scope": "",
-            "u": u if math.isfinite(u) else 0.0,
-            "anchor_t": float(row["last_evaluated"]),
+            "u": u,
+            "anchor_t": anchor_t,
             "attended": int(row.get("attended_count", 0)),
             "status": status.value,
         }
@@ -548,7 +636,9 @@ def migrate_v1(substrate: Substrate, snapshot_path: Path, wal_path: Path | None)
                 eid = UUID(entry["entity_id"])
                 weight = float(entry["weight"])
                 ts = float(entry["timestamp"])
-            except (ValueError, KeyError, TypeError):
+                if not math.isfinite(ts):
+                    raise ValueError("non-finite timestamp")
+            except (ValueError, KeyError, TypeError, AttributeError):
                 report["wal_malformed"] += 1
                 continue
             if ts <= snap_ts:
@@ -569,7 +659,13 @@ def migrate_v1(substrate: Substrate, snapshot_path: Path, wal_path: Path | None)
         _write_known_sha(substrate.journal_path, sha, "v1_migration", substrate.seq)
     skipped = sum(
         report[k]
-        for k in ("rows_invalid_vector", "wal_malformed", "wal_unknown_id", "wal_invalid_weight")
+        for k in (
+            "rows_invalid_vector",
+            "rows_repaired",
+            "wal_malformed",
+            "wal_unknown_id",
+            "wal_invalid_weight",
+        )
     )
     log = _logger.warning if skipped else _logger.info
     log("moneta.v5 migrated v1 store %s: %s", snapshot_path, report)
