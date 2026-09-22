@@ -4,6 +4,7 @@ With MONETA_V5_PORT_HELPERS=1 it also re-points two SYNAPSE *test helpers*
 that write v1 private ECS columns (`ecs._last_evaluated`, `ecs._ids`) at
 their exact v5 equivalents. Production code is never patched.
 """
+
 import os
 import time
 
@@ -27,8 +28,11 @@ def _v5_backdate(store, seconds_ago=100_000):
 def _v5_assert_consistent(store):
     s = store._handle.v5
     with s._lock:
-        ranked = {r.entity_id for r in s._fold.records.values()
-                  if r.status in RECALLABLE and r.unit is not None}
+        ranked = {
+            r.entity_id
+            for r in s._fold.records.values()
+            if r.status in RECALLABLE and r.unit is not None
+        }
         assert set(s._index._units) == ranked, "index desync from fold"
         assert s._fold.last_seq == s._journal.last_seq, "fold behind journal"
 
