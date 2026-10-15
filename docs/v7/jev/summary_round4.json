@@ -1,0 +1,261 @@
+{
+  "protocol": "v2: all cyclic rotations, one question per request, 2 repeats; settled = same top in every rotation with mean p >= 0.6 and no option swinging >= 0.2 across rotations",
+  "model_versions": [
+    "jev-1.13.0"
+  ],
+  "e1_authority": {
+    "status": "settled",
+    "top_by_rotation": [
+      "journal_authoritative",
+      "journal_authoritative"
+    ],
+    "mean_over_rotations": {
+      "journal_authoritative": 1.0,
+      "vector_index_authoritative": 0.0,
+      "none_of_these": 0.0
+    },
+    "position_swing": {
+      "journal_authoritative": 0.0,
+      "vector_index_authoritative": 0.0,
+      "none_of_these": 0.0
+    },
+    "rotations": [
+      {
+        "order": [
+          "journal_authoritative",
+          "vector_index_authoritative",
+          "none_of_these"
+        ],
+        "mean": {
+          "journal_authoritative": 1.0,
+          "vector_index_authoritative": 0.0,
+          "none_of_these": 0.0
+        },
+        "choices": [
+          "journal_authoritative",
+          "journal_authoritative"
+        ]
+      },
+      {
+        "order": [
+          "vector_index_authoritative",
+          "journal_authoritative",
+          "none_of_these"
+        ],
+        "mean": {
+          "vector_index_authoritative": 0.0,
+          "journal_authoritative": 1.0,
+          "none_of_these": 0.0
+        },
+        "choices": [
+          "journal_authoritative",
+          "journal_authoritative"
+        ]
+      }
+    ]
+  },
+  "e2_decay_evaluation": {
+    "status": "settled",
+    "top_by_rotation": [
+      "pure_evaluation",
+      "pure_evaluation"
+    ],
+    "mean_over_rotations": {
+      "pure_evaluation": 0.9925,
+      "three_mutation_points": 0.005,
+      "none_of_these": 0.0025
+    },
+    "position_swing": {
+      "pure_evaluation": 0.015,
+      "three_mutation_points": 0.01,
+      "none_of_these": 0.005
+    },
+    "rotations": [
+      {
+        "order": [
+          "pure_evaluation",
+          "three_mutation_points",
+          "none_of_these"
+        ],
+        "mean": {
+          "pure_evaluation": 0.985,
+          "three_mutation_points": 0.01,
+          "none_of_these": 0.005
+        },
+        "choices": [
+          "pure_evaluation",
+          "pure_evaluation"
+        ]
+      },
+      {
+        "order": [
+          "three_mutation_points",
+          "pure_evaluation",
+          "none_of_these"
+        ],
+        "mean": {
+          "three_mutation_points": 0.0,
+          "pure_evaluation": 1.0,
+          "none_of_these": 0.0
+        },
+        "choices": [
+          "pure_evaluation",
+          "pure_evaluation"
+        ]
+      }
+    ]
+  },
+  "e3_concurrency": {
+    "status": "settled",
+    "top_by_rotation": [
+      "single_ordered_journal",
+      "single_ordered_journal"
+    ],
+    "mean_over_rotations": {
+      "single_ordered_journal": 1.0,
+      "gil_attention_log": 0.0,
+      "none_of_these": 0.0
+    },
+    "position_swing": {
+      "single_ordered_journal": 0.0,
+      "gil_attention_log": 0.0,
+      "none_of_these": 0.0
+    },
+    "rotations": [
+      {
+        "order": [
+          "single_ordered_journal",
+          "gil_attention_log",
+          "none_of_these"
+        ],
+        "mean": {
+          "single_ordered_journal": 1.0,
+          "gil_attention_log": 0.0,
+          "none_of_these": 0.0
+        },
+        "choices": [
+          "single_ordered_journal",
+          "single_ordered_journal"
+        ]
+      },
+      {
+        "order": [
+          "gil_attention_log",
+          "single_ordered_journal",
+          "none_of_these"
+        ],
+        "mean": {
+          "gil_attention_log": 0.0,
+          "single_ordered_journal": 1.0,
+          "none_of_these": 0.0
+        },
+        "choices": [
+          "single_ordered_journal",
+          "single_ordered_journal"
+        ]
+      }
+    ]
+  },
+  "e4_forgetting": {
+    "status": "settled",
+    "top_by_rotation": [
+      "tombstone_then_erase",
+      "tombstone_then_erase"
+    ],
+    "mean_over_rotations": {
+      "tombstone_then_erase": 0.9275,
+      "physical_delete": 0.05,
+      "none_of_these": 0.0225
+    },
+    "position_swing": {
+      "tombstone_then_erase": 0.045,
+      "physical_delete": 0.02,
+      "none_of_these": 0.025
+    },
+    "rotations": [
+      {
+        "order": [
+          "tombstone_then_erase",
+          "physical_delete",
+          "none_of_these"
+        ],
+        "mean": {
+          "tombstone_then_erase": 0.905,
+          "physical_delete": 0.06,
+          "none_of_these": 0.035
+        },
+        "choices": [
+          "tombstone_then_erase",
+          "tombstone_then_erase"
+        ]
+      },
+      {
+        "order": [
+          "physical_delete",
+          "tombstone_then_erase",
+          "none_of_these"
+        ],
+        "mean": {
+          "physical_delete": 0.04,
+          "tombstone_then_erase": 0.95,
+          "none_of_these": 0.01
+        },
+        "choices": [
+          "tombstone_then_erase",
+          "tombstone_then_erase"
+        ]
+      }
+    ]
+  },
+  "h_half_life_change": {
+    "status": "settled",
+    "top_by_rotation": [
+      "reinterpret_history",
+      "reinterpret_history"
+    ],
+    "mean_over_rotations": {
+      "reinterpret_history": 0.84,
+      "rate_applies_forward": 0.145,
+      "none_of_these": 0.015
+    },
+    "position_swing": {
+      "reinterpret_history": 0.08,
+      "rate_applies_forward": 0.07,
+      "none_of_these": 0.01
+    },
+    "rotations": [
+      {
+        "order": [
+          "reinterpret_history",
+          "rate_applies_forward",
+          "none_of_these"
+        ],
+        "mean": {
+          "reinterpret_history": 0.8,
+          "rate_applies_forward": 0.18,
+          "none_of_these": 0.02
+        },
+        "choices": [
+          "reinterpret_history",
+          "reinterpret_history"
+        ]
+      },
+      {
+        "order": [
+          "rate_applies_forward",
+          "reinterpret_history",
+          "none_of_these"
+        ],
+        "mean": {
+          "rate_applies_forward": 0.11,
+          "reinterpret_history": 0.88,
+          "none_of_these": 0.01
+        },
+        "choices": [
+          "reinterpret_history",
+          "reinterpret_history"
+        ]
+      }
+    ]
+  }
+}

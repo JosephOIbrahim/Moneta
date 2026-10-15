@@ -7,7 +7,7 @@ Fixes found in pass 1:
   - an extra R4 variant with the adoption wording removed from the state,
     to test whether the prompt was priming owner_gate.
 
-Usage: python -I jev_triage_v2.py <rulings.jev.json> <out_dir>
+Usage: python -I jev_triage_v2.py <rulings.jev.json> <out_dir> [tag]
 """
 import copy
 import hashlib
@@ -53,11 +53,13 @@ def main():
     key = os.environ["TYPESAFE_API_KEY"]
     model = spec["protocol"]["model"]
     variants = [(qid, q, spec["state"], qid) for qid, q in spec["questions"].items()]
-    r4 = copy.deepcopy(spec["questions"]["r4_pointer"])
-    r4["instructions"] = r4["instructions"].split(" Under every option")[0]
-    variants.append(("r4_pointer", r4, neutral_state(spec["state"]), "r4_pointer_neutral"))
+    if "r4_pointer" in spec["questions"]:
+        r4 = copy.deepcopy(spec["questions"]["r4_pointer"])
+        r4["instructions"] = r4["instructions"].split(" Under every option")[0]
+        variants.append(("r4_pointer", r4, neutral_state(spec["state"]), "r4_pointer_neutral"))
+    tag = sys.argv[3] if len(sys.argv) > 3 else "v2"
 
-    log = open(os.path.join(out, "requests_v2.jsonl"), "w", encoding="utf-8")
+    log = open(os.path.join(out, f"requests_{tag}.jsonl"), "w", encoding="utf-8")
     summary = {"protocol": "v2: all cyclic rotations, one question per request, "
                            f"{REPEATS} repeats; settled = same top in every rotation with mean p >= {SETTLE_P} "
                            f"and no option swinging >= {POSITION_SWING} across rotations",
@@ -89,7 +91,7 @@ def main():
         summary[label] = {"status": "settled" if settled else "contested", "top_by_rotation": tops,
                           "mean_over_rotations": avg, "position_swing": swing, "rotations": per_rot}
     summary["model_versions"] = sorted(v for v in summary["model_versions"] if v)
-    json.dump(summary, open(os.path.join(out, "summary_v2.json"), "w"), indent=2)
+    json.dump(summary, open(os.path.join(out, f"summary_{tag}.json"), "w"), indent=2)
     for label in [v[3] for v in variants]:
         s = summary[label]
         print(label, s["status"], s["top_by_rotation"], "avg", s["mean_over_rotations"], "swing", s["position_swing"])
