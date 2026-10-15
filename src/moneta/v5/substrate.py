@@ -29,6 +29,7 @@ Everything added is keyword-only.
 
 from __future__ import annotations
 
+import heapq
 import logging
 import math
 import threading
@@ -441,7 +442,15 @@ class Substrate:
     def _verdicts(
         self, policy: ResolvedPolicy, allowed: frozenset[str] | None
     ) -> tuple[dict[UUID, str], dict[str, UUID]]:
+        verdicts, winners, _ = self._classify(policy, allowed)
+        return verdicts, winners
+
+    def _classify(
+        self, policy: ResolvedPolicy, allowed: frozenset[str] | None
+    ) -> tuple[dict[UUID, str], dict[str, UUID], list[Record]]:
+        """Verdict per record, slot winners, and the eligible records in fold order."""
         verdicts: dict[UUID, str] = {}
+        eligible: list[Record] = []
         candidates: list[Record] = []
         for rec in self._fold.records.values():
             if rec.status == Status.ERASED:
@@ -477,7 +486,8 @@ class Substrate:
                 verdicts[rec.entity_id] = Verdict.UNRANKABLE
             else:
                 verdicts[rec.entity_id] = Verdict.ELIGIBLE
-        return verdicts, winners
+                eligible.append(rec)
+        return verdicts, winners, eligible
 
     @staticmethod
     def _allowed(allowed_scopes: Iterable[str] | None) -> frozenset[str] | None:
@@ -586,18 +596,17 @@ class Substrate:
             query_vec = validate_vector(embedding, self._fold.dim)
             if self._fold.dim is None:
                 return RecallResult((), generation, policy)
-            verdicts, _ = self._verdicts(policy, allowed)
-            eligible = [eid for eid, v in verdicts.items() if v == Verdict.ELIGIBLE]
-            cosines = self._index.cosines(query_vec, eligible)
+            _, _, eligible = self._classify(policy, allowed)
+            cosines = self._index.cosines(query_vec, [r.entity_id for r in eligible])
             scored = []
-            for eid, cos in cosines:
-                rec = self._fold.records[eid]
+            for (_eid, cos), rec in zip(cosines, eligible, strict=False):
                 u = rec.utility_at(self.lam, when)
                 scored.append((max(cos, 0.0) * u, rec.seq, cos, rec))
-            scored.sort(key=lambda s: (-s[0], s[1]))
+            # The key is unique (seq), so the k smallest equal the sorted prefix.
+            top = heapq.nsmallest(limit, scored, key=lambda s: (-s[0], s[1]))
             items = tuple(
                 RecallItem(rec.to_memory(self.lam, when), score, cos, rec.scope, rec.slot, seq)
-                for score, seq, cos, rec in scored[:limit]
+                for score, seq, cos, rec in top
             )
             return RecallResult(items, generation, policy)
 

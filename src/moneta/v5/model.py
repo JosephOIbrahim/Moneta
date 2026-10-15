@@ -28,7 +28,8 @@ from __future__ import annotations
 import base64
 import math
 import struct
-from collections.abc import Iterable, Iterator
+from array import array
+from collections.abc import Iterable, Iterator, Sequence
 from dataclasses import dataclass
 from enum import StrEnum
 from typing import Any
@@ -127,7 +128,7 @@ class Record:
     deposited_at: float
     payload: str
     vector: tuple[float, ...] | None
-    unit: tuple[float, ...] | None
+    unit: Sequence[float] | None
     protected_floor: float
     scope: str
     slot: str | None
@@ -158,14 +159,19 @@ class Record:
         )
 
 
-def _unit(vec: tuple[float, ...]) -> tuple[float, ...] | None:
-    """Unit vector, or None when the vector has no direction (zero or non-finite)."""
+def _unit(vec: tuple[float, ...]) -> Sequence[float] | None:
+    """Unit vector, or None when the vector has no direction (zero or non-finite).
+
+    Held as packed doubles (``array('d')``, 8 bytes a component) instead of a
+    tuple of float objects (~32 bytes each): the same values, a quarter of
+    the memory. Only the index and the rankable check read it.
+    """
     if not all(math.isfinite(x) for x in vec):
         return None
     norm = math.sqrt(sum(x * x for x in vec))
     if norm == 0.0:
         return None
-    return tuple(x / norm for x in vec)
+    return array("d", [x / norm for x in vec])
 
 
 # ----------------------------------------------------------------------

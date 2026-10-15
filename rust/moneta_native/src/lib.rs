@@ -36,6 +36,41 @@ fn dot_seq(a: &[f64], b: &[f64]) -> f64 {
     acc
 }
 
+
+/// CPython's `sum()` over floats, reproduced per interpreter.
+///
+/// * CPython <= 3.11 adds left to right: `f += x`.
+/// * CPython >= 3.12 uses Neumaier's compensated sum, then adds the
+///   compensation once at the end if it is nonzero and finite
+///   (Python/bltinmodule.c, `builtin_sum_impl`).
+///
+/// The int start value `0` behaves exactly like `0.0` for these inputs
+/// (`0 + -0.0 == 0.0` in both), so both modes start from `0.0`.
+#[inline]
+pub fn py_sum(values: impl Iterator<Item = f64>, compensated: bool) -> f64 {
+    let mut f = 0.0_f64;
+    if !compensated {
+        for x in values {
+            f += x;
+        }
+        return f;
+    }
+    let mut c = 0.0_f64;
+    for x in values {
+        let t = f + x;
+        if f.abs() >= x.abs() {
+            c += (f - t) + x;
+        } else {
+            c += (x - t) + f;
+        }
+        f = t;
+    }
+    if c != 0.0 && c.is_finite() {
+        f += c;
+    }
+    f
+}
+
 /// Raised when a cosine would be NaN. The oracle's ordering of NaN keys is
 /// an artifact of CPython's sort, not something a total order can match, so
 /// the facade answers such queries with the oracle itself.
@@ -229,6 +264,23 @@ impl ScanIndex {
         })
     }
 
+    /// v5 seam (`moneta.v5.index.ExactIndex.cosines`): for each slot, the
+    /// dot of its stored unit vector with the already-normalized query `q`,
+    /// summed exactly as the running interpreter's `sum()` would
+    /// (`compensated` = CPython >= 3.12). Returns cosines in `slots` order.
+    fn dots(&self, q: Vec<f64>, slots: Vec<usize>, compensated: bool) -> PyResult<Vec<f64>> {
+        if q.len() != self.dim {
+            return Err(PyValueError::new_err("dots: query dim mismatch"));
+        }
+        let mut out = Vec::with_capacity(slots.len());
+        for &row in &slots {
+            self.check_row(row)?;
+            let v = &self.data[row * self.dim..(row + 1) * self.dim];
+            out.push(py_sum(v.iter().zip(q.iter()).map(|(a, b)| a * b), compensated));
+        }
+        Ok(out)
+    }
+
     /// Bytes held by the vector store (for memory accounting).
     fn nbytes(&self) -> usize {
         self.data.capacity() * 8 + self.norm_sq.capacity() * 8 + self.alive.capacity()
@@ -271,10 +323,17 @@ fn decay_batch(
     Ok(utility)
 }
 
+/// `py_sum` exposed for the parity test against the interpreter's `sum()`.
+#[pyfunction]
+fn py_sum_list(values: Vec<f64>, compensated: bool) -> f64 {
+    py_sum(values.into_iter(), compensated)
+}
+
 #[pymodule]
 fn moneta_native(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<ScanIndex>()?;
     m.add_function(wrap_pyfunction!(decay_batch, m)?)?;
+    m.add_function(wrap_pyfunction!(py_sum_list, m)?)?;
     m.add("__version__", env!("CARGO_PKG_VERSION"))?;
     Ok(())
 }
@@ -310,6 +369,14 @@ mod tests {
         assert!(nsq[0].is_infinite());
         let r = scan_topk(&data, &nsq, &[true], 2, &[1e308, 1e308], 1);
         assert_eq!(r, Err(NonExact));
+    }
+
+    #[test]
+    fn compensated_sum_recovers_cancellation() {
+        // 1e16 + 1 - 1e16: sequential loses the 1, Neumaier keeps it.
+        let xs = [1e16, 1.0, -1e16];
+        assert_eq!(py_sum(xs.iter().copied(), false), 0.0);
+        assert_eq!(py_sum(xs.iter().copied(), true), 1.0);
     }
 
     #[test]
