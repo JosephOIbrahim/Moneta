@@ -1,0 +1,530 @@
+{
+ "fold": "1. Header: status now reads \"Pass 4 of 4 \u2014 complete\". The baseline note says citations into api.py, ecs.py, vector_index.py and CLAUDE.md use working-tree lines, and the Appendix maps each old 6cf05f5 line to its new one. Added a new `[M]` tag for measured facts (machine, interpreter, date, script, result file).\n2. Added a \"Read this first\" block of 7 lines under the title: what exists today, v7 in one sentence, the health-check command, next actions, where the decisions are, and what \"done this week\" means.\n3. Added \u00a76 \"Built so far (v1 line, 2026-10-15)\". It covers the rust/moneta_native crate, the scan, the exact early-stop rerank and the decay kernel, with their code paths, oracles and conformance tests, the D1 p95 table (312/109/3.1/6.2 ms), 211 tests green in 4 configs, the 2-vCPU-container caveat, gaps against v7's seam rules (SM1, shared fixtures, Q11, Q12, P5) and a sequencing update.\n4. Corrected the false claims. D1's gate has fired (SM4 and the scan row). `api.query` reaches native code on main. The scan is now bit-exact by default (V-POOL, V-ORACLE-SCAN, Q5). The decay kernel is same-platform `exp` parity, not Q5, and is not `fold_recall`.\n5. Citations: every moved api/ecs/vector_index line is re-anchored. The clamp and stable sort moved to `ECS.rank_hits` (ecs.py:371/:380), and the scan to `_oracle_scan` (vector_index.py:112-145). api.py:330 is fixed to :331. New lib.rs, test and bench citations were added.\n6. Fixed eligibility and open: the seal body now carries the RolledBack set and live G4 states. G3-3 is now checkable from the journal alone, open is reordered to 7 steps with the verifier first and stays O(tail), Audit recomputes the carried state, and V-SEAL gains a sabotage.\n7. Attention now carries `t_call`, and the folds use it, so drain-time `t` under E3-against is handled. The E3-against single-writer vs \u00a75.1 conflict is routed to O30. A reseal's base must now be attested. Vectors refuse \u00b1inf and canonicalize -0.0.\n8. Added a \"Migration into format 7\" paragraph (genesis names the hash of the imported v5/v1 state; history is not rewritten), and \u00a71 row 1 now quotes R5 literally. Roll-forward is marked \"signed, pending O9\". G1-2 now covers event-to-event edges only. The loop is restated as \"two govern kinds, neither moving the pointer\".\n9. Checks: added V-TRIPWIRE, V-QUERYSIG and V-CLOCK; mapped G5-3 to V-PIN and V-VIEW; added a threshold sabotage to V-BOUNDS; added revector crash and t_call fixtures. V-MISATTR is marked as a measurement. V-REPLAY's two-caller arm now applies only under O16(b).\n10. IDs: the review-log judges are renamed J1/J2 to JA/JB, the time window to \u03b4_t, and historical IDs carry a prefix (draft-RS, pass-2 attack). The ID table gained E1-E4, A1-A51, the arms and the gate-variable rule. Added a 25-entry glossary and \u00a710 attack 11 on the native accelerators.\n11. \u00a78/\u00a79: added mile 0 step 0 (find the v5 bundle) and the brief path `docs/rounds/round-4-brief.md`. Kill conditions now have numeric triggers, tagged `[P]`. Added the new O31-O35, a gate measurement protocol in O13, concrete defaults and deadlines, a decision queue at the top of \u00a79, and split O28 into an interim rule and a Round 4 proposal.\n12. Pass 4 log: 82 rows, 1 skipped (moving ~40% of the paper to appendices, which is not cheap). Partial skips are logged inside rows. Routed to the Documentarian: the D1 wording in code docstrings and CLAUDE.md, and the hython 21.0.512 path in CLAUDE.md (only 21.0.773 is installed; I measured the no-flush probe on it as `[M]`). File: C:/Users/User/Moneta/docs/v7/BLUEPRINT_v7.md\nO1: Rule E1\u2013E4 and the half-life call at mile 0 \u2014 default: rule all five for (v7 as drawn), each [A] until ruled; decided by the owner through Round 4, before mile 4\nO2: Is the recall fold a fourth decay evaluation point under ARCHITECTURE.md:90 \u2014 default: no, a pure view (V-EVAL3); decided by Round 4\nO3: How USD carries authorization, since LIVRPS can't intersect \u2014 default: the plain resolver intersects, USD carries flattened sets, C3 covers value fields only; decided by review and the USD Engineer\nO4: R2/R3 \u2014 default: recall_half_life / owner_labels [A], with numeric flip triggers at mile 2; decided by the owner on mile 2's report (and Round 4's half-life call)\nO5: At the probation ceiling, hold with an alarm or auto-rollback \u2014 default: hold + alarm (expire), no pointer move; decided by the owner before mile 4\nO6: Does the recall fold also drop rolled-back attention \u2014 default: retention only, eval sets also exclude it, live recall uses an empty set; decided by the owner after pass-2 attack 3 (queued after V-MISATTR)\nO7: Retention fold step order (per event vs v1 per batch) and time rule \u2014 default: per event, append-time clamp; decided by Round 4 (E3, lock 2 via O29)\nO8: compact under a hash chain \u2014 default: forbidden, or a signed re-genesis naming the old final hash; decided by the owner at mile 4\nO9: Extend R5's signed set to erase, revector and roll-forward \u2014 default: proposed signed, pending confirmation, not adopted silently; decided by the owner before mile 4\nO10: Disclosure accounting and wear cap \u2014 default: any numeric held-out figure counts; cap 3 disclosures per window; decided by the owner in the constitution before mile 4\nO11: Runtime deps for ed25519/WASM, Windows, native wheel packaging \u2014 default: pyo3+maturin, ed25519 and wasmtime evaluated at mile 4, wheel stays hand-installed, Linux/macOS parity [U]; decided by the Persistence Engineer at mile 4, owner approves\nO12: Anchor medium and maximum unattested window \u2014 default: signed git tag in a private remote; window is a tripwire with an X1 ceiling (value via O33); decided by the owner before mile 5\nO13: Gate numbers (verifier, fold binding, open, \u03b4) and protocol \u2014 default: [P] thresholds measured with the machine, interpreter and dataset stated, N\u2265200, fresh and aged utilities, reference 2-vCPU container; decided at mile 4, owner signs\nO14: Should a host echo on signal_attention replace the call-time stamp \u2014 default: no (needs \u00a79), no mitigation until V-MISATTR sizes it; decided by the owner with V-MISATTR and O20 numbers\nO15: Pin the root key in genesis or code \u2014 default: genesis; decided by the owner before mile 4\nO16: How agent reads/deposits reach context, scopes and time \u2014 default: (a) one root context and full scope set in v7.0; decided by the owner (Round 4 only for per-call), before mile 4\nO17: Which excluded set each consumer uses, and as of when \u2014 default: built_from names Prefix(h_build), live reads use the set as of n (empty under O6), referee window disclosed; decided by the owner with O6\nO18: Erase vs replay, and embedder identity \u2014 default: erase deletes payload and every vector version, affected eval sets marked unrebuildable, host-declared embedder id pinned; decided by the owner before mile 4\nO19: Does SYNAPSE need restore-from-export \u2014 default: snapshot.json export-only, restores replay the journal or import as events; decided by the owner at mile 0\nO20: Host attention on retention-ranked paths during probation \u2014 default: accept and disclose, V-MISATTR measures it; decided by the owner with O14 after V-MISATTR reports\nO21: Roll-forward in G4 and rollback of an Adopted generation \u2014 default: roll-forward enters Promoted; (a) rollback of Adopted also excludes and reseals; decided by the owner before mile 4\nO22: The hold has no resource bound \u2014 default: hold + alarm plus an X1 resource ceiling whose action the owner picks (auto-rollback / staging-only pass / refuse deposit); decided by the owner before mile 4, with O5\nO23: What happens when MAX_ENTITIES is crossed under a hold \u2014 default: alarm, then (i) admit deposits with the overshoot bounded under X1 until mile 5; decided by Round 4 and the owner\nO24: What a slot preference is and what an empty slot resolves to \u2014 default: ordered list of record ids, first admitted entry wins, else empty; decided by the owner at mile 0 from v5 code\nO25: Revector: keep or drop old vectors \u2014 default: keep until erase; versioned section in the record file, section-then-event write order, orphan section truncated; decided by the owner before mile 4\nO26: What adopt rests on, and is there a minimum probation \u2014 default: adopt is the owner's untyped judgement, optional evidence edge, minimum probation 0; decided by the owner with O5\nO27: Is the seam-admission rule a constraint (decay_batch already shipped under it) \u2014 default: label it [A; v6], not D1; keep decay_batch behind MONETA_NATIVE with its parity suite as the contract, add a decay-only bench; decided by the owner before the Round 4 brief goes out\nO28: Does ARCHITECTURE.md:82's 1 min\u201324 h range bind the recall \u03bb \u2014 default: interim yes (X1 recall envelope = :82 range); proposal to Round 4: not bound, since the fold is a view; decided by Round 4\nO29: Is the per-event retention fold eval point 2 or a fourth point \u2014 default: route to Round 4 with O7; fallback is v1's per-batch order for retention; decided by Round 4\nO30: If E3 is ruled against, where does R4a live (and the call-time stamp's lock on \u00a75.1) \u2014 default: Round 4 accepts E3 or amends \u00a75.1 (or uses a lock-free stamp), else R4 stays shadow-only; decided by the owner in the Round 4 brief\nO31: Which exp retention and the read path use \u2014 default: (a) when Q5 lands, move decay.py:68 and decay_batch to the ported exp together and re-point the parity test (CLAUDE.md:157 changes); platform exp until then; decided by the owner in the Round 4 brief\nO32: Does rust/ become the v7 workspace \u2014 default: yes, moneta_native becomes the PyO3 member in place of moneta-py, wrapping pure kernels in moneta-kernel, and the v7 scan is a pure scan() that ScanIndex wraps; decided by the owner before mile 4\nO33: X1 ceiling values \u2014 default: a proposed table drafted at mile 4 from the gate measurements, owner signs; decided by the owner at mile 4\nO34: Bootstrap resampling unit for the J4 margin \u2014 default: the session; decided by the owner on mile 2's report\nO35: Where is the v5 bundle \u2014 default: locate it before the Round 4 brief; if not found, rule whether mile 0 proceeds on v1 alone; decided by the owner now (mile 0 step 0)",
+ "review": "**VERDICT: NOT READY for owner review.** Two `[M]` claims about the built seams are false on the paper's own working tree, and one of them is load-bearing for the Rust sequencing story in roughly eight places. Both fixes are short edits, but they change what the paper says D1 did. Evidence below was obtained by running, not reading (which is exactly what a 0/102 refuter pass could not catch).\n\n**TOP 5 DEFECTS (exact locations in `C:/Users/User/Moneta/docs/v7/BLUEPRINT_v7.md`)**\n\n1. **\"D1's gate has fired\" is stale and, on the cited working tree, false.** `results/bench_query_arm_p.jsonl` (109 ms p95) was written at 17:13, before `VectorIndex.iter_query` / `ECS.rank_hits` landed (17:21-17:25). That 109 ms was the old rerank materializing 10k `Memory` objects, not the numpy scan. Re-running the paper's own cited script on the current tree (`PYTHONPATH=src python scripts/bench_arm_p.py --n 10000`, `MONETA_NATIVE=0`): arm P = **7.8-8.8 ms p95 fresh, 9.6 ms p95 aged (`--spread`)** at 10k x 384, i.e. under the 50 ms gate by >5x. The D1 table (lines 673-679) compares arm P without the early-stop rerank against native with it. Locations stating \"gate fired\" as fact: line 4 (Read this first), lines 94 and 98 (On one screen), line 549 (SM4), line 622 (\u00a76 opener), line 656 (scan row), line 667 (Built so far scan row), line 676 (D1 table), line 683 (Machine dependence), line 807 (mile 4b); plus `src/moneta/vector_index.py:52-56` docstring (Documentarian). Consequence the paper must state: the native scan is admitted on the exactness clause (numpy 1496/2000 not bit-equal, which does reproduce), and that is the O27 seam-admission rule, not D1's literal latency-only text. The scan joins the decay kernel under O27; SM4 and 4b need rewording. Also: line 681 says the 15.4 -> 3.1 ms step \"bounds decay and early stop together\"; the re-measure shows early stop alone is the dominant win (109 -> ~8 ms with pure-Python decay), so the native scan's marginal contribution over numpy is unmeasured. State it as a gap.\n\n2. **Native scan exactness envelope has a hole; a crash path is reachable from `api.query` with finite input.** Finite components at \u00b11e308 pass `ScanIndex.check` (`is_finite`), overflow `norm_sq`/`dot` to inf, and produce NaN cosines. `scan_topk`'s comparator (`lib.rs:66-71`) maps NaN -> `Equal` -> row order, which is not a total order. Probe (31 rows, one at 1e308): native vs oracle **\"same order: False\"** with no demotion. Probe (5000 rows, 100 at \u00b11e308): **`PanicException: user-provided comparison function does not correctly implement a total order`** from `sort_unstable_by`. `PanicException` is a `BaseException`; `VectorIndex.query`/`iter_query` have no try/except, so `Moneta.query` crashes. `lib.rs:64-65` (\"the oracle never produces NaN from finite inputs\") is false. Paper claims to correct: line 667 (\"bit-identical cosines and order, ties included\"), lines 4 and 98 (\"bit-identical to its Python oracle\"), line 735 (Q12 row), lines 688-693 (Gaps list names Q12 as reject-tag only; add overflow), line 882 (\u00a710 item 11 asks about NaN utilities, not NaN cosines). The envelope should read \"finite and non-overflowing\", or the kernel needs a NaN guard (code fix outside this review's scope; the description must be accurate).\n\n3. **Citation anchors.** Line 100 and line 845: `ARCHITECTURE.md:36-37` cited for `deposit` + `query` signatures; `deposit` is `:35`, `query` `:36`, `signal_attention` `:37`. Line 256: `BLUEPRINT_v6.md:114, :118`; `:118` is blank. Line 348: `consolidation.py:54-55` for threshold 3; `:55` is `STAGE_UTILITY_THRESHOLD = 0.3`, use `:54`.\n\n4. **Baseline is incomplete for a solo owner returning.** Line 14 names four modified files; `git status` also shows `README.md` and `docs/api.md` modified, and two stray untracked drafts at repo root (`attention_log.py`, `test_attention_log_gil_guard.py`). \"Next actions (1) commit `rust/` and the native-seam changes\" (line 7) will sweep those in or leave them unexplained. Line 17's `[V]` definition says \"three files named in Baseline\" while Baseline lists four.\n\n5. **D1 table attribution / gate protocol mismatch.** O13 (line 842) proposes N >= 200 queries, fresh and aged, with run-to-run range; every `[M]` figure in the D1 table is 30-50 queries, single run, fresh only for arm P. The table should carry that caveat inline, not only in O13, since the \"gate fired\" claim rests on it.\n\n**`[V]` CLAIMS: none unverifiable.** Every live `[V]` resolves to an in-repo source read at `6cf05f5` or the working tree, and all line anchors checked hold except the three in defect 3. The two odd tags `[V, v6 toy]` and `[V, decision D1 per v6]` appear only in Review-log row JA-9 (line 1025) as quoted, already-fixed history, not live claims. G2-8's `[V]` holds: `decay_one` (`ecs.py:274`) is defined but never called; `should_run` likewise never called from `src/moneta/`.\n\n**BUILT NATIVE SEAMS: described carefully in most respects, inflated in two.** Verified by running: 211 passed in all four configurations (Python 3.14.2 x `MONETA_NATIVE=0/1`; hython 21.0.773 / Python 3.11.7 x `MONETA_NATIVE=0/1` with the unzipped abi3 wheel; `pxr` is importable under Python 3.14 here, which is why there are no skips); 167 + 29 arithmetic checks out via `BACKENDS` parametrization in `test_rank_early_stop.py`; arm-P exactness 1496/2000 reproduces; 28 conformance tests from 18 functions correct; all bench figures match `results/*.jsonl`; `CLAUDE.md`'s 21.0.512 path is indeed stale (only 21.0.773 installed). Accurate and non-inflated: \"not v7 seams, no \u00a75 check green\", platform-`exp` caveat, `ScanIndex` as SM1 handle, no FP probe, packaging gap, decay-only cost `[U]`. Inflated: defect 1 (D1 gate) and defect 2 (bit-identical / envelope).\n\nNo files were edited. Reproduction scripts for the two load-bearing findings: `C:/Users/User/AppData/Local/Temp/claude/C--Users-User-Moneta/eb45e56e-ffee-4251-86c6-41782cf26935/scratchpad/nan_probe.py` and `C:/Users/User/AppData/Local/Temp/claude/C--Users-User-Moneta/eb45e56e-ffee-4251-86c6-41782cf26935/scratchpad/arm_p_spread.py` (both run with `PYTHONPATH=src python <path>` from `C:/Users/User/Moneta`).",
+ "audits": [
+  {
+   "audit": "citations",
+   "result": {
+    "items": [
+     {
+      "location": "BLUEPRINT_v7.md:319 (G3-2 loop route 1) and :628 (moneta-scan Contract column): `api.py:414`",
+      "problem": "The content has moved to a different file. In the working tree, api.py:414 is a docstring line inside `signal_attention`. The `max(cos, 0) \u00d7 utility` clamp no longer exists in api.py: `query` now calls `ECS.rank_hits` (api.py:408).",
+      "fix": "Change the citation to `src/moneta/ecs.py:371` (`score = max(cos_sim, 0.0) * utility[row]`, inside `ECS.rank_hits`, ecs.py:335-381). Add the call site, `api.py:408`.",
+      "severity": "major"
+     },
+     {
+      "location": "BLUEPRINT_v7.md:119 (ruling row 9) and :652 (Q1): `api.py:415`",
+      "problem": "The content has moved to a different file. api.py:415 is now docstring text in `signal_attention`. The stable sort that leaves ties in hit order is now `ranked.sort(...)` at ecs.py:380, inside `rank_hits`.",
+      "fix": "Change to `src/moneta/ecs.py:380` (stable sort in `rank_hits`). Pair it with the vector_index item below (`_oracle_scan` :144).",
+      "severity": "major"
+     },
+     {
+      "location": "BLUEPRINT_v7.md:119 and :652: `vector_index.py:155,167`",
+      "problem": "Stale. vector_index.py:155 is now `class VectorIndex:` and :167 is docstring text. The dict-order scan loop and its sort moved out of `query` into the module-level `_oracle_scan` (112-145). The dict iteration that sets insertion order is now passed in from `query` at :336-337.",
+      "fix": "Change to `vector_index.py:132,144` (loop over items, stable `sort(reverse=True)`) plus `:336-337` (`self._records.items()`, which supplies insertion order). Add `:198` (native slot order equals the oracle's dict insertion order) and `:328` (the docstring now says 'ties in insertion order').",
+      "severity": "major"
+     },
+     {
+      "location": "BLUEPRINT_v7.md:119 rationale ('No second implementation can match that without a declared key') and Q1 :652",
+      "problem": "Built facts now contradict this premise. A second implementation does match v1's tie order: the native kernel orders by cosine descending, then row ascending, and slot order is kept equal to insertion order through upsert, delete/reinsert and compaction. The total-order proposal still stands, but the sentence supporting it is no longer true.",
+      "fix": "Cite `rust/moneta_native/src/lib.rs` `scan_topk` (doc comment at :36-37, fn at :38) and its Rust test `ties_break_by_row` (:267). Also cite `tests/unit/test_native_scan_conformance.py` tests `test_oracle_ties_keep_insertion_order` (:54), `test_exact_ties_from_duplicate_vectors` (:94), `test_delete_then_reinsert_moves_to_end` (:119) and `test_compaction_preserves_order_and_values` (:133). Reword to: 'matched only by reproducing the implicit row/insertion key; the proposal makes it explicit.'",
+      "severity": "major"
+     },
+     {
+      "location": "BLUEPRINT_v7.md:628 (moneta-scan row): `(absent until gated)`, `:406-407`, `vector_index.py:155-167`, 'D1: only if arm P misses 50 ms p95'",
+      "problem": "Several parts of this row are stale. (1) D1 has fired: arm P measured 109 ms p95 and 75% of its cosines are not bit-equal to the oracle, so the seam is built rather than absent. (2) `:406-407` is now a single line, `hits = self.vector_index.iter_query(embedding)` at api.py:406, plus `rank_hits` at :408. The meaning also changed: the read path no longer scores the full index, because `rank_hits` stops early, exactly, at ecs.py:366-367. (3) `vector_index.py:155-167` now points at the class docstring.",
+      "fix": "Contract: `api.py:406,408` \u2192 `ecs.py:335-381` (`rank_hits`, early stop at :366-367) over `vector_index.py:350-379` (`iter_query`). Scan oracle: `vector_index.py:112-145` (`_oracle_scan`). Native seam: `rust/moneta_native/src/lib.rs` `scan_topk` (:38) and `dot_seq` (:28), wired in at `vector_index.py:75-78,97-109,321-348`. Evidence: `vector_index.py:49-61`, `scripts/bench_arm_p.py`, `scripts/bench_query.py`, `results/bench_query_arm_p.jsonl` and `results/bench_query_*.jsonl`. Tests: `tests/unit/test_native_scan_conformance.py`, plus `tests/unit/test_rank_early_stop.py` for early-stop exactness. Keep the caveat that the 50 ms gate was defined on a 2-vCPU container, while 312/109/3.1 ms were measured on the 7965WX. 'v1's scan is pure-Python O(N\u00b7d)' now holds only with `backend='python'` or `MONETA_NATIVE=0`.",
+      "severity": "major"
+     },
+     {
+      "location": "BLUEPRINT_v7.md:620 ('`api.query` imports no native code') and :656 Q5 / :620 / :610 (`math.exp` at `decay.py:68`)",
+      "problem": "The claim is misleading against the working tree. api.py itself imports nothing native, but `query` now reaches both seams: `ecs.py:39-42` and `vector_index.py:75-78` import `moneta_native` when the module loads, decay_all takes the native branch (ecs.py:257-263 \u2192 `_native.decay_batch`), and the scan goes through `iter_query`. With native on, the read-path exp is Rust `f64::exp` at lib.rs:233 (`decay_column`, :226-236), not `decay.py:68`. lib.rs:223-225 says it is the same platform C-runtime exp that `math.exp` calls, so the \u00a75 point that it is 'not correctly rounded' applies to the native path as well. `decay.py:68` is still correct for the oracle and the `decay_one` path.",
+      "fix": "Q5's v1 column: cite `decay.py:68` (oracle) and `lib.rs:233` (`decay_column`, called through `decay_batch` :240-252 from `ecs.py:259-261`). In the step-1 instruction at :620, say there are now two exp call sites to replace with the oracle port. Reword :620 to: 'api.py imports no native code; the read path reaches native code via ecs.py:257-263 and vector_index.py:321-379 when the wheel is present.' Parity evidence: `tests/unit/test_native_decay_parity.py` (`test_edges_bit_identical` :47, `test_ecs_decay_all_native_equals_oracle` :81).",
+      "severity": "major"
+     },
+     {
+      "location": "BLUEPRINT_v7.md:590 (V-ORACLE-SCAN sabotage): `ecs.py:295`",
+      "problem": "Stale line: +36 shift. The cited content still exists: `top_k_by_similarity` still scores without clamping, `cos_sim * self._utility[i]`, now at ecs.py:331. Also, the scan oracle the code actually uses is `_oracle_scan` + `rank_hits`, not this function.",
+      "fix": "Change to `ecs.py:331` (function :290-333). Optionally note the code's oracle pair: `vector_index.py:112-145` + `ecs.py:371`.",
+      "severity": "minor"
+     },
+     {
+      "location": "BLUEPRINT_v7.md:53 (E2 table) and :655 (Q4): `ecs.py:222-236`",
+      "problem": "Stale range. `decay_all` is now ecs.py:251-272 and has two branches: native at :257-263 (`self._utility[:] = _native.decay_batch(...)`, `_last_evaluated[:] = [now]*n`) and the oracle loop at :264-272. Both still write utility in place, so the claim holds.",
+      "fix": "Change to `ecs.py:251-272`. Optionally split it as native :257-263 / oracle :264-272.",
+      "severity": "minor"
+     },
+     {
+      "location": "BLUEPRINT_v7.md:301 (`ecs.py:211-212`), :751 O7 and :886 J1-5 (`ecs.py:211-214`)",
+      "problem": "Stale: +29 shift. The content still exists unchanged in `apply_attention` (new_u, clamp to 1, attended += count, last_evaluated = now).",
+      "fix": "`ecs.py:211-212` \u2192 `ecs.py:240-241`; `ecs.py:211-214` \u2192 `ecs.py:240-243`.",
+      "severity": "minor"
+     },
+     {
+      "location": "BLUEPRINT_v7.md:113, :327, :563 (V-UNDO), :907 (J2-18): `ecs.py:213`",
+      "problem": "Stale: +29 shift. `self._attended[row] += count` still exists, now at ecs.py:242.",
+      "fix": "Change to `ecs.py:242`.",
+      "severity": "minor"
+     },
+     {
+      "location": "BLUEPRINT_v7.md:121 and :134: `ecs.py:214`",
+      "problem": "Stale: +29 shift. `self._last_evaluated[row] = now` is now at ecs.py:243.",
+      "fix": "Change to `ecs.py:243`.",
+      "severity": "minor"
+     },
+     {
+      "location": "BLUEPRINT_v7.md:763 (O19): `ecs.py:150-164`",
+      "problem": "Stale: +29 shift. `hydrate_row` still exists at ecs.py:179-199. It now packs embeddings with `_compact_vector`/array('d') (:191), and the values are the same doubles.",
+      "fix": "Change to `ecs.py:179-199` (or :179-193 to match the old span exactly).",
+      "severity": "minor"
+     },
+     {
+      "location": "BLUEPRINT_v7.md:332 (G3-5) and :621 (\u00a75 item 2): `vector_index.py:160-162`",
+      "problem": "Stale. :160-162 is now VectorIndex docstring text. The left-to-right dot loop moved into `_oracle_scan` at vector_index.py:137-139. 'Ported once' has also already happened: the native `dot_seq` is a sequential left fold.",
+      "fix": "Change to `vector_index.py:137-139`. For :332/:621, add `rust/moneta_native/src/lib.rs` `dot_seq` (:28) as the existing port. Cite the arm-P result (BLAS-order sums, 75% of cosines not bit-equal) to `scripts/bench_arm_p.py` / `results/bench_query_arm_p.jsonl`.",
+      "severity": "minor"
+     },
+     {
+      "location": "BLUEPRINT_v7.md:384: `src/moneta/api.py:420`",
+      "problem": "Stale: \u22127 shift. The `signal_attention(self, weights: Dict[UUID, float])` signature is now at api.py:413.",
+      "fix": "Change to `api.py:413`.",
+      "severity": "minor"
+     },
+     {
+      "location": "BLUEPRINT_v7.md:134 (`api.py:429-431`) and :498 P6 (`:429`)",
+      "problem": "Stale: \u22127 shift. `now = time.time()` in `signal_attention` and the loop that stamps it are now at api.py:422-424.",
+      "fix": "`api.py:429-431` \u2192 `api.py:422-424`; `:429` \u2192 `:422`.",
+      "severity": "minor"
+     },
+     {
+      "location": "BLUEPRINT_v7.md:392: `api.py:431` ('takes an unbounded dict')",
+      "problem": "Stale, and it was already imprecise at HEAD, where :431 was `w = float(weight)`. The current :431 is a blank line before `get_consolidation_manifest`. The unbounded dict is visible in the signature and the iteration.",
+      "fix": "Cite `api.py:413` (signature) and `:423` (`for entity_id, weight in weights.items()`).",
+      "severity": "minor"
+     },
+     {
+      "location": "BLUEPRINT_v7.md:386: `api.py:432-436`",
+      "problem": "Stale: \u22127 shift. The in-memory append and the WAL append are now at api.py:425-429.",
+      "fix": "Change to `api.py:425-429`.",
+      "severity": "minor"
+     },
+     {
+      "location": "BLUEPRINT_v7.md:658 (Q7): `api.py:434-436`",
+      "problem": "Stale: \u22127 shift. `wal_append(AttentionEntry(entity_id, w, now))` is now at api.py:427-429.",
+      "fix": "Change to `api.py:427-429`.",
+      "severity": "minor"
+     },
+     {
+      "location": "BLUEPRINT_v7.md:83 and :522 (X3): `api.py:453-458`",
+      "problem": "Stale: \u22127 shift. `run_sleep_pass` as a harness-level operator is now at api.py:446-451. The harness section header is at :442-444.",
+      "fix": "Change to `api.py:446-451` (or :442-451 to include the 'Harness-level operators' banner).",
+      "severity": "minor"
+     },
+     {
+      "location": "BLUEPRINT_v7.md:762 (O18): `api.py:330` ('the host supplies the embedding')",
+      "problem": "Off by one. This was already wrong at HEAD and that region did not change: api.py:330 is `payload: str` and the embedding parameter is at :331.",
+      "fix": "Change to `api.py:331`.",
+      "severity": "minor"
+     },
+     {
+      "location": "BLUEPRINT_v7.md:627 (moneta-kernel fold_recall row, oracle column)",
+      "problem": "Missing native citation. The row describes porting `decay_value`. A parity-tested port of exactly that per-row step now exists (`decay_column`/`decay_batch`), along with evidence of bit-identical results, including the clamp, floor, NaN and subnormal edges. Same platform only (see the exp item).",
+      "fix": "Add: precedent `rust/moneta_native/src/lib.rs:226-252` (`decay_column`/`decay_batch`), parity `tests/unit/test_native_decay_parity.py`. The `decay.py:48-69 / :66-67 / :69` citations stay valid.",
+      "severity": "minor"
+     },
+     {
+      "location": "BLUEPRINT_v7.md:665 and :884 (J1-3): `pyproject.toml:37`, `vector_index.py:35-44`, 'nothing under src/moneta/ imports lancedb'",
+      "problem": "The citations are still valid: pyproject.toml:37 is `dependencies = []`, vector_index.py:35-44 is the unchanged LanceDB rationale, and there is no lancedb import. The text is incomplete, though: src/moneta now has optional `moneta_native` imports (ecs.py:39-42, vector_index.py:75-78), packaged separately in `rust/moneta_native/pyproject.toml` and declared nowhere in the root pyproject.",
+      "fix": "Keep the citations. Add: 'optional `moneta_native` (rust/moneta_native, abi3 wheel) is imported under try/except at ecs.py:39-42 and vector_index.py:75-78 and is not a declared dependency; MONETA_NATIVE=0 or an absent wheel gives the Phase 1 oracle path.' Also cite CLAUDE.md:136-157 (the new 'Optional native seams' section) next to CLAUDE.md:99.",
+      "severity": "minor"
+     }
+    ],
+    "summary": "I re-anchored all ~140 file:line citations in docs/v7/BLUEPRINT_v7.md (body and appendix) against the current working tree. I did not edit anything.\n\nOnly api.py, ecs.py, vector_index.py and CLAUDE.md differ from HEAD. These shifts produce every stale line number:\n- **api.py:** lines up to 405 are unchanged. HEAD 406-418 collapsed to 406-408, and everything from HEAD 420 onward moved up by 7.\n- **ecs.py:** HEAD 150-224 moved down by 29; HEAD 238 onward moved down by 36.\n- **vector_index.py:** the scan body moved out of `query` into `_oracle_scan` at 112-145.\n\n**Major problems:**\n- **Content moved to another file.** The `max(cos, 0) \u00d7 utility` clamp (`api.py:414`) is now `ecs.py:371`, and the stable sort (`api.py:415`) is now `ecs.py:380`, both inside `ECS.rank_hits`.\n- **The \"full index\" claim is no longer true.** `api.py:406-407` \"over the full index\" is now `iter_query` + `rank_hits`, which stops early (exactly).\n- **The scan line citations point at docstrings.** `vector_index.py:155/160-162/167` now land in docstrings; the code is at :132/:137-139/:144.\n- **The blueprint still describes D1 as not having fired.** The `moneta-scan` row says \"(absent until gated)\", \u00a75 says \"api.query imports no native code\", Q5 cites `math.exp` only at `decay.py:68`, and Q1/ruling 9 says \"no second implementation can match\" the tie order. The native crate now does match it: `lib.rs` `scan_topk`, the test `ties_break_by_row`, and the conformance tests. Read-path decay can also run Rust `f64::exp` at `lib.rs:233`.\n\n**Minor shifts:**\n- api.py: 420\u2192413, 429-431\u2192422-424, 431\u2192413/423, 432-436\u2192425-429, 434-436\u2192427-429, 453-458\u2192446-451.\n- ecs.py: 211-214\u2192240-243, 213\u2192242, 214\u2192243, 222-236\u2192251-272 (native branch :257-263), 150-164\u2192179-199, 295\u2192331.\n- One pre-existing error: `api.py:330` should be `:331` (embedding, not payload).\n\n**Verified current, no change needed:**\n- api.py: 229, 328-333, 361, 379-380, 399, 401.\n- attention_log.py: 64-68, 73, 97-105, 127-131, 129-131.\n- decay.py: 33-35, 48-69, 65, 66-67, 68, 69, 91-105.\n- consolidation.py: 49, 53-57, 54-55, 87-90, 111-112, 153-155, 166-169.\n- durability.py: 24-26/25-26, 85-100, 90-91, 125, 181-215.\n- sequential_writer.py: 104-105.\n- usd_target.py: 47-48, 101, 157-160, 225-226, 252-259, 320.\n- vector_index.py: 35-44.\n- pyproject.toml: 37.\n- ARCHITECTURE.md (unmodified): 36-37, 46-50, 82, 84-90, 87, 90, 106, 108-112, 120-123, 146, 152, 271-273, 274, 323.\n- CLAUDE.md: 99 still reads \"Phase 3 adds pxr \u2026 and LanceDB\". The lock list at 34-38 is unchanged. The new native-seam section is at CLAUDE.md:136-157.\n\nThe new code and tests the blueprint should cite are `rust/moneta_native/src/lib.rs` (`dot_seq` :28, `scan_topk` :38, `decay_column` :226, `decay_batch` :240), the three unit test files (`test_native_scan_conformance.py`, `test_native_decay_parity.py`, `test_rank_early_stop.py`), and `scripts/bench_arm_p.py` / `bench_query.py` with `results/bench_query_*.jsonl`. Any item that re-quotes the measured times should keep the caveat that the 50 ms gate was defined on a 2-vCPU container and the numbers come from the owner workstation."
+   }
+  },
+  {
+   "audit": "built-seams",
+   "result": {
+    "items": [
+     {
+      "location": "BLUEPRINT_v7.md:8-13 (Tags) and :6 (Baseline)",
+      "problem": "The tag scheme has no tag for a fact found by running something. `[V]` is defined as \"read at 6cf05f5 ... and nothing run\". So none of the new built facts (the arm P miss, native bit-parity, the latency and RSS figures) has a legal tag. The baseline line also implies that `src/` equals 6cf05f5, but the working tree has uncommitted changes in vector_index.py, ecs.py and api.py, and an untracked `rust/` directory.",
+      "fix": "Add a fifth tag: \"`[M]`: measured by running, on a named machine, interpreter and date, with the script and result file named. Magnitudes are machine-dependent; only the stated comparison carries.\" Apply it as `[M; workstation TR-7965WX/Win, py3.14 + hython3.11, 2026-10-15, scripts/bench_query.py \u2192 results/bench_query_after_seam3.jsonl]`. Add to Baseline: \"Pass 4 also reads the working tree, which is uncommitted: vector_index.py, ecs.py and api.py are modified, and rust/moneta_native is untracked. Citations stay at 6cf05f5 unless marked `(wt)`.\"",
+      "severity": "critical"
+     },
+     {
+      "location": "BLUEPRINT_v7.md:620 (\u00a76 'Two consequences' #1), :975 (A39 disposition), :75-81 (On one screen, Rust)",
+      "problem": "\"`api.query` imports no native code\" is false in the working tree. `query` calls `ecs.decay_all` (api.py:401), which calls `moneta_native.decay_batch` (ecs.py:257-262 wt). It also calls `vector_index.iter_query` (api.py:406 wt), which calls `ScanIndex.scan` (vector_index.py:362-376 wt). Both are optional and auto-selected unless MONETA_NATIVE=0. D1 covers the scan, and its gate fired. The decay kernel sits under no v7 gate: by \u00a76 and O27, D1 is scan-only.",
+      "fix": "Replace the last sentence of :620 with: \"In v7 the read path reaches native code only through a gated seam. On main (v1 line, not v7), two optional native accelerators already sit on `api.query`: the D1 scan (`moneta_native.ScanIndex`) and a retention-decay kernel (`moneta_native.decay_batch`, inside `ECS.decay_all`). Each is bit-identical to its Python oracle on this platform. The decay kernel was admitted under v1-line exact-oracle discipline, not under D1 or the \u00a76 seam rule (O27). `MONETA_NATIVE=0` or an absent wheel restores pure Python `[M]`.\" Amend A39's reason to say \"v7 read path\". In On one screen, add one line: \"On main, outside v7: an optional PyO3 crate `rust/moneta_native` provides the D1 scan and a retention-decay kernel as v1-line accelerators (\u00a76).\"",
+      "severity": "critical"
+     },
+     {
+      "location": "BLUEPRINT_v7.md:621 (\u00a76 consequence #2), :656 (Q5 'scan: \u03b4 by default'), :580 (V-POOL '(arm P)'), :590 (V-ORACLE-SCAN), :904 (Review log J2-7 'scan excepted'), :889 (J1-8)",
+      "problem": "The premise that \"the scan is the one seam where \u03b4 is the default\" was that the native scan would be arm P (numpy/BLAS). Arm P was measured and missed its gate. The scan actually built is a sequential left fold, bit-identical to `_oracle_scan` across 28 conformance tests, ties included. So \u03b4-by-default for the scan has no carrier any more. V-POOL's parenthetical \"(arm P)\" names a read path that does not exist.",
+      "fix": "Rewrite :621: \"**The scan is bit-exact by default too.** Arm P (numpy) sums in BLAS order and measured 1496 of 2000 cosines not bit-equal to the left-to-right oracle (order unchanged in that sample) `[M; results/bench_query_arm_p.jsonl]`. It also missed D1's gate. The scan built instead (rust/moneta_native) is a sequential left fold, bit-identical to `_oracle_scan` (tests/unit/test_native_scan_conformance.py) `[M]`. \u03b4 applies to the scan only as a contract-E fallback. The eval-set builder still computes `cos` in oracle order (G3-5).\" In Q5, delete \"(scan: \u03b4 by default)\". In V-POOL, replace \"(arm P)\" with \"(the read path: oracle or native scan)\", and make its pass condition bit-exact top-k by default, with the \u03b4 clause applying only under a recorded contract-E fallback. Change V-ORACLE-SCAN to \"top-k and scores bit-identical; \u03b4 only under a recorded fallback\". Annotate J2-7 and J1-8 with \"pass 4: scan exception retired by built fact\".",
+      "severity": "critical"
+     },
+     {
+      "location": "BLUEPRINT_v7.md:526 (SM4), :628 (`moneta-scan` row), :641 (workspace `moneta-scan/ (absent)`), :735 (mile 4b), :791 (\u00a710 item 10)",
+      "problem": "These lines still describe the scan seam as unbuilt and gated, so they now under-state what is built. Two things need to be kept apart. (a) D1's gate condition is now measured as fired. (b) The v7 seam as specified is still unbuilt. That seam is a pure `scan(q, vecs, util, seqs, ids, allowed: BitSet, k)` ordered by P5, whose oracle is the clamped `max(cos,0)\u00d7U` path. What was built is a stateful `ScanIndex` (push/set/kill/compact) that returns raw cosine, with ties by slot order, which is v1's insertion order. That is exactly what Q1 says v7 replaces. It has no utility multiply and no allowed set. The clamp and rerank stay in Python (`ECS.rank_hits`, ecs.py:335-381 wt), with an exact early stop. It meets SM1 only in its inner `scan_topk` kernel (lib.rs:38), not at the Python boundary.",
+      "fix": "SM4 tag becomes: \"D1 (given). Gate fired `[M]`: arm P 109 ms p95 at 10k\u00d7384 on the owner workstation. v7 seam `[P]`.\" `moneta-scan` row, Gate column: \"D1 gate fired on main `[M]`. The v1-line native scan exists (`moneta_native.ScanIndex`; raw cosine, v1 insertion-order ties, clamp \u00d7 U reranked in Python by `ECS.rank_hits`). The v7 seam (utility, allowed set, P5 order, pure over flat buffers) is not built, and V-TIES and V-ORACLE-SCAN are not green.\" Workspace: replace `moneta-scan/ (absent)` with \"`moneta-scan`: no separate crate; v1-line scan lives in `moneta_native` (below)\". Mile 4b: \"`moneta-scan`: D1 already admitted on main; 4b promotes it to the v7 signature (P5 ties, allowed set, util) under V-ORACLE-SCAN\". \u00a710 item 10: add \"Should the v7 scan be the existing ScanIndex extended, or a pure `scan()` in a no_std kernel wrapped by it?\"",
+      "severity": "major"
+     },
+     {
+      "location": "BLUEPRINT_v7.md:606-610 (\u00a76 Exactness), :656 (Q5), :582 (V-EXP), :583 (V-FPENV), :662 (Q11), :584 (V-FINITE)",
+      "problem": "The built decay kernel takes the opposite route to the paper's exactness design. The paper wants one ported `libm` `exp` in Rust and Python, because platform `math.exp` isn't correctly rounded. `decay_column` (lib.rs:222-237) calls `f64::exp`, which lowers to the platform C runtime `exp`, the same function `math.exp` calls. That is why it is bit-identical to `decay_value`. It is correct for a v1 accelerator, but it is not Q5's \"one exp\". It gives no cross-platform or wasm32 guarantee: wasm32 `f64::exp` resolves to Rust's libm, not the CRT. Three further gaps: no FTZ/DAZ probe exists in any built seam or oracle (Q11/V-FPENV unimplemented); test_native_decay_parity.py compares NaN bit patterns, which is valid same-process and same-platform only (V-FINITE forbids it across runtimes); non-finite vectors make the native scan demote to the oracle rather than return Q12's reject tag.",
+      "fix": "After :610 add: \"**Not to be confused with the v1-line decay kernel.** `moneta_native.decay_batch` (main, v1 line) is bit-identical to `decay.py:decay_value` because both call the same platform `exp`, verified on Windows under py3.14 and hython3.11 (tests/unit/test_native_decay_parity.py, including clamp, floor, NaN and subnormal) `[M]`. That is same-platform parity with v1, not Q5. It says nothing about wasm32, other OSes or the ported `exp`. When the read path switches to the ported `exp` (consequence 1), `decay_batch` must switch with it and be re-verified, or be disabled. It has no FP-environment probe (Q11), and its NaN-pattern comparisons are same-runtime only (V-FINITE).\" In Q11, change the \"v1 today\" cell to: \"not checked, including in the native seams on main\". No other change to V-EXP: it stays unbuilt and `[P]`.",
+      "severity": "major"
+     },
+     {
+      "location": "BLUEPRINT_v7.md:627 (`moneta-kernel fold_recall` row), :308-314 (declared fold order), :588 (V-ORACLE-FOLD), :635 (workspace `moneta-kernel`), :732/:734 (miles 2 and 4 by-products), :53 (main-table E2 row)",
+      "problem": "The decay kernel is retention decay, not the recall fold. It decays one column at a single `now` inside `ECS.decay_all` (v1 eval points 1 and 2). It has no per-event sort by `(record, seq)`, no `excluded_gens`, no per-event clamp to 1, no `t0`/`until_t` and no anchors. `oracle/fold.py` and the V-ORACLE-FOLD fixtures do not exist. If the decay kernel were read as progress on `fold_recall`, that would inflate it. Two things it does establish: the `dt.max(0.0)` hazard in the V-ORACLE-FOLD sabotage is real and avoidable in Rust (lib.rs:229-235 uses `if dt < 0.0`, so a NaN dt reaches the floor exactly as decay.py:66-69 does); and G2-8's three call sites are unchanged, because `decay_batch` is only reached through `decay_all`. It also accelerates the E2 violation without removing it: `query` still writes utility.",
+      "fix": "`fold_recall` row: leave Seam, Gate and Checks as they are, and add to the Oracle cell: \"Not started. The v1-line `moneta_native.decay_batch` on main is a retention-decay column kernel (`decay_value` at one `now`), not this fold. It shares only the per-element decay step, and it uses platform `exp`, not the port (Exactness).\" V-ORACLE-FOLD sabotage: append \"(the v1-line kernel avoids it: lib.rs:231)\". Workspace :635: \"decay in `moneta-kernel` is the ported-exp decay; it is not a move of `moneta_native::decay_column`\". Main-table row :53: add \"(wt: `decay_all` may run in native code, ecs.py:257-262; it still writes in place)\". G2-8 needs no change.",
+      "severity": "major"
+     },
+     {
+      "location": "BLUEPRINT_v7.md:526 (SM4), :628 (scan Gate '50 ms p95 at 10k \u00d7 384 ... v5 measured 161 ms'), :717 (mile 0 done-means #3), :757 (O13)",
+      "problem": "The paper never says which machine the gate is on. v6 defines it as \"the 50 ms p95 **query** gate\", with v5 at 161 ms median and v1 at 345 ms median, single runs on a 2-vCPU cloud container (BLUEPRINT_v6.md:353, :361, :366). The new figures come from a different machine, so the gate and the figures are not on the same machine. Arm P also has a specific definition (scripts/bench_arm_p.py). It patches only `VectorIndex.query` with a numpy matvec, keeps `MONETA_NATIVE=0` (so Python `decay_all` over 10k rows is inside the timed `Moneta.query`), and materializes all n hits as Python tuples. It ran 30 queries, against 50 for native. That is a legitimate measure of the defined query gate, but it is not the best possible numpy arm. The 75% exactness figure is from n=2000, not 10k. Finally, `rss_delta_mb` is the store-build footprint, not query memory.",
+      "fix": "Add under the `moneta-scan` row: \"**D1 measured `[M; owner workstation TR-7965WX, Windows, py3.14, 2026-10-15]`.** End-to-end `Moneta.query` p95 at 10k\u00d7384, limit 10: pure Python 312 ms. Arm P (numpy matvec swapped into `VectorIndex.query`; Python decay and rerank; all hits materialized; 30 queries) 109 ms, so it **misses**. Native scan + native decay + exact early stop: 3.1 ms with fresh utilities, 6.2 ms with aged (log-uniform 0.01\u20131). Store footprint: 183 MB Python, 182 MB arm P, 66 MB native. **Machine dependence:** the 50 ms gate was set against single runs on a 2-vCPU container (BLUEPRINT_v6.md:353, :361). The same pure-Python path was within ~1.3\u00d7 across the two machines (345 ms container median vs 267 ms workstation median) `[A]`. So the arm P miss (>2\u00d7 over gate) is robust in direction and the native pass (>8\u00d7 headroom on aged utilities) is likely, but absolute numbers do not carry. A re-run on a 2-vCPU container is `[U]`. A fully vectorized arm P (decay, clamp \u00d7 U and argpartition all in numpy) was not measured.\" Mile 0 #3: \"arm P's p95 is recorded **on v5's facade** (v1-line arm P already recorded `[M]`, \u00a76)\". O13: add \"every gate is stated with the machine, interpreter and dataset it is measured on; a gate re-measured on another machine is a new figure, not a pass\".",
+      "severity": "major"
+     },
+     {
+      "location": "BLUEPRINT_v7.md:631-644 (Workspace `[P]`), :665-673 (The cost to name), \u00a79 (new O-item)",
+      "problem": "The crate plan doesn't know rust/moneta_native exists. It is a single crate, not a workspace: package and lib `moneta_native`, `cdylib`+`rlib`, pyo3 0.30.1 `abi3-py311`, maturin, release profile with no fast-math, a cp311-abi3 win_amd64 wheel in dist/. It holds the scan, the decay kernel and the Python bindings, a role the plan splits across `moneta-scan`, `moneta-kernel` and `moneta-py`. Its oracle lives in `vector_index._oracle_scan`, not `src/moneta/oracle/scan.py`. \u00a76 condition 3 is not met: there are no shared content-addressed `fixtures/<sha>`, conformance is pytest-only against a live oracle, and the cargo tests are three inline unit tests. `rust/` is untracked in git, so \"Cargo.lock committed\" is not yet true. `pyproject.toml:37` still reads `dependencies = []`, and no extra names the wheel.",
+      "fix": "Insert above the workspace block: \"**Present on main (v1 line, not v7):** `rust/moneta_native/` is a single PyO3 crate (`cdylib`+`rlib`, abi3-py311, maturin, no fast-math), optional and installed as a wheel. It provides `ScanIndex` (D1 scan) and `decay_batch` (v1 retention decay). Oracles are `vector_index._oracle_scan` and `decay.decay_value`. Conformance is pytest-only (no shared `fixtures/<sha>`, so \u00a76 condition 3 is not met; that binds v7 seams, not this crate). The suite is green in four configs, py3.14 and hython3.11 \u00d7 MONETA_NATIVE 0/1, and runs without the wheel with native tests skipped `[M]`. `rust/` is not yet committed.\" Keep the v7 names `[P]`. Do not rename moneta_native to fit the plan. Add **O31**: \"Does `rust/` become the v7 workspace with `moneta_native` as its PyO3 member, replacing the planned `moneta-py`? Or does it stay a separate v1-line crate that later depends on `moneta-kernel`? Default: the former, with its decay switched to the ported `exp` when Q5 lands. Decided by: the owner, before mile 4.\" Under \"The cost to name\", add: \"`dependencies = []` still holds: the native wheel is optional, undeclared and auto-detected, so a host gets different code paths depending on whether the wheel is installed, though the results are bit-identical (\u00a76).\"",
+      "severity": "major"
+     },
+     {
+      "location": "BLUEPRINT_v7.md:332 (G3-5) and :556 (V-REBUILD)",
+      "problem": "G3-5's \"never via BLAS\" and V-REBUILD's sabotage \"`cos` computed via BLAS\" were argued, not measured. There is now a measurement that supports them.",
+      "fix": "Append to G3-5: \"Measured: a numpy/BLAS scan gave 1496 of 2000 cosines not bit-equal to the left-to-right oracle at 384 dims `[M; results/bench_query_arm_p.jsonl]`.\" No change to the rule.",
+      "severity": "minor"
+     },
+     {
+      "location": "BLUEPRINT_v7.md:119 (row 9), :652 (Q1 'v1 today'), :497 (P5), :581 (V-TIES)",
+      "problem": "The paper could be read as saying the built native scan helps P5. It doesn't: it is tested to reproduce v1's insertion-order ties exactly (test_native_scan_conformance.py:54, :94; Rust `ties_break_by_row`). `rank_hits` keeps hit order on equal scores with a stable sort, so equal final scores order by cosine and then insertion, not by seq. The \"v1 today\" citations also moved.",
+      "fix": "Q1 'v1 today' becomes: \"ties fall to dict insertion order through a stable sort (6cf05f5: `vector_index.py:155,167`; `api.py:415`). (wt): `_oracle_scan` vector_index.py:144 and `ECS.rank_hits` ecs.py:379; the native scan reproduces the same insertion-order ties bit for bit, so conformance on main shows fidelity to v1 ties, not P5.\" Make the same parenthetical edit at :119. V-TIES stays as it is.",
+      "severity": "minor"
+     },
+     {
+      "location": "BLUEPRINT_v7.md v1 line citations: :53, :119, :300-304, :319, :332, :493, :498, :628, :652-655, :590, Appendix :809-843",
+      "problem": "Working-tree drift. `api.py:406-407` (full over-fetch) is gone; `:414-415` (clamp and sort) moved to `ECS.rank_hits`. `vector_index.py:155-167`/`:160-162` became `_oracle_scan` at :112-144 (left fold :132-136). `ecs.py:211-214` \u2192 :239-243 (:213 \u2192 :242), `:222-236` \u2192 `decay_all` :251-272, `:295` \u2192 :331. `signal_attention`'s `time.time()` moved from `api.py:429` \u2192 :422. `api.py:399`/`:401`/`:361` are unchanged.",
+      "fix": "Keep the 6cf05f5 citations, which stay historically `[V]`. Add an Appendix subsection, \"Working tree at pass 4 (uncommitted; re-cite when the seam commit lands)\", listing: api.py:406 `iter_query`, :408 `rank_hits`, :422 `time.time()` in signal_attention; vector_index.py:112-144 `_oracle_scan` (left fold :132-136), :318-345 `query` (backend split), :347-378 `iter_query`; ecs.py:239-243 attention apply (clamp :240, `attended_count` :242, `_last_evaluated` :243), :251-272 `decay_all` (native branch :257-262), :331 unclamped `cos*utility`, :335-381 `rank_hits` (clamp :371). Update P6 :498 to read \"`signal_attention` (`:429`; wt `:422`)\", and the V-ORACLE-SCAN and `moneta-scan` sabotage to read \"`ecs.py:295` (wt :331)\". The `moneta-scan` oracle cell should name `api.query`'s path as `iter_query` + `rank_hits` in the working tree.",
+      "severity": "minor"
+     },
+     {
+      "location": "BLUEPRINT_v7.md:3 (Status), :5 (Loop position)",
+      "problem": "\"no file under `src/` changes because of this document\" is true about cause but now reads as if `src/` were unchanged. The loop position still says Pass 3.",
+      "fix": "Status: \"design only. Nothing in v7 is built. Changes on main during this pass (the optional native scan and decay accelerators, \u00a76) are v1-line work under D1 and v1 exact-oracle discipline. They are not caused by this document and are not v7 governance.\" Loop position: \"Pass 4 of 4 ... adds the built facts of 2026-10-15 (\u00a76, tag `[M]`)\". Add a short \"Pass 4 built-fact log\" after the Pass 3 attack log, listing each item above as applied or owner (O31).",
+      "severity": "minor"
+     },
+     {
+      "location": "BLUEPRINT_v7.md:784-791 (\u00a710 What to attack) and :933 (Pass 3 attack log preamble)",
+      "problem": "The red team isn't pointed at the new facts. The pass-3 log says no finding was refuted, but the refuter votes were 0 refutations out of 102, so the refute filter was weak. A reader could take that as strong confirmation.",
+      "fix": "Add attack 11 to \u00a710: \"Native accelerators on main. Does any path let `MONETA_NATIVE` or wheel presence change a journaled or replayed answer (snapshot round-trip, demotion on non-finite, iter_query under mutation)? Is arm P as measured the strongest numpy arm, or does a fully vectorized one meet 50 ms? Does the 50 ms gate hold on a 2-vCPU container?\" Append to :933: \"Note: 0 of 102 refuter votes refuted anything, so 'survived two verdicts' is weak evidence of correctness.\"",
+      "severity": "minor"
+     }
+    ],
+    "summary": "I found 13 places in the blueprint that must change; I edited no files.\n\n**Three statements are now false:**\n- The tag scheme has no legal tag for anything measured by running. I propose adding `[M]` with machine, interpreter, date and script, plus a working-tree baseline note.\n- \"`api.query` imports no native code\" (\u00a76:620, A39) is false. In the working tree, `query` reaches `moneta_native.decay_batch` (through `decay_all`) and `ScanIndex.scan` (through `iter_query`). The scan sits under D1. The decay kernel sits under no v7 gate.\n- \"The scan is the one seam where \u03b4 is the default\" (\u00a76:621, Q5, V-POOL's \"(arm P)\", V-ORACLE-SCAN) rested on arm P being the native scan. Arm P missed its gate and was not bit-equal on 1496 of 2000 cosines. The scan actually built is bit-identical to the oracle, so \u03b4 for the scan survives only as a contract-E fallback.\n\n**What becomes `[M]`, and what stays `[P]`:**\n- **D1's gate fired:** arm P 109 ms p95, pure Python 312 ms, native 3.1 ms (fresh utilities) and 6.2 ms (aged), store footprint 183 / 182 / 66 MB. These numbers are tied to the owner workstation.\n- **SM4 and the v7 scan seam stay `[P]`.** What was built is a stateful `ScanIndex` returning raw cosine with v1 insertion-order ties. It has no utility, no allowed set and no P5 order, and the clamp \u00d7 utility rerank stays in Python (`ECS.rank_hits`).\n\n**Decay kernel vs the recall fold:**\n- `decay_batch` is a retention-decay column kernel at one `now`, called inside `decay_all`. It has no per-event order, no `excluded_gens`, no clamp to 1 and no anchors. `fold_recall`, `oracle/fold.py` and V-ORACLE-FOLD stay unbuilt.\n- It calls the platform `exp`, the same one `math.exp` uses. That is the opposite of Q5's single ported `exp`. Its parity is same-platform only, with no FP-environment probe (Q11) and same-runtime NaN comparisons (V-FINITE). It must be switched or re-verified when the read path moves to the ported `exp`.\n- What it does establish: the `dt.max(0.0)` sabotage is real and avoidable, and G2-8's three call sites are unchanged.\n\n**Crate layout:** don't rename to fit the plan. Record `rust/moneta_native` as the present v1-line single PyO3 crate, and add O31 on whether it becomes the v7 workspace's Python-binding member in place of `moneta-py`. Also say plainly:\n- \u00a76's shared-fixtures condition is not met (conformance is pytest-only).\n- `rust/` is uncommitted.\n- `dependencies = []` still holds; the wheel is optional and undeclared.\n\n**Machine dependence, stated honestly:**\n- The 50 ms gate came from single runs on a 2-vCPU container. Pure Python ran about 1.3\u00d7 apart across the two machines (345 vs 267 ms median), tagged `[A]`.\n- So the arm P miss holds in direction, and the native pass is likely to hold there too. Absolute numbers don't carry, and a container re-run is `[U]`.\n- Arm P as measured included Python decay and materialized every hit. A fully vectorized numpy arm was not measured.\n- `rss_delta_mb` is store footprint, not query memory.\n\n**Remaining minor items:**\n- Re-cite the anchors that moved in the working tree.\n- Reword the Status line and the loop position.\n- Add attack 11 on the native accelerators to \u00a710.\n- Note that 0 of 102 refuter votes refuted anything, so \"survived two verdicts\" is weak evidence.\n\nThroughout, the native seams are v1-line accelerators on main, not v7 governance. No v7 check goes green because of them."
+   }
+  },
+  {
+   "audit": "fold-consistency",
+   "result": {
+    "summary": "I audited BLUEPRINT_v7.md (987 lines, at the end of pass 3) against RULINGS.md, pass1_rulings_brief.md, pass3_attack.json, BLUEPRINT_v6.md, ARCHITECTURE.md, CLAUDE.md and the src/moneta working tree. I re-checked all eight critical pass-3 findings (A1, A10, A20, A26, A29, A36, A38, A42) against the primary sources. None was wrong as applied, so the weak refute filter let no false critical through. The defects are elsewhere, in four groups.\n\n(1) Residue the critical fixes left behind. The eligibility predicate's second clause is not an edge, so the verifier cannot evaluate it. Open cannot be O(tail) and also derive the full RolledBack set from the journal. Under E3-against, drained attention gets the drain-time `t`. V-REPLAY's two-caller clause conflicts with O16's recommended default.\n\n(2) The new built facts collide with the paper. The native decay kernel uses the platform (CRT) exp and CLAUDE.md now makes its parity test a contract, while section 6 says the read path must use the libm port. `api.query` now runs native code. The scan seam is built at mile 1 with a stateful handle, an unclamped oracle and a non-P5 tie order. D1 has tripped, but the paper still says moneta-scan is absent. The header and the 6cf05f5 baseline are stale.\n\n(3) ID collisions the header says cannot happen: \u03b4, E, J1-7, O13/O14 grafts, attack numbers, and K/R/A/S/T letters.\n\n(4) Smaller drift. O28's default contradicts the text applied elsewhere. O9 is effectively adopted for roll-forward. G5-3, P6, J5, C5 and X3 have no check. Some review-log rows no longer match the text. G1-2 is ill-typed.\n\nSpot checks that held: RULINGS.md:20 is R4(a); `should_run` is never called from `src/moneta/`; the A35 correction holds (exp(-ln2/60 * 64000) = 7.95e-322 is still subnormal, it reaches 0.0 at about 64,500 s, so 65,000 s is the right underflow fixture).",
+    "items": [
+     {
+      "location": "BLUEPRINT_v7.md:620 (\u00a76 'Two consequences' #1), :606-610 (Exactness), :656 (Q5), V-EXP :582; vs rust/moneta_native/src/lib.rs:219-235, CLAUDE.md:141,:157, tests/unit/test_native_decay_parity.py",
+      "problem": "The built decay kernel `decay_batch` (used by `ECS.decay_all`, which runs on every query at eval point 1, api.py:401) gets its bit-exactness by calling the platform C runtime's `exp`, the same function CPython's `math.exp` calls. The working-tree CLAUDE.md:157 makes its parity test against `decay_value`/`math.exp` a contract: red means regression. The blueprint requires the opposite: the read path MUST replace `math.exp` at decay.py:68 with the pure-Python libm port, there is one exp (Q5), and V-EXP expects zero referee/read-path disagreements. The WASM referee cannot call the CRT exp. Both cannot hold. The parity is also bit-exact only within one process and libm, not across machines.",
+      "fix": "Add an O-item (O31): pick one exp for the retention/read path. Either (a) move decay.py:68 and decay_batch together to the libm port and re-point the parity test at the port, or (b) keep the CRT exp for v1 retention and record V-EXP and V-POOL as \u03b4 comparisons (a recorded contract-E downgrade) between the referee and the read path. Note that CLAUDE.md:157 must change under (a). Until it rules, mark Q5 'violated by the built decay seam'.",
+      "severity": "critical"
+     },
+     {
+      "location": "BLUEPRINT_v7.md:3 (Status), :5 (Loop position), :6 (Baseline 6cf05f5), Appendix :797-873",
+      "problem": "The header says 'Nothing in v7 is built, and no file under src/ changes', but the working tree now has rust/moneta_native, plus native paths in vector_index.py, ecs.py and api.py. The appendix and inline cites pin 6cf05f5, and several no longer exist in the working tree: api.py:406-407 (the full-index over-fetch is now iter_query at :406), :414-415 (the rerank and stable sort moved to ecs.py rank_hits), :420\u2192:413, :429-431\u2192:422, :432-436\u2192:425-430, :439\u2192:432, :453-458\u2192:446-451; ecs.py:211-214\u2192:240-243, :222-236\u2192:251ff, :295\u2192:331; vector_index.py:155-167 / :160-162 \u2192 _oracle_scan ~:115-145. 'Pass 3 of 4' is also stale on entering pass 4.",
+      "fix": "Re-baseline to the working tree, or state for each section which tree a cite reads. Rewrite Status as: 'v7 is design-only; independently, an optional D1 scan seam and a decay seam were built on 2026-10-15 (list them)'. Update every shifted cite. Bump the loop position to pass 4.",
+      "severity": "major"
+     },
+     {
+      "location": "BLUEPRINT_v7.md:620 ('api.query imports no native code'), :639-640 (moneta-py 'built only for a gated seam; api.query imports no native code otherwise'), workspace :633-644",
+      "problem": "In the working tree, api.query reaches native code twice: vector_index.iter_query (the native ScanIndex) and ecs.decay_all (native decay_batch). The decay seam passed no gate the paper defines: it is neither the scan nor the read-path fold binding, the only two read-path entries \u00a76 allows. The built crate is one `moneta_native` crate (kernel and pyo3 mixed, no no_std split), not the moneta-kernel/moneta-py/moneta-scan workspace.",
+      "fix": "State that the decay seam exists, what admitted it (the seam rule, O27, not D1), and its gate (none measured on its own). Either add a decay row to the \u00a76 crate table with the gate it should have met, or mark it as built ahead of mile 4. Reconcile the workspace sketch with rust/moneta_native, or record the split as future work.",
+      "severity": "major"
+     },
+     {
+      "location": "BLUEPRINT_v7.md:526 (SM4), :628 (moneta-scan row), :641 ('moneta-scan/ (absent)'), :735 (mile 4b), :590 (V-ORACLE-SCAN), :621 (consequence 2)",
+      "problem": "D1 has tripped. Arm P (numpy) measured 109 ms p95 at 10k\u00d7384 against the 50 ms gate (results/bench_query_arm_p.jsonl), and the native scan is built at mile 1, yet the paper says moneta-scan is 'absent until gated' and schedules it at 4b. The built seam also differs from the specified one. The spec is `scan(q, vecs, util, seqs, ids, allowed, k)` ordered by P5, with the oracle 'api.query's clamped path' and the sabotage 'the unclamped path used as the oracle'. The built seam is `ScanIndex.scan(q,k)->(slot,cos)`, ordered (cos desc, row asc = insertion order). Its oracle is the unclamped `_oracle_scan`, and the clamp and utility live in Python `rank_hits`. So V-ORACLE-SCAN's sabotage as written flags the shipped design. Consequence 2 ('the scan is the one seam where \u03b4 is the default') is moot: the native scan is bit-exact.",
+      "fix": "Record D1 as tripped, with the date, machine, numbers and artifacts. Redefine the scan seam as built: cosine-only, with the clamp and utility rerank in Python. Change V-ORACLE-SCAN to bit-exact against _oracle_scan plus a separate check on rank_hits. Drop the scan \u03b4 default. Add the P5 tie-order migration (insertion order \u2192 (score, seq, record_id)) as an explicit future change to the conformance contract. Move the scan out of mile 4b.",
+      "severity": "major"
+     },
+     {
+      "location": "BLUEPRINT_v7.md:106 (principle 7 'No seam takes a handle'), :523 (SM1), \u00a76 condition 1 :599",
+      "problem": "The built scan seam is a stateful handle. `moneta_native.ScanIndex` holds the vectors and cached norms across calls, compacts slots, and iter_query states a 'do not mutate while a generator is live' rule (vector_index.py:350-362). That violates SM1 and principle 7 as written: no handles, a pure function of bytes.",
+      "fix": "Either amend SM1 to allow a seam-owned buffer that is a pure function of its upsert history (and state the obligations: compaction preserves order, single-writer iteration), or record the built scan as non-conformant to SM1, with a refactor item.",
+      "severity": "major"
+     },
+     {
+      "location": "BLUEPRINT_v7.md:32 (ID scheme: D1 'only' the scan rule), :596 (\u00a76 'D1 governs SM4 and the moneta-scan row only'); vs src/moneta/vector_index.py:49-57, ecs.py:39, rust/moneta_native/src/lib.rs:1-5, Cargo.toml description, CLAUDE.md:136,:176-177",
+      "problem": "The code and the working-tree CLAUDE.md reintroduce the conflation that A41 was applied to remove. vector_index.py:55-56 says 'D1 therefore admits Rust here on both clauses: speed, and an exactness guarantee'; D1's verbatim text (v6:41) has only the latency clause, and the exactness clause is v6:349's seam rule (O27). lib.rs:5 says 'D1 admits Rust only behind a pure seam with an exact oracle', which is the seam rule. CLAUDE.md:136 and ecs.py:39 file the decay kernel under D1.",
+      "fix": "In the blueprint, state that the decay seam and the exactness justification rest on the seam rule (O27, unruled), not D1, and that O27's 'before mile 4' timing has already been overtaken. Route the docstring and CLAUDE.md wording to the Documentarian.",
+      "severity": "major"
+     },
+     {
+      "location": "BLUEPRINT_v7.md:628 ('v5 measured 161 ms [A; v6: V]'), :526 SM4; v6:353,:361,:366",
+      "problem": "The gate comparison mixes measures. v6:366 gives v5 at 161 ms MEDIAN on a 2-vCPU container, but the gate is 50 ms p95. The new measurements are p95 on a Threadripper PRO 7965WX (pure Python 312 ms, arm P 109 ms, native 3.1/6.2 ms). The gate's machine is never stated in SM4. The arm-P figure is whole-query latency (pure-Python decay_all plus rerank included), not scan-only. Native latency depends on the data (fresh vs aged utilities), because early stop depends on the utility distribution.",
+      "fix": "Restate SM4 as '50 ms p95 whole-query, defined on a 2-vCPU container'. Label 161 ms as a median. Record the workstation numbers as [V] with machine and interpreter. State that arm P missing on a faster machine implies a miss on the reference machine, but that native passing here does not imply passing there. Name the worst-case utility distribution for the early-stop path.",
+      "severity": "minor"
+     },
+     {
+      "location": "BLUEPRINT_v7.md:330 (G3-3 second clause), :146 (seal carries running hash + checkpoint hash only), :626 (moneta-verify 'chooses the start seal by G3-3's predicate (structural, needs only G4 state)'), :445 (Open step 2)",
+      "problem": "Residue of A26/A36. Eligibility requires 'its built_from exclusion set equals the head's RolledBack set restricted to seq \u2264 s'. built_from lives inside the derived checkpoint leaf, which the pure verifier explicitly does not read, and the seal event does not carry the exclusion set. So the verifier can evaluate only the window clause, and the 'structural, needs only G4 state' claim is false. Open step 2 nonetheless delegates the full choice to the verifier. This also violates principle 6: the dependency is not an edge.",
+      "fix": "Put the exclusion set (or its hash) in the `seal` body, so the clause becomes a journal edge the verifier can check. Or split the choice: the verifier filters by window, and the harness checks built_from after the hash match, with V-ORACLE-VERIFY scoped accordingly.",
+      "severity": "major"
+     },
+     {
+      "location": "BLUEPRINT_v7.md:217 ('open stays O(tail)'), :443-449 (Open steps 2-5), :626 (verifier 'walks G1 once')",
+      "problem": "Open cannot be O(tail) as written. Step 5 derives G4 state and excluded(head) 'from the folded journal, never from a derived file'. Choosing an eligible start seal needs RolledBack-at-head, which needs every govern in the whole prefix. So either the checkpoint carries G4 state (forbidden by step 5) or open is O(journal). The steps are also ordered backwards: step 2 uses `start_seq`, which the verifier walk produces in steps 3-4.",
+      "fix": "Have the sealed checkpoint or seal body carry G4 state and the RolledBack set as journal-bound content, checked by hash, and allow step 5 to start from it. Or drop the O(tail) claim and size the full-walk cost in O13. Reorder Open so the walk that produces start_seq and rolled_back_gens runs first.",
+      "severity": "major"
+     },
+     {
+      "location": "BLUEPRINT_v7.md:134 (envelope: t 'from the substrate clock at append'), :384-387 (gen stamp 'whatever E3's outcome'), :309 (fold uses envelope t as t_event)",
+      "problem": "Residue of A10. The fix copies the gen stamp from the call-time entry into the journal event, but the envelope `t` is still taken at append. If E3 is ruled against, attention is journaled at drain, so a whole probation's events carry one drain-time `t`. The declared per-event fold then decays at the wrong times, and the anchors differ from a call-time-t fold.",
+      "fix": "For `attention`, define the envelope t as the call-time timestamp carried in the entry and WAL (v1 already records it, api.py:422-430), clamped non-decreasing at append. Add a V-GENTAG or V-ORACLE-FOLD fixture: signal at t1, drain at t2 \u226b t1, and the anchors must equal call-time folding.",
+      "severity": "major"
+     },
+     {
+      "location": "BLUEPRINT_v7.md:385 ('signal_attention reads the live self generation under the same single writer that orders govern appends'), 'whatever E3's outcome' :384; ARCHITECTURE.md:108-112",
+      "problem": "If E3 is ruled against, \u00a75.1 stays locked: 'The log is lock-free' and 'No per-entity locking primitive'. Making signal_attention take the single writer that serializes govern appends puts a lock on the locked lock-free path. So the claim that the stamp design holds 'whatever E3's outcome' is not free of \u00a79 under the E3-against branch.",
+      "fix": "Add this to O30 and the E3 row: under E3-against, the call-time stamp needs a \u00a75.1 amendment, or a lock-free stamp (e.g. read an immutable generation snapshot and tolerate a bounded race, measured by V-MISATTR).",
+      "severity": "major"
+     },
+     {
+      "location": "BLUEPRINT_v7.md:579 (V-REPLAY two-caller clause), :261 (G2-9), :250 (slot winner); vs :760 (O16 recommended (a))",
+      "problem": "V-REPLAY's mile-4 pass condition ('two callers with different scopes sharing one echo fingerprint get different slot winners') cannot be tested under O16's recommended default (a), where every agent read has the full scope set. G2-9 and C4's read-time filter then become vacuous for agent reads.",
+      "fix": "Make the clause conditional on O16(b), or exercise it only through a harness read that takes scopes. Say so in O16's consequences.",
+      "severity": "major"
+     },
+     {
+      "location": "BLUEPRINT_v7.md:498 (P6), :134 (envelope clamp)",
+      "problem": "P6 says the read and the deposit sample the clock once and 'journal it as the envelope t'. A read journals nothing (principle 2, Q4), and a deposit's envelope stores max(t_clock, t_prev), so the echoed t and the journaled t can differ. It is unstated which one replay and the fold use. P6 also has no check: no \u00a75 row cites P6.",
+      "fix": "Reword: a read echoes its sampled t, and a deposit journals the clamped t and echoes that same value. Add a check (e.g. V-CLOCK) with the sabotage 'query reads time.time() twice' and 'echo differs from the journaled clamped t'.",
+      "severity": "minor"
+     },
+     {
+      "location": "BLUEPRINT_v7.md:772 (O28 'Default here'), vs :120 (\u00a71 row 10), :258 (G2-6), :520 (X1), :683 (locks table)",
+      "problem": "O28's default column says 'the recall \u03bb is not bound by :82 [P]', while the applied text says the :82 1 min \u2013 24 h range IS the recall envelope until O28 rules. The table and the text disagree on the operative default.",
+      "fix": "Split O28's default into 'interim: bound by :82 (applied)' and 'proposal to Round 4: not bound'.",
+      "severity": "minor"
+     },
+     {
+      "location": "BLUEPRINT_v7.md:161 (roll-forward 'yes' signed), :365 (G4-2 attributes roll-forward signing to R4b), :543 (V-SIGSET tests unsigned roll-forward), :753 (O9 'pending the owner's confirmation; not adopted silently'); RULINGS.md:21 (R4b: promote, adopt, rollback only)",
+      "problem": "O9 says the extension of the signed set to roll-forward is pending and not adopted silently. But the govern.why table, G4-2 (which cites R4b, whose text lists only promote, adopt and rollback) and V-SIGSET's pass condition all treat roll-forward as signed. erase and revector are correctly left 'open (O9)'.",
+      "fix": "Mark roll-forward 'signed, pending O9' in the G1 table, G4-2 and V-SIGSET, and stop attributing it to R4b. Or record that the owner adopted it.",
+      "severity": "minor"
+     },
+     {
+      "location": "BLUEPRINT_v7.md:13 and :22-33 (ID scheme), :612 (contract E), :520 (X1 \u03b4), :758 (O14 'within a declared \u03b4'), :566 (V-MISATTR '\u00b1\u03b4'), :405 ([T\u2081, T\u2082]), :626 (K, S), :627 (R \u00d7 A)",
+      "problem": "The ID scheme promises that no identifier means two things, but \u03b4 means both an ulp tolerance (contract E, X1) and a time window (O14, V-MISATTR). 'E' is both contract E and E1\u2013E4. Gate variables K, R, A, S and the window bounds T\u2081/T\u2082 reuse the rule prefixes K1\u2013K3 and T1\u2013T7, the rulings R1\u2013R5 and the attack IDs A1\u2013A51. E1\u2013E4, A1\u2013A51 and the review-log J1-x/J2-x are absent from the ID table.",
+      "fix": "Rename the time window \u03b4_t (or \u03b4_host) and contract E 'contract \u03b4', rename the gate variables (e.g. N_sig, N_rec \u00d7 N_att, N_tail, window [w\u2080, w\u2081]), and add E*, A*, and the judge-defect IDs to the ID table.",
+      "severity": "minor"
+     },
+     {
+      "location": "BLUEPRINT_v7.md:579 (V-REPLAY 'does not satisfy J1-7'), :168 ('answers O13 from rust-seam-first'), :914 (graft 'O14 reseal'), :924 (graft 'O13 (adapted\u2026)'), :916 ('C8 \u2192 G2-6'), :322 (\"attack 2's question\"), :750 (O6 'after attack 3'), :768 (O24 'Answers attack 4')",
+      "problem": "Live ID collisions in normative text. J1-7 reads as rule J1's seventh clause but is a review-log defect. O13 and O14 here are draft-era numbers that collide with \u00a79's O13 (gates) and O14 (host echo). C8 has no rule. 'attack 2/3/4' refer to pass-2 attack numbering, while \u00a710 now has a new numbered list where 3 is the payload manifest and 4 is mixed embedders.",
+      "fix": "Prefix the historical IDs (e.g. 'review J1-7', 'draft-RS O13', 'pass-2 attack 3') or replace them with the A-numbers from the pass-3 log.",
+      "severity": "minor"
+     },
+     {
+      "location": "BLUEPRINT_v7.md:417 (G5-3); \u00a75 table :534-590; rules :484-526",
+      "problem": "Some invariants and rules have no check. G5-3 (judges end outside the loop) is cited by no V-check. Rules with no check: P6, J5 (tripwires never scored or shown), C5's 'rules never enters Resolved' and the locked thresholds (V-BOUNDS lacks an 'amend changes 0.1/0.3/3' sabotage), J2, X1 (beyond V-BOUNDS's amend case), X3 (the V-QUERYSIG proposed only inside O16(b)), and T2. G1-3's about/scored_against/signed_by typing is checked only for `restores`.",
+      "fix": "Map V-VIEW and V-PIN to G5-3, or add V-JUDGE. Add V-TRIPWIRE (J5), a V-BOUNDS threshold sabotage, and V-QUERYSIG independent of O16. Extend V-BACKWARD to edge-typing.",
+      "severity": "minor"
+     },
+     {
+      "location": "BLUEPRINT_v7.md:195 (G1-2), :538 (V-BACKWARD)",
+      "problem": "'Every typed edge targets a strictly lower seq' is ill-typed for edges that target leaves, files, keys or windows (checkpoints, evidence, commits, and the G3 labels/labeled_by/window edges), not events.",
+      "fix": "Restrict G1-2 to event-to-event edges and state the leaf and file edges' constraints separately (by hash, built_from).",
+      "severity": "minor"
+     },
+     {
+      "location": "BLUEPRINT_v7.md:769 (O25 keep default), :210 (one nonce/payload/vector per file), :213 (write order), :541 (V-PAYLOAD crash cases)",
+      "problem": "O25's default appends a versioned vector section to an already-committed payloads/<record_id> file. A crash between that append and the revector event leaves an orphan SECTION inside a live file. The audit's 'remove orphan files' and V-PAYLOAD's crash fixtures cover only whole orphan files.",
+      "fix": "Specify revector write order (write a new file and atomically rename, or append and truncate on recovery), and add a V-PAYLOAD crash fixture between the section write and the revector append.",
+      "severity": "minor"
+     },
+     {
+      "location": "BLUEPRINT_v7.md:370 (G4-5 reseal 'from the latest eligible seal'), :330 (G3-3 'same predicate selects the base for a reseal'), vs :445 (Open: attested only, 'never fall back to an unattested reseal')",
+      "problem": "The reseal base is any eligible seal, while the open start must be an attested eligible seal. A reseal can therefore be built on an unattested base that open would refuse, so the 'same predicate' claim is false on the attestation axis.",
+      "fix": "State whether the reseal base must be attested. If it need not be, say why the hash chain suffices there but not at open.",
+      "severity": "minor"
+     },
+     {
+      "location": "BLUEPRINT_v7.md:61 (The line: 'exactly one node kind'), :46 (On one screen G4 row), :366 (G4-3)",
+      "problem": "The line says the loop causes 'exactly one node kind' and then adds a second (the substrate's `withdraw`). The one-screen G4 row lists 'at most one in {Promoted, Expired}' but omits G4-3's 'at most one Proposed'.",
+      "fix": "Say 'two govern kinds, neither moving the pointer'. Add the Proposed bound to the one-screen row.",
+      "severity": "minor"
+     },
+     {
+      "location": "BLUEPRINT_v7.md:532 ('A check is green only once its sabotage has been caught'), :566 (V-MISATTR 'not a pass/fail gate'), :734 (mile 4 done: every mile-4 check green)",
+      "problem": "V-MISATTR is a mile-4 row with a sabotage but declares itself a measurement, not pass/fail, so mile 4's 'every check green' is undefined for it. The Mile column claims v6 numbering but uses '4b', which v6 doesn't have.",
+      "fix": "Move V-MISATTR to a 'measurements' table, or define its green as 'reported, with its sabotage detected'. Note that 4b is a v7 sub-mile.",
+      "severity": "minor"
+     },
+     {
+      "location": "Review log BLUEPRINT_v7.md:882 (J1-1 'five steps'), :895 (J1-14 'live at append'), :902 (J2-3 'V-HASHGATE gains open from a pre-rollback checkpoint'), :891 (J1-10 'Q1\u2013Q10'); Pass 3 log intro :933",
+      "problem": "Some 'Where fixed' claims now contradict the current text. Open has six steps. A10 moved the stamp to call time. V-HASHGATE now requires open from a pre-rollback attested seal to work, not forbids it. Q runs to Q12. The pass-3 log intro calls it 'the pass-2 red team' and says 'survived two independent verdicts; none was refuted' without disclosing that 0 of 102 votes refuted anything, which makes the filter uninformative.",
+      "fix": "Annotate the superseded rows ('superseded by A10/A26/A36'). Fix the intro wording and add a line on the weak refute filter.",
+      "severity": "minor"
+     },
+     {
+      "location": "BLUEPRINT_v7.md:110-111 (\u00a71 table row 1 'from the v7 genesis'), :486 (T1), :207 (G1-7), :542 (V-FORMAT refuses format 5/6), :717 (mile 0: 841-record store); RULINGS.md:27, pass1_rulings_brief.md:325,:359",
+      "problem": "R5 was ruled as 'a per-event running hash from the v6/v7 genesis', which the brief explains as a chain that starts at the genesis 'without rewriting v5 history' (brief:325). v7 instead refuses any non-format-7 store, requires one genesis and no forks, and says nothing is edited. It gives no path for the existing 841-record store into format 7 (payloads inline vs per-record committed files). So either v5 history gets rewritten, which contradicts the ruling's premise, or the store can't be opened.",
+      "fix": "Add a migration subsection: a format-7 genesis that names the hash of the imported v5/v1 state and imports records as deposit events with commitments, or chains over the v5 tail. Restate R5's 'v6/v7 genesis' literally.",
+      "severity": "minor"
+     },
+     {
+      "location": "BLUEPRINT_v7.md:610 and :662 (hython 21.0.773 non-flush tagged [A])",
+      "problem": "The tag scheme defines [A] as assumed or not checkable on this machine, but this was measured on this machine (pass3_attack.json:863), and C:/Program Files/Side Effects Software/Houdini 21.0.773 is installed. CLAUDE.md's test command names 21.0.512, which is not installed.",
+      "fix": "Re-tag as [V, measured] with the command. Flag the CLAUDE.md hython path to the Documentarian.",
+      "severity": "minor"
+     },
+     {
+      "location": "BLUEPRINT_v7.md:210 (vector encoding 'NaN refused at deposit'), :206 (G1-8 field list), :653 (Q2)",
+      "problem": "The vector encoding refuses only NaN, while G1-8 and Q2 refuse all non-finite values and canonicalize -0.0. Vectors aren't in G1-8's field list, so \u00b1inf components are admitted. The built native index silently demotes to the oracle on non-finite input.",
+      "fix": "Make the vector encoding refuse \u00b1inf as well, and state the -0.0 rule for vectors. Add a V-FINITE fixture for a vector at deposit.",
+      "severity": "minor"
+     }
+    ]
+   }
+  },
+  {
+   "audit": "completeness",
+   "result": {
+    "items": [
+     {
+      "location": "BLUEPRINT_v7.md:526 (SM4), :596 (D1 para), :628 (moneta-scan row, Gate cell), :641 (workspace 'moneta-scan/ (absent)'), :735 (mile 4b)",
+      "problem": "D1's gate has already been measured and missed, and the scan seam is built, but the paper still treats it as hypothetical. The Gate cell cites v5's 161 ms [A; v6: V]. Measured: arm P (numpy) 10k x 384 p95 109.24 ms (results/bench_query_arm_p.jsonl line 3). The built crate is rust/moneta_native, not the proposed moneta-scan inside a workspace. Mile 4b still lists moneta-scan as conditional future work.",
+      "fix": "Mark D1 as fired, with a measured tag. Cite scripts/bench_arm_p.py, results/bench_query_arm_p.jsonl, the machine (Threadripper PRO 7965WX, Windows, py3.14) and the date 2026-10-15. Note that the 50 ms gate was defined on a 2-vCPU container: arm P missed it on a much faster machine, so the verdict holds, but absolute numbers are machine-bound. Replace 'moneta-scan (absent)' with 'rust/moneta_native (built, PyO3 abi3-py311)'. Move the scan out of mile 4b into a 'built ahead of the mile map' line.",
+      "severity": "critical"
+     },
+     {
+      "location": "BLUEPRINT_v7.md:620 (consequence 1), :606-610 (Exactness), Q5 :656 vs rust/moneta_native/src/lib.rs:222-226",
+      "problem": "The paper requires the read path to stop calling math.exp and use a ported software exp (src/moneta/oracle/exp.py) shared with the wasm kernel. The built decay_batch does the opposite. It calls f64::exp, which lowers to the platform C runtime exp, the same function CPython's math.exp calls. Its bit-parity with decay_value (tests/unit/test_native_decay_parity.py) therefore holds only on one platform, and it does not carry over to the wasm32 referee target. Q5 ('one exp, bit-exact') is now contradicted by shipped code.",
+      "fix": "Add a paragraph separating two contracts. (a) The v1-compat native decay seam has same-platform parity with math.exp. It is shipped and tested on Windows only. (b) The v7 kernel/referee exp is a ported libm with cross-target parity. It is still planned. Either keep both and state that V-EXP applies only to (b), or revise consequence 1. Add an owner decision for this: what happens to decay_batch when the read path switches to the ported exp.",
+      "severity": "critical"
+     },
+     {
+      "location": "BLUEPRINT_v7.md:621 (consequence 2), :590 (V-ORACLE-SCAN), :580 (V-POOL)",
+      "problem": "The paper says 'the scan is the one seam where \u03b4 is the default' because numpy sums in BLAS order. Measured: 1496 of 2000 arm-P cosines are not bit-equal (bench_query_arm_p.jsonl line 1). But the shipped Rust scan is bit-identical to _oracle_scan, ties included (28 tests in tests/unit/test_native_scan_conformance.py). The \u03b4 default is now false for the seam that actually exists.",
+      "fix": "Tighten V-ORACLE-SCAN to bit-identical cosines and ordering for moneta_native, and keep \u03b4 only as a recorded fallback, as for every other seam. Cite the arm-P exactness numbers as the reason arm P was rejected on exactness as well as latency.",
+      "severity": "critical"
+     },
+     {
+      "location": "BLUEPRINT_v7.md:628 (moneta-scan signature and oracle cells) vs src/moneta/vector_index.py:112-150 (_oracle_scan), src/moneta/ecs.py:335 (rank_hits), src/moneta/api.py:401-408",
+      "problem": "The seam boundary moved. The paper's scan takes util, applies max(cos,0) x U and returns total-ordered (id, score). The shipped seam returns raw-cosine order (VectorIndex.iter_query, lazy). The clamped utility rerank stays in Python (ECS.rank_hits) with an exact early stop, so utility never crosses into Rust. The paper doesn't describe this boundary or name rank_hits and iter_query anywhere.",
+      "fix": "Rewrite the scan row as built: the native part is scan(q) -> raw-cosine top-k, the rerank is ECS.rank_hits (pure Python, exact early stop), and the oracle is _oracle_scan + rank_hits. Cite tests/unit/test_rank_early_stop.py. State that this boundary is better for Q4 (utility is not an input to native code).",
+      "severity": "critical"
+     },
+     {
+      "location": "BLUEPRINT_v7.md:771 (O27), :598 (seam-admission rule), :32 (ID table D1 row)",
+      "problem": "The paper confines D1 to the scan and leaves the broader seam-admission rule [A; v6] pending owner confirmation 'before mile 4'. decay_batch is a second Rust seam that D1 doesn't license, and it sits on the agent read path (eval point 1, api.py:401). Shipped code has pre-empted O27. No measured gate justifying decay_batch is recorded: the 3.1 vs 6.2 ms numbers are whole-query numbers.",
+      "fix": "Add to O27: 'Live instance: decay_batch shipped 2026-10-15 under the seam rule, not D1.' Default: keep it behind MONETA_NATIVE, with its parity suite as the contract. Owner: Joseph, deadline before the Round 4 brief goes out. Add a decay-only benchmark row (scripts/bench_query.py or a new flag) so the seam's 'Justified' clause (:602) has a number.",
+      "severity": "critical"
+     },
+     {
+      "location": "BLUEPRINT_v7.md:3 (Status), :5 (Loop position), :6 (Baseline), :620 ('api.query imports no native code'), :639-640 (moneta-py 'built only for a gated seam')",
+      "problem": "Several header and \u00a76 statements are stale. The paper says 'Pass 3 of 4', but it is entering pass 4. It says 'no file under src/ changes', but src/moneta/{api,ecs,vector_index}.py changed this session. It says 'api.query imports no native code', but query -> decay_all -> _native.decay_batch and iter_query -> native ScanIndex when the wheel is present. The baseline is pinned to 6cf05f5 while the working tree differs.",
+      "fix": "Status: 'v7 design is unbuilt. Two v1 native seams (scan under D1, decay under the seam rule) are built in the working tree on top of 6cf05f5.' Loop position: Pass 4 of 4. Replace the :620 sentence with 'api.query reaches native code only through VectorIndex(backend=auto) and ECS.decay_all; MONETA_NATIVE=0 forces the oracles.'",
+      "severity": "critical"
+     },
+     {
+      "location": "BLUEPRINT_v7.md:53, :113, :119, :299-306, :313, :327, :652, Appendix :809-843 (api.py:406-407/:414/:415; ecs.py:211-214/:222-236/:295; vector_index.py:155-167/:160-162)",
+      "problem": "These [V] line citations are correct at 6cf05f5 but have drifted in the working tree. In ecs.py the apply_attention body is now around :222-243 and decay_all is at :251. The query rerank moved from api.py:414-415 to ecs.rank_hits (:335ff). The scan is now _oracle_scan at vector_index.py:112-150. The v1 tie order (dict insertion plus stable sort) is now fixed by a conformance suite, so moving to P5's (score desc, seq asc, record_id asc) (:497, V-TIES :581) would require changing that test contract, not only adding a declaration.",
+      "fix": "Keep the 6cf05f5 pins and add an Appendix subsection, 'Drift at working tree (2026-10-15)', mapping each moved cite to its new file:line. Add one line to P5/V-TIES: 'adopting P5 changes tie order relative to test_native_scan_conformance.py; the oracle and native must change together.'",
+      "severity": "major"
+     },
+     {
+      "location": "BLUEPRINT_v7.md:9-13 (tag definitions)",
+      "problem": "No tag means 'measured by running'. [V] is defined as 'read, nothing run'. The new facts (211 green in 4 configs, latency and RSS numbers, bit-parity) can only be tagged [V] (which is wrong, because they were run) or left untagged.",
+      "fix": "Add [M]: 'measured by running; cite script, results file, machine, date.' Apply it to every native-seam and benchmark fact.",
+      "severity": "major"
+     },
+     {
+      "location": "BLUEPRINT_v7.md \u00a76 :594-646 and \u00a78 mile map :727-737 (no mention anywhere)",
+      "problem": "The paper never names the built artifacts. None of these appear: rust/moneta_native, MONETA_NATIVE, backend='auto'|'python'|'native', tests/unit/test_native_scan_conformance.py (28), test_native_decay_parity.py, test_rank_early_stop.py, scripts/bench_query.py, scripts/bench_arm_p.py, results/bench_query_*.jsonl, or the 211 / 167+29-skip matrix. Only the uncommitted CLAUDE.md diff records them. A solo owner can't get from the paper to the code.",
+      "fix": "Add a \u00a76 subsection 'Built seams (as of 2026-10-15)' with one row per seam: seam, code path, oracle, conformance test, bench script and results file, gate status, and the config matrix (py3.14 & hython3.11 x MONETA_NATIVE 0/1). Point to the CLAUDE.md build commands rather than duplicating them.",
+      "severity": "major"
+     },
+     {
+      "location": "BLUEPRINT_v7.md:583 (V-FPENV), :662 (Q11), :610",
+      "problem": "The paper says every native and oracle entry point probes FTZ/DAZ and fails closed. Neither rust/moneta_native/src/lib.rs nor src/moneta/*.py contains a probe (grep for float_info/FTZ/subnormal finds nothing). A shipped float seam lacks a guarantee the paper says all float seams carry. Separately, :610 and :662 cite 'hython 21.0.773', but CLAUDE.md's test command uses Houdini 21.0.512.",
+      "fix": "Either add V-FPENV to the built seams with a mile (recommended: before mile 2's fixtures), or record a temporary gap with an owner. Correct the hython version, or say which build was observed.",
+      "severity": "major"
+     },
+     {
+      "location": "BLUEPRINT_v7.md:526, :628 (50 ms p95 gate), :757 (O13)",
+      "problem": "The gate protocol is not specified. Nothing names the query count, warm-up, utility distribution or machine class. The p95 values come from 30-50 queries, which is close to a max statistic. Python 10k p95 varied from 288 to 312 ms across result files (bench_query_baseline_python.jsonl vs after_seam3.jsonl). Native p95 went from 3.1 to 6.2 ms depending on fresh vs aged utilities, because of the early stop. Memory has no gate, although RSS is measured (183 MB vs 66 MB).",
+      "fix": "Define the gate as: scripts/bench_query.py, N>=200 queries after warm-up, both --spread and fresh, the reference machine named (the 2-vCPU container) plus the owner workstation as a secondary, and p95 with the run-to-run range. Add an RSS line as a recorded metric (not a gate) unless the owner wants one.",
+      "severity": "major"
+     },
+     {
+      "location": "BLUEPRINT_v7.md:375 (ceiling 14 d [P; value U]), :473 and :507 (bootstrap resampling unit [U]), :520 (X1 values [U]), :466 (USD policy layer size [U]), :610 (bit-for-bit [U]), :626-627 (verifier/fold gate costs [cost U]), :327 ('what ranks well may keep ranking well' [U])",
+      "problem": "These claims are unmeasured and name no measurement: no script, no fixture, no mile. The bootstrap unit and the X1 values appear in no O-item at all, so nobody owns them.",
+      "fix": "Give each one a line: measurement (script or check name), mile, and owner. Specifically: add O31 'X1 ceiling values' with default 'proposed table at mile 4, owner signs', and O32 'bootstrap resampling unit' with default 'session', decided at mile 2. Route :327 to V-MISATTR's mile-2 simulation arm. Route :610 to V-EXP.",
+      "severity": "major"
+     },
+     {
+      "location": "BLUEPRINT_v7.md:745-774 (O-table 'Default' and 'Decided by' columns)",
+      "problem": "Several open decisions have no usable default or owner. O1's default is 'all [A]', which is not a default. O4's decider is 'mile 2, mile 0', which is not a person. O10's wear cap is [U]. O11 has default [U] and decider 'mile 4', which is not a person. O12 is [U]. O13's decider is 'measured at mile 4', which is not a person. O15's default is 'either', which is not a default. O9, O18, O20, O21, O24 and O25 say 'the owner' with no deadline. For a solo owner, 30 items with no ordering can't be acted on.",
+      "fix": "Give every row a concrete default, a named decider, and a deadline expressed as a mile or event. Concretely: O10 cap = 3 disclosures per window. O11 = pyo3/maturin already used, with ed25519 and wasmtime evaluated at mile 4 by the Persistence Engineer. O12 = a git tag in a private remote. O15 = genesis. Add a short 'Decision queue' table before \u00a79 that sorts the O-items into: (1) needed in the Round 4 brief (O1, O2, O7, O23, O28, O29, O30, plus the new decay-exp item); (2) before mile 4 (O5, O8, O9, O15, O21, O22, O25, O26, O27, O31); (3) at mile 0 from the v5 code (O19, O24); (4) after V-MISATTR (O14, O20).",
+      "severity": "major"
+     },
+     {
+      "location": "BLUEPRINT_v7.md:13, :714-717 (mile 0 done-means), :89",
+      "problem": "Mile 0 done-means #3 requires merging v5, but :13 says the v5 bundle is absent from this repo and no v5 branch exists. The paper has no step for locating it, which makes it a hidden prerequisite. Done-means #3's 'arm P's p95 is recorded' is now partly satisfied on v1 (109 ms), but not on the v5 facade. 'docs/rounds/round-4.md' doesn't exist yet, and no brief path or draft owner is named.",
+      "fix": "Add mile 0 step 0: 'Locate the v5 bundle (path or remote), or rule that mile 0 proceeds without it.' Owner: Joseph. Mark the arm-P sub-item 'recorded on v1 [M], re-run on v5 facade outstanding'. Name the brief file (for example docs/rounds/round-4-brief.md) and its author (the Architect role).",
+      "severity": "major"
+     },
+     {
+      "location": "BLUEPRINT_v7.md:731 (mile 1), :732 (mile 2 kills), :733 (mile 3 kills), :736 (mile 5 kills), :737 (mile 6 kill)",
+      "problem": "Miles have done-means or kills with no measurable threshold. Mile 1 says 'graph schemas reviewed' (by whom, recorded where?) and doesn't include completing pass 4. Mile 2 says '\u03b2 gains about as much' (RULINGS R2 uses the same vague 'about') and doesn't define 'A gains'. Mile 3 says 'Labeling unsustainable' and 'Leverage about zero'. Mile 5 says 'requests pile up faster than the owner reviews them' and 'Key hygiene unsustainable'. Mile 6 says 'held-out wear outruns label refresh'. None of these can be decided from a number.",
+      "fix": "Give each one a numeric trigger. Proposals: \u03b2 within the half-life arm's bootstrap CI means R2 flips. 'A gains' means the lower CI bound is > 0 on held-out nDCG@k. Labeling is unsustainable at < 50 labels/week over 4 weeks. Leverage is about zero when |\u0394 nDCG| < margin. Requests pile up at > 2 unreviewed proposals for > 14 d. Wear outruns refresh when disclose count reaches the O10 cap before the window rolls. Mile 1 done-means should add 'pass 4 applied; review recorded in Review log'.",
+      "severity": "major"
+     },
+     {
+      "location": "BLUEPRINT_v7.md:22-33 (ID scheme) and whole document",
+      "problem": "There is no glossary, and three terms collide. 'Anchor' means both the recall-fold output (Anchor{u, t_last}, 'recall anchors', :288, :627) and the external tamper anchor (K2, G5-4). '\u03b4' means both the contract-E ulp tolerance (:613) and host latency \u03b4_host (:395, O14). 'J1/J2' are the review-log judges (:878) and also rules J1-J10. Terms used undefined: seam, oracle, arm A-E, arm P, \u03b2, LIVRPS, generation, probation, shadow, referee, seal/attest/reseal, wear, held-out window, contract E, ulp, FTZ/DAZ, subnormal, fuel, cdylib/no_std, abi3/PyO3, hython, SYNAPSE, E1-E4, 'the line', QueryRecord, Prefix, eligible checkpoint, signed_through_seq.",
+      "fix": "Add an appendix glossary of about 25 one-line entries. Rename the external anchor to 'tamper anchor' or the recall output to 'recall state'. Rename \u03b4_host to 'host lag \u03b5'. Rename the review-log judges to 'JA/JB'. Add E*, A*, arms and judges to the ID table at :22.",
+      "severity": "major"
+     },
+     {
+      "location": "BLUEPRINT_v7.md:37-89 ('On one screen')",
+      "problem": "There is no sea-level summary. 'On one screen' is a dense expert digest: five tables' worth of graph invariants before the one ask at :85. A solo owner returning after a week can't tell what exists, what to do next, and how to check it from this page.",
+      "fix": "Insert a short block above :37 titled 'Where things stand'. It should cover (1) what exists today: v1 at 6cf05f5 plus two native seams, 211 green across 4 configs, and the oracles; (2) what v7 is, in one sentence; (3) the next two actions: run mile 2 and draft the Round 4 brief, with v5 located first; (4) the single command that proves the tree is healthy (the CLAUDE.md 4-config pytest line); (5) what 'done this week' means.",
+      "severity": "major"
+     },
+     {
+      "location": "BLUEPRINT_v7.md:665-673 ('The cost to name') vs pyproject.toml:37-44",
+      "problem": "The section says ed25519 and WASM would be v1's first runtime dependencies. That was true at 6cf05f5, but moneta_native now exists as an optional, hand-installed wheel. It has no [project.optional-dependencies] 'native' extra, and the build needs rustup, MSVC and maturin. Cross-platform behavior of the abi3 wheel (Linux/macOS, glibc exp) is unmeasured.",
+      "fix": "Record moneta_native as the first optional native component: build toolchain, wheel name, the hython install method (unzip + PYTHONPATH), and no pyproject extra yet. Add to O11: 'add a native extra or keep it hand-installed; Linux parity run outstanding [U]'.",
+      "severity": "minor"
+     },
+     {
+      "location": "BLUEPRINT_v7.md:778-793 (\u00a710 What to attack, item 10)",
+      "problem": "The pass-4 attack list doesn't cover the seams that actually shipped: the platform-exp parity of decay_batch, the permanent demotion of the native index to Python on a non-finite vector (CLAUDE.md diff), the soundness of rank_hits' early stop with negative or NaN utilities, and the MONETA_NATIVE env var as unjournaled ambient state that P1/O16 would flag.",
+      "fix": "Add item 11, 'Built seams', with those four attacks, each tied to its test file.",
+      "severity": "minor"
+     },
+     {
+      "location": "BLUEPRINT_v7.md overall (987 lines, 141 KB); candidates :530-590, :648-663, :760-774 cells, :797-873, :876-928, :931-987",
+      "problem": "The paper is too long to act on. Execution-critical content (mile map, decision queue, the one ask) is spread across about 140 KB, and roughly 40% of it is audit trail or reference.",
+      "fix": "Keep in the body: the sea-level block, On one screen, \u00a71, G1-G5 (invariants plus tables), \u00a73, \u00a74, \u00a77, \u00a78, and a trimmed \u00a79 with one line per O-item plus the decision queue. Move to appendices: (A) the full \u00a75 checks table, leaving in the body a 'checks by mile' digest that lists only the IDs per mile; (B) Q1-Q12; (C) the long Default cells of O14, O16, O20-O26, with the body row pointing to them; (D) the v1/v6 reference list plus the new working-tree drift table; (E) the Review log and (F) the Pass 3 attack log, both relabeled as appendices; (G) the glossary. The G3-2 path enumeration (:318-329) and the misattribution paragraph (:391-395) can also move to an appendix, leaving a two-line bound statement in the body.",
+      "severity": "minor"
+     }
+    ],
+    "summary": "Completeness audit of docs/v7/BLUEPRINT_v7.md against the working tree. Biggest gap: the paper says nothing about what shipped this session. D1's gate already fired: arm P measured 109 ms p95 and was 75% non-bit-exact. rust/moneta_native ships a bit-exact scan, plus a decay seam that D1 doesn't cover and that uses the platform C-runtime exp. That contradicts the paper's 'one ported exp' plan (Q5, \u00a76 consequence 1), its '\u03b4 by default for the scan' claim, its 'api.query imports no native code' claim, the scan signature it describes (the shipped seam leaves the utility rerank in Python in ECS.rank_hits), and its stale Status/Pass/Baseline header. The paper names none of the built seams, tests, benchmark scripts or the 211-test 4-config matrix. Second tier: there is no tag for measured-by-running facts; several [V] cites drifted in the working tree; V-FPENV and Q11 aren't implemented in the shipped seams, and the hython version is inconsistent; the 50 ms gate has no protocol (sample size, warm-up, utility distribution, machine); several [U] claims and O-items lack a measurement, default, owner or deadline, and the bootstrap unit and X1 values have no O-item at all; mile 0 hides a prerequisite (the v5 bundle is absent); many kills lack numeric triggers. Third tier: there is no glossary, and 'anchor', '\u03b4' and 'J1/J2' each mean two things; there is no sea-level summary for a solo owner; and at 987 lines, the checks table, Q1-Q12, long O-cells, the reference appendix and both logs should move to appendices behind a checks-by-mile digest and a decision queue. No files were edited."
+   }
+  }
+ ]
+}

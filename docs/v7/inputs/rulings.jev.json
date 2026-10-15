@@ -1,0 +1,149 @@
+{
+  "about": "Moneta v6 rulings R1-R5 as Jev Choice questions, for triage before the owner rules. Written neutrally: each option states what it is, its best case and its cost. Jev's answers are a prior, not a verdict.",
+  "protocol": {
+    "model": "jev-1.13.0",
+    "orders": ["as_listed", "reversed_with_none_of_these_last"],
+    "repeats_per_order": 2,
+    "settled": "both orders choose the same option with probability >= 0.60 (the TypeSafe self-consistency cookbook's illustrative threshold, not calibrated)",
+    "otherwise": "contested: goes to the owner first, with an independent reviewer arguing both sides",
+    "record": "every request and answer is kept in the client's verdict cache under the pinned model version"
+  },
+  "state": {
+    "project": "Moneta v6: a governed loop that tunes how a memory substrate recalls, and never what it remembers.",
+    "principles": [
+      "History is append-only, and the present is a pointer.",
+      "Reads are pure, so every answer and every verdict can be re-derived.",
+      "Records don't compose; policy does.",
+      "Nothing judges itself.",
+      "The loop's only power is a typed proposal."
+    ],
+    "the_line": "The loop may only change what moving a pointer can undo: read-time policy only. Anything that writes the journal as an effect (retention, tombstone, erase, compact, revector) belongs to the owner. Sleep passes are held while a promoted generation has not yet been adopted by the owner.",
+    "facts": [
+      "Moneta v5 is built but not merged. Its journal is the authority for records and its reads are pure. Its changes to four locked decisions have not been ruled on.",
+      "v5 does not journal queries. A read also depends on the caller's allowed scopes, the query embedding and the limit.",
+      "SYNAPSE, the first host, signals attention on its own top five reranked results after each search, so attention records what ranked well, not what was used.",
+      "SYNAPSE uses Moneta only to fill a candidate pool of at least 50, which it reranks with its own scorer.",
+      "v5 uses one half-life for both ranking and retention, and changing it reinterprets history.",
+      "The core must stay creative-agnostic: the host and the owner define what better recall means.",
+      "The owner is a solo developer working within a fixed budget."
+    ],
+    "first_experiment": "A synthetic world with a known best setting. One knob is tuned under five label sources and two host shapes, in Python, with no changes to Moneta. Its report arrives before these rulings are final."
+  },
+  "questions": {
+    "r1_policy_history": {
+      "type": "choice",
+      "instructions": "Given `principles`, `the_line` and `facts`, which way of keeping policy history should Moneta v6 adopt?",
+      "criteria": {
+        "one_timeline": {
+          "what": "Every policy change, by the owner or the loop, is a journal event that carries the policy content inline. The USD layer files are derived from the journal.",
+          "best_case": "Exact replay from the journal and the host's query log; one place to audit; files cannot drift from the journal.",
+          "cost": "Owner edits take effect only through a reload step, and the journal format changes."
+        },
+        "journal_values": {
+          "what": "Only the loop's tuned values are journal events. Owner context layers stay as files edited in place, as in v5.",
+          "best_case": "The least new machinery.",
+          "cost": "Replaying a past query's eligibility stays approximate, because owner context edits are not on the timeline."
+        },
+        "layer_chain": {
+          "what": "Policy history is a chain of USD layers with a pointer in a root layer, as in the RSI prototype. The journal is untouched.",
+          "best_case": "Reuses the prototype's verified chain code.",
+          "cost": "Two timelines, so past answers cannot be re-derived from the journal alone."
+        },
+        "none_of_these": "None of these options fits."
+      }
+    },
+    "r2_first_knob": {
+      "type": "choice",
+      "instructions": "Given `principles`, `the_line` and `facts`, which read-time value should the loop be allowed to tune first?",
+      "criteria": {
+        "recall_half_life": {
+          "what": "A half-life used only for ranking, while retention keeps the owner's half-life.",
+          "best_case": "Tunes how memory fades in ranking, and has a known-answer experiment.",
+          "cost": "Two utilities per record, so every surface must say which one it reports."
+        },
+        "utility_exponent": {
+          "what": "An exponent on utility in the ranking score, max(cos, 0) x U^beta, where beta = 1 reproduces v5.",
+          "best_case": "No second utility and no compatibility change.",
+          "cost": "Does not change how memory fades, and is less intuitive to explain."
+        },
+        "both": {
+          "what": "Tune the recall half-life and the utility exponent together.",
+          "best_case": "More room to improve.",
+          "cost": "Twice the search space, and harder to explain and to test."
+        },
+        "none_of_these": "None of these options fits."
+      }
+    },
+    "r3_labels": {
+      "type": "choice",
+      "instructions": "Given `principles`, `the_line` and `facts`, where should the labels that judge recall come from?",
+      "criteria": {
+        "use_signals": {
+          "what": "The host signals attention when a memory is used, not when it is retrieved.",
+          "best_case": "Real and continuous.",
+          "cost": "Labels only what was shown, so it cannot improve a host scored on pool recall. It needs a host change that also changes what utility measures."
+        },
+        "model_labels": {
+          "what": "A pinned model judges every record in each logged query's candidate pool. The labels are recorded and signed by the owner.",
+          "best_case": "Covers memories that were never shown.",
+          "cost": "Carries the model's biases, and costs money per label."
+        },
+        "owner_labels": {
+          "what": "The owner hand-labels a small set, including records that were never shown.",
+          "best_case": "The most trusted labels.",
+          "cost": "Small, slow to refresh, and costs the owner's attention."
+        },
+        "mixed": {
+          "what": "Use signals, plus model labels for candidates that were never shown, signed together.",
+          "best_case": "Coverage grounded in real use.",
+          "cost": "Two pipelines to build and maintain."
+        },
+        "none_of_these": "None of these options fits."
+      }
+    },
+    "r4_pointer": {
+      "type": "choice",
+      "instructions": "Given `principles`, `the_line` and `facts`, when may the live recall policy change? Under every option, sleep passes are held while a promoted generation has not yet been adopted by the owner.",
+      "criteria": {
+        "shadow_only": {
+          "what": "The loop only reports winning candidates, and the owner moves the pointer by hand.",
+          "best_case": "Zero live risk.",
+          "cost": "Slow, because every change waits on the owner."
+        },
+        "owner_gate": {
+          "what": "The substrate files a promotion request with its evidence, and the owner approves each one.",
+          "best_case": "Low risk for little effort.",
+          "cost": "Every change still needs the owner's attention."
+        },
+        "probation": {
+          "what": "Candidates past the margin promote automatically, and revert automatically if the held-out window drops.",
+          "best_case": "Hands-off.",
+          "cost": "Answers change without a human deciding."
+        },
+        "none_of_these": "None of these options fits."
+      }
+    },
+    "r5_tamper": {
+      "type": "choice",
+      "instructions": "Given `principles`, `the_line` and `facts`, how should Moneta v6 make tampering with its history detectable and attributable?",
+      "criteria": {
+        "seals_and_signing": {
+          "what": "Periodic seals with a running hash now, plus owner ed25519 signatures over constitution changes and seals, with the private key kept off the machine that runs the loop.",
+          "best_case": "Tampering is detectable and authority is attributable.",
+          "cost": "Key handling."
+        },
+        "seals_only": {
+          "what": "Periodic seals with a running hash now, and signing later.",
+          "best_case": "Cheap, and catches casual edits.",
+          "cost": "A full rewrite with recomputed hashes still passes."
+        },
+        "per_line_chain": {
+          "what": "Every journal line carries the previous line's hash.",
+          "best_case": "The strongest local evidence.",
+          "cost": "Changes every v5 journal line."
+        },
+        "none_of_these": "None of these options fits."
+      }
+    }
+  }
+}
