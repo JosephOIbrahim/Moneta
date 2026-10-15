@@ -1,0 +1,2 @@
+{"n": 1000, "dim": 384, "backend": "python", "queries": 30, "p50_ms": 25.767, "p95_ms": 27.979, "rss_delta_mb": 18.87}
+{"n": 10000, "dim": 384, "backend": "python", "queries": 30, "p50_ms": 267.015, "p95_ms": 312.133, "rss_delta_mb": 183.15}

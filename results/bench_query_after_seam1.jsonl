@@ -1,0 +1,4 @@
+{"n": 1000, "dim": 384, "backend": "python", "queries": 50, "p50_ms": 22.137, "p95_ms": 22.493, "rss_delta_mb": 18.52}
+{"n": 10000, "dim": 384, "backend": "python", "queries": 50, "p50_ms": 234.473, "p95_ms": 292.852, "rss_delta_mb": 180.87}
+{"n": 1000, "dim": 384, "backend": "native", "queries": 50, "p50_ms": 0.816, "p95_ms": 0.951, "rss_delta_mb": 9.71}
+{"n": 10000, "dim": 384, "backend": "native", "queries": 50, "p50_ms": 12.756, "p95_ms": 15.355, "rss_delta_mb": 65.28}

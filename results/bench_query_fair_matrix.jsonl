@@ -1,0 +1,16 @@
+{"arm": "python-oracle", "n": 10000, "dim": 384, "backend": "python", "utilities": "fresh", "decay": "python", "queries": 200, "p50_ms": 214.372, "p95_ms": 294.021, "rss_delta_mb": 185.61}
+{"arm": "numpy-arm-P", "n": 10000, "dim": 384, "backend": "arm_p_numpy", "utilities": "fresh", "decay": "python", "queries": 200, "p50_ms": 8.695, "p95_ms": 27.297, "rss_delta_mb": 183.86}
+{"arm": "native-scan", "n": 10000, "dim": 384, "backend": "native", "utilities": "fresh", "decay": "python", "queries": 200, "p50_ms": 4.285, "p95_ms": 4.545, "rss_delta_mb": 69.94}
+{"arm": "native-scan+decay", "n": 10000, "dim": 384, "backend": "native", "utilities": "fresh", "decay": "native", "queries": 200, "p50_ms": 2.971, "p95_ms": 3.091, "rss_delta_mb": 69.22}
+{"arm": "python-oracle", "n": 10000, "dim": 384, "backend": "python", "utilities": "spread", "decay": "python", "queries": 200, "p50_ms": 211.032, "p95_ms": 227.151, "rss_delta_mb": 185.91}
+{"arm": "numpy-arm-P", "n": 10000, "dim": 384, "backend": "arm_p_numpy", "utilities": "spread", "decay": "python", "queries": 200, "p50_ms": 9.111, "p95_ms": 27.315, "rss_delta_mb": 184.06}
+{"arm": "native-scan", "n": 10000, "dim": 384, "backend": "native", "utilities": "spread", "decay": "python", "queries": 200, "p50_ms": 7.453, "p95_ms": 8.187, "rss_delta_mb": 68.18}
+{"arm": "native-scan+decay", "n": 10000, "dim": 384, "backend": "native", "utilities": "spread", "decay": "native", "queries": 200, "p50_ms": 5.823, "p95_ms": 6.674, "rss_delta_mb": 68.2}
+{"arm": "python-oracle", "n": 10000, "dim": 384, "backend": "python", "utilities": "fresh", "decay": "python", "queries": 200, "p50_ms": 211.633, "p95_ms": 226.635, "rss_delta_mb": 184.81}
+{"arm": "numpy-arm-P", "n": 10000, "dim": 384, "backend": "arm_p_numpy", "utilities": "fresh", "decay": "python", "queries": 200, "p50_ms": 8.22, "p95_ms": 26.553, "rss_delta_mb": 185.09}
+{"arm": "native-scan", "n": 10000, "dim": 384, "backend": "native", "utilities": "fresh", "decay": "python", "queries": 200, "p50_ms": 4.27, "p95_ms": 4.336, "rss_delta_mb": 69.03}
+{"arm": "native-scan+decay", "n": 10000, "dim": 384, "backend": "native", "utilities": "fresh", "decay": "native", "queries": 200, "p50_ms": 3.075, "p95_ms": 3.311, "rss_delta_mb": 68.64}
+{"arm": "python-oracle", "n": 10000, "dim": 384, "backend": "python", "utilities": "spread", "decay": "python", "queries": 200, "p50_ms": 288.652, "p95_ms": 312.924, "rss_delta_mb": 184.86}
+{"arm": "numpy-arm-P", "n": 10000, "dim": 384, "backend": "arm_p_numpy", "utilities": "spread", "decay": "python", "queries": 200, "p50_ms": 9.75, "p95_ms": 29.106, "rss_delta_mb": 183.35}
+{"arm": "native-scan", "n": 10000, "dim": 384, "backend": "native", "utilities": "spread", "decay": "python", "queries": 200, "p50_ms": 7.336, "p95_ms": 8.076, "rss_delta_mb": 68.45}
+{"arm": "native-scan+decay", "n": 10000, "dim": 384, "backend": "native", "utilities": "spread", "decay": "native", "queries": 200, "p50_ms": 5.8, "p95_ms": 6.644, "rss_delta_mb": 68.62}
