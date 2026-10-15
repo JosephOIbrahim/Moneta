@@ -414,10 +414,12 @@ class Moneta:
         """Record agent attention for the given entities.
 
         Writes go to the append-only attention log (ARCHITECTURE.md
-        §5.1). If durability is enabled, each signal is also fsync'd to
-        the WAL so that a kill -9 after the return does not lose the
-        signal. The ECS update happens when the sleep-pass reducer
-        drains the log.
+        §5.1). If durability is enabled, each signal is also appended to
+        the JSONL WAL and flushed to the OS before return (no fsync;
+        see ``DurabilityManager.wal_append``). A flushed signal survives
+        a process kill -9, but an OS crash or power loss can still lose
+        recently acknowledged signals (Round 4 F1). The ECS update
+        happens when the sleep-pass reducer drains the log.
         """
         now = time.time()
         for entity_id, weight in weights.items():

@@ -125,7 +125,10 @@ m.signal_attention({
 ```
 
 If durability is enabled (`snapshot_path` + `wal_path` set on the
-config), each signal is also fsync'd to the WAL before return.
+config), each signal is also appended to the WAL and flushed to the OS
+before return. The WAL is not fsync'd: a flushed signal survives a
+process `kill -9`, but an OS crash or power loss can lose recently
+acknowledged signals (Round 4 F1).
 
 ### `get_consolidation_manifest() -> List[Memory]`
 
@@ -220,7 +223,7 @@ at most ~30 seconds of volatile state lost.
 | Operation | Durability coverage | Medium |
 |---|---|---|
 | `deposit` | Snapshot-covered | Captured by the next `run_sleep_pass` that writes the ECS snapshot |
-| `signal_attention` | WAL-covered | Every call fsync'd to the JSONL WAL when durability is enabled |
+| `signal_attention` | WAL-covered | Every call appended to the JSONL WAL and flushed to the OS (not fsync'd) when durability is enabled |
 | `query` | Not applicable (read-only) | — |
 | `get_consolidation_manifest` | Not applicable (read-only) | — |
 
@@ -232,8 +235,9 @@ elapsed since the last `run_sleep_pass` (sleep-pass-driven cadence) or
 ~30 seconds (background-snapshot cadence).
 
 This is a deliberately accepted risk: signals (high-frequency, cheap)
-are fully durable; deposits (low-frequency, expensive) accept a small
-loss window. MONETA.md §5 risk #4 documents this trade-off as
+survive process death via the flushed WAL (but not OS crash or power
+loss, since the WAL is not fsync'd); deposits (low-frequency,
+expensive) accept a small loss window. MONETA.md §5 risk #4 documents this trade-off as
 "WAL-lite periodic snapshot, accept small volatility window."
 
 ### What happens on hydrate
