@@ -481,6 +481,23 @@ U_now = max(ProtectedFloor, U_last · exp(-λ · (t_now - t_last)))
 
 Tuning guide: [docs/decay-tuning.md](docs/decay-tuning.md)
 
+### Optional native seams (Rust)
+
+`rust/moneta_native` is an optional PyO3 wheel that runs the cosine scan and the decay loop in Rust. Each has an exact Python oracle, and the conformance suites require bit-identical results, ties included. It is a drop-in: without it, or with `MONETA_NATIVE=0`, Moneta runs pure Python as before.
+
+At 10k memories × 384 dims on the owner's workstation:
+
+The table below is 10k × 384, with N=200 queries and two runs per arm. The ranges cover fresh and aged utilities. `6cf05f5` is the starting point; every other row uses the same exact early-stop rerank.
+
+| Path | Query p95 | Resident memory | Bit-exact vs oracle |
+|---|---|---|---|
+| pure Python, `6cf05f5` (full rerank; 30–50 queries, 1 run) | 294–313 ms | 183 MB | (is the oracle) |
+| pure Python + early-stop rerank | 227–313 ms | 185 MB | yes |
+| numpy scan (D1 arm P) | 27–29 ms | 184 MB | **no** (75% of cosines differ) |
+| **native scan + native decay** | **3.1–6.7 ms** | **69 MB** | **yes** |
+
+Numpy already clears the 50 ms gate, so D1's latency gate did not fire. **Rust is admitted on the seam rule's guarantee clause** (v5/v6 §10: Rust goes only behind a pure seam with an exact oracle, where it buys speed or a guarantee; your confirmation is pending as O27 in `docs/v7/BLUEPRINT_v7.md`). It is the only fast path that is bit-identical to the oracle, and it adds no runtime dependency. It is also 4–9× tighter than numpy at p95 and uses 2.7× less memory. The 50 ms gate was set on a 2-vCPU container, so absolute numbers depend on the machine; the comparison above is like for like (same script, seed and machine). Raw data: `results/bench_query_fair_matrix.jsonl`. Build and test steps are in CLAUDE.md.
+
 ---
 
 ## Project structure
@@ -492,7 +509,7 @@ src/moneta/
 ├── ecs.py                 # flat struct-of-arrays hot tier
 ├── decay.py               # lazy exponential decay
 ├── attention_log.py       # lock-free append + sleep-pass reducer
-├── vector_index.py        # shadow vector index (in-memory; LanceDB future)
+├── vector_index.py        # shadow vector index (python oracle or optional native scan)
 ├── durability.py          # WAL-lite snapshot + JSONL WAL
 ├── sequential_writer.py   # USD-first, vector-second Protocol
 ├── consolidation.py       # sleep-pass trigger + selection + 500-prim batch cap

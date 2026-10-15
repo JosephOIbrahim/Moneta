@@ -127,11 +127,34 @@ pytest tests/integration
 pytest tests/load
 
 # Phase 3 USD target tests — pxr-capable interpreter required (local: hython)
-PYTHONPATH="src" "C:/Program Files/Side Effects Software/Houdini 21.0.512/bin/hython3.11.exe" \
+PYTHONPATH="src" "C:/Program Files/Side Effects Software/Houdini 21.0.773/bin/hython3.11.exe" \
     -m pytest tests/unit/test_usd_target.py -v -p no:faulthandler -p no:cacheprovider
 ```
 
 Both suites must be green at every pass boundary from Pass 3 onward. The `-p no:faulthandler` flag suppresses harmless `os.environ` access violation warnings from hython's patched environment. USD tests use `pytest.importorskip("pxr")` so they are skipped (not failed) under plain Python.
+
+### Optional native seams (`rust/moneta_native`)
+
+Moneta runs without them. When the `moneta_native` wheel is installed, two seams switch on automatically, and each has an exact Python oracle. D1's latency gate did **not** fire: numpy (arm P) already clears 50 ms, but it isn't bit-exact. The seams are admitted under the seam rule (v5/v6 §10: Rust only behind a pure seam with an exact oracle, where it buys speed or a guarantee; owner confirmation pending as O27) (`results/bench_query_fair_matrix.jsonl`). The seams:
+
+- **Scan:** `VectorIndex(backend="auto")` stores vectors contiguously in Rust and scans them there. It must be bit-identical to `_oracle_scan`, ties included.
+- **Decay:** `ECS.decay_all` runs `decay_batch`, which must be bit-identical to `decay_value`.
+
+`MONETA_NATIVE=0` forces the oracles. If a vector falls outside the native envelope (non-finite, non-numeric or empty), that index permanently demotes itself to the Python backend. If a finite but huge component (around 1e308) overflows to a NaN cosine, that query alone is answered by the oracle.
+
+```bash
+# build + install (needs rustup + MSVC build tools; pip install maturin)
+cd rust/moneta_native && cargo test --release && maturin build --release -o dist
+pip install --force-reinstall dist/moneta_native-0.1.0-cp311-abi3-win_amd64.whl
+# hython: don't install into Houdini; unzip the abi3 wheel and add it to PYTHONPATH
+PYTHONPATH="src;<unzipped-wheel-dir>" "<hython3.11.exe>" -m pytest tests -q -p no:faulthandler -p no:cacheprovider
+# latency + RSS gate (results/bench_query_*.jsonl)
+PYTHONPATH=src python scripts/bench_query.py --n 1000 10000            # add --spread for aged utilities
+```
+
+**Test matrix:** Python 3.14 and hython 3.11, each run with `MONETA_NATIVE=0` and `MONETA_NATIVE=1`. That is 215 passing in all four configurations (2026-10-15). Without the wheel, 167 pass and 33 native-only tests skip.
+
+The conformance suites are the contract for the native seams: `tests/unit/test_native_scan_conformance.py`, `test_native_decay_parity.py` and `test_rank_early_stop.py`. A native change that turns any of them red is a regression, not a tolerance question.
 
 ## Repository structure
 
@@ -147,8 +170,11 @@ src/moneta/                    # implementation surface (Phase 1 + Phase 3)
 tests/unit/                    # 17 unit tests (11 Phase 1 USD + 6 adversarial)
 tests/integration/             # 28 tests (22 Phase 1 + 6 Phase 3 USD)
 tests/load/                    # 2 tests (synthetic session gate)
+rust/moneta_native/            # optional native seams (scan, decay), PyO3 abi3 wheel; Python oracles in src/
 scripts/
-└── usd_metabolism_bench_v2.py # Phase 2 benchmark + Pass 5 stress test harness
+├── usd_metabolism_bench_v2.py # Phase 2 benchmark + Pass 5 stress test harness
+├── bench_query.py             # query latency + RSS (D1 gate measurement)
+└── bench_arm_p.py             # D1 arm P: numpy scan latency + exactness
 results/                       # benchmark and stress test CSVs
 docs/
 ├── agent-commandments.md      # eight commandments governing MoE agent discipline
@@ -171,7 +197,7 @@ docs/
 - Do not violate the Phase 3 operational envelope (ARCHITECTURE.md §15.2).
 - Do not let documentation lag implementation by more than one PR (Documentarian contract).
 - Do not cross role boundaries without Architect review.
-- Do not break the existing test suite (109 plain Python passing + 7 pxr-gated skips under plain Python; 149 total under hython at `v1.2.0-rc1`). Regression is higher priority than new work.
+- Do not break the existing test suite (215 passing under Python 3.14 and hython 3.11, with the native seams on and off; 167 + 33 native-only skips without the `moneta_native` wheel; 2026-10-15). Regression is higher priority than new work.
 - Do not assume free-threaded Python (PEP 703) support. `AttentionLog.__init__` raises `RuntimeError` under `sys._is_gil_enabled() is False` because the lock-free swap-and-drain correctness argument requires the GIL. Removing the guard requires MONETA.md §9 Trigger 2 escalation; rewriting the attention log to be free-threaded-safe is in-scope for that escalation.
 - Follow `docs/agent-commandments.md` from Phase 3 Pass 3 onward.
 

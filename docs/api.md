@@ -88,9 +88,22 @@ flow is:
 
 1. Decay all live entities (ARCHITECTURE.md §4 eval point 1)
 2. Fetch from the shadow vector index (cosine similarity)
-3. Rerank by `cosine_similarity × utility` so decayed memories are
-   naturally demoted
-4. Return the top `limit` `Memory` objects
+3. Rerank by `max(cosine_similarity, 0) × utility` so decayed memories are
+   naturally demoted. Equal scores keep the index's order (cosine
+   descending, then insertion order). The rerank stops early once no
+   remaining hit can enter the top `limit`; the result is identical to
+   ranking every hit.
+4. Return the top `limit` `Memory` objects (only those are projected)
+
+**Performance (optional native seams).** With the `moneta_native` wheel
+installed, steps 1 and 2 run in Rust. They are bit-identical to the Python
+path, which stays the oracle. Measured on the owner's workstation at
+10k memories × 384 dims, N=200 queries (`results/bench_query_fair_matrix.jsonl`):
+
+- Pure Python: p95 227–313 ms, about 185 MB resident.
+- Native: p95 3.1–6.7 ms, about 69 MB resident.
+
+`MONETA_NATIVE=0` forces the pure-Python path.
 
 ```python
 results = m.query(embedding=[0.12, -0.45, 0.78, ...], limit=5)
@@ -254,6 +267,9 @@ successful pass), construction returns an empty ECS.
   `MonetaConfig.use_real_usd=True`. Without `pxr`, the `MockUsdTarget`
   fallback is selected and 7 pxr-gated tests skip rather than fail.
   Run pxr-gated tests under `hython` (or any pxr-capable interpreter).
+- **`moneta_native` (optional)**: an abi3 wheel built from
+  `rust/moneta_native` that serves Python 3.11+, hython included. It is
+  never required. See CLAUDE.md, "Optional native seams".
 - **Codeless schema registration** — for typed-prim recognition in
   `usdview` and downstream consumers, set
   `PXR_PLUGINPATH_NAME=path/to/Moneta/schema` before launching. The
