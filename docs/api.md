@@ -237,8 +237,9 @@ elapsed since the last `run_sleep_pass` (sleep-pass-driven cadence) or
 This is a deliberately accepted risk: signals (high-frequency, cheap)
 survive process death via the flushed WAL (but not OS crash or power
 loss, since the WAL is not fsync'd); deposits (low-frequency,
-expensive) accept a small loss window. MONETA.md §5 risk #4 documents this trade-off as
-"WAL-lite periodic snapshot, accept small volatility window."
+expensive) accept a small loss window. MONETA.md §5 risk #4
+documents this trade-off as "WAL-lite periodic snapshot, accept
+small volatility window."
 
 ### What happens on hydrate
 
