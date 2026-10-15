@@ -145,19 +145,26 @@ def test_reason_must_be_a_string():
 
 
 def test_half_life_change_is_recorded_in_the_journal(tmp_path):
+    # Round 4 half-life condition 1 replaced the implicit note: a change now
+    # needs an explicit mode and is one "half_life" event.
     with Substrate(Config(path=tmp_path / "m", half_life_seconds=H)) as m:
         m.deposit("a", [1.0, 0.0], t=T0)
-    with Substrate(Config(path=tmp_path / "m", half_life_seconds=2 * H)) as m:
-        assert m._fold.half_life_seconds == 2 * H
-    notes = [
+    with Substrate(
+        Config(path=tmp_path / "m", half_life_seconds=2 * H), half_life_change="forward"
+    ) as m:
+        assert m.half_life_seconds == 2 * H
+    changes = [
         json.loads(line[9:])
         for line in (tmp_path / "m").read_bytes().splitlines()
-        if b'"half_life_change"' in line
+        if b'"op":"half_life"' in line
     ]
-    assert len(notes) == 1 and notes[0]["from"] == H and notes[0]["half_life_seconds"] == 2 * H
+    assert len(changes) == 1
+    assert changes[0]["from"] == H and changes[0]["half_life_seconds"] == 2 * H
+    assert changes[0]["mode"] == "forward"
     with Substrate(Config(path=tmp_path / "m", half_life_seconds=2 * H)):
-        pass  # same value again: no second note
-    assert (tmp_path / "m").read_bytes().count(b'"half_life_change"') == 1
+        pass  # the journal's own value again: nothing appended
+    assert (tmp_path / "m").read_bytes().count(b'"op":"half_life"') == 1
+    assert b'"half_life_change"' not in (tmp_path / "m").read_bytes()
 
 
 def test_a_fold_failure_after_a_durable_append_stops_the_handle(tmp_path, monkeypatch):

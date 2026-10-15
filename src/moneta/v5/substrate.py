@@ -22,6 +22,11 @@ What changed from v1 and why (each is a probe in tests/v5/test_v1_defects.py)
   so two URIs could share one snapshot and lose writes).
 - Free-threaded Python is supported: one writer lock orders the journal;
   there is no GIL-dependent swap.
+- The journal owns the half-life, as it owns the dimension. Opening with
+  a Config half-life that differs from the journal's raises
+  :class:`HalfLifeMismatchError` unless the caller names a change mode,
+  and the first sleep pass after a change is a dry run until confirmed
+  (Round 4 half-life ruling, conditions 1 and 2).
 
 The four agent operations keep their v1 names and positional signatures.
 Everything added is keyword-only.
@@ -89,6 +94,31 @@ class IdempotencyConflictError(ValueError):
 
 class SubstrateClosedError(RuntimeError):
     """The handle has been closed."""
+
+
+HALF_LIFE_CHANGE_MODES = ("forward", "reinterpret")
+
+
+class HalfLifeMismatchError(ValueError):
+    """The opener's Config half-life differs from the one the journal owns.
+
+    Nothing was written. Reopen with the journal's value, or pass
+    ``half_life_change="forward"`` / ``"reinterpret"`` to journal a change.
+    """
+
+    def __init__(self, path: Path | None, journal: float | None, config: float) -> None:
+        self.path = path
+        self.journal_half_life_seconds = journal
+        self.config_half_life_seconds = config
+        super().__init__(
+            f"journal {path or '<memory>'} owns half-life {journal}s but Config asks for "
+            f"{config}s. Nothing was written. To keep the store as it is, open with "
+            f"half_life_seconds={journal}. To change it, pass half_life_change='forward' "
+            f"(the new value applies from now; history keeps the old one) or "
+            f"'reinterpret' (the new value applies from each record's last anchor, which "
+            f"rewrites the decay of every memory never attended). Either change is "
+            f"journaled, and the next sleep pass is a dry run until confirmed."
+        )
 
 
 # ----------------------------------------------------------------------
@@ -164,6 +194,9 @@ class Config:
 
     ``path`` is the journal file. ``None`` means an in-memory journal.
     The handle takes ownership of ``projector`` and closes it.
+    ``half_life_seconds`` seeds a new journal's genesis event; for an
+    existing journal it must equal the journal's half-life, or the open
+    raises :class:`HalfLifeMismatchError` (see :class:`Substrate`).
     """
 
     path: Path | None = None
@@ -231,6 +264,15 @@ class SleepPassResult(NamedTuple):
     consolidated_ids: tuple[UUID, ...] = ()
     projection_error: str | None = None
     seq: int = 0
+    # Round 4 half-life condition 2. On a dry run nothing is pruned, staged,
+    # projected or journaled: ``pruned`` and ``staged`` are 0 and the sets the
+    # pass *would* apply are in ``would_prune_ids`` / ``would_stage_ids``.
+    dry_run: bool = False
+    would_prune_ids: tuple[UUID, ...] = ()
+    would_stage_ids: tuple[UUID, ...] = ()
+    # The seq of the half-life change that held this pass as a dry run, or
+    # that this confirmed pass is the first to apply. None otherwise.
+    half_life_change_seq: int | None = None
 
 
 class Verdict:
@@ -281,14 +323,30 @@ def _finite(name: str, value: Any) -> float:
 
 
 class Substrate:
-    """Moneta v5. Construct with a :class:`Config`; use as a context manager."""
+    """Moneta v5. Construct with a :class:`Config`; use as a context manager.
 
-    def __init__(self, config: Config) -> None:
+    The journal owns the half-life. A new journal records
+    ``config.half_life_seconds`` in its genesis event. On reopen, a Config
+    half-life that differs from the journal's raises
+    :class:`HalfLifeMismatchError` before anything is written, unless
+    ``half_life_change`` names a mode (``"forward"`` or ``"reinterpret"``;
+    see :meth:`set_half_life`), in which case the change is journaled.
+    An open with the journal's own value, or a refused open, appends
+    nothing: the only write an open ever makes without being asked is the
+    genesis event of an empty journal.
+    """
+
+    def __init__(self, config: Config, *, half_life_change: str | None = None) -> None:
         self.config = config
         # Everything that reaches the journal is validated before the journal
         # is opened: a bad config must never be able to write a genesis event
         # that a later open cannot replay.
-        self._decay = DecayConfig(half_life_seconds=config.half_life_seconds)  # range-checked
+        DecayConfig(half_life_seconds=config.half_life_seconds)  # range check only
+        if half_life_change is not None and half_life_change not in HALF_LIFE_CHANGE_MODES:
+            raise ValueError(
+                f"half_life_change must be None or one of {HALF_LIFE_CHANGE_MODES}, "
+                f"got {half_life_change!r}"
+            )
         dim = config.embedding_dim
         if dim is not None and (isinstance(dim, bool) or not isinstance(dim, int) or dim < 1):
             raise ValueError(f"embedding_dim must be a positive int or None, got {dim!r}")
@@ -308,7 +366,7 @@ class Substrate:
             else MemoryJournal()
         )
         try:
-            self._fold = Fold(self._decay.lambda_)
+            self._fold = Fold()
             replayed = self._fold.replay(self._journal.events())
             if config.embedding_dim is not None:
                 if self._fold.dim is not None and self._fold.dim != config.embedding_dim:
@@ -325,24 +383,20 @@ class Substrate:
                         "half_life_seconds": float(config.half_life_seconds),
                     }
                 )
-            elif self._fold.half_life_seconds not in (None, float(config.half_life_seconds)):
-                # Utility is a function of (journal, half-life). Changing the
-                # half-life reinterprets history deterministically; the journal
-                # records that it happened so a replay can say which value ran.
-                _logger.warning(
-                    "moneta.v5 half-life changed from %ss (journal) to %ss (config); "
-                    "utilities are re-evaluated with the new value",
-                    self._fold.half_life_seconds,
-                    config.half_life_seconds,
-                )
-                self._append(
-                    {
-                        "op": "note",
-                        "t": _finite("clock.now()", self._clock.now()),
-                        "kind": "half_life_change",
-                        "from": self._fold.half_life_seconds,
-                        "half_life_seconds": float(config.half_life_seconds),
-                    }
+            elif self._fold.half_life_seconds != float(config.half_life_seconds):
+                # The journal owns λ (Round 4 half-life condition 1). A config
+                # that disagrees is refused before any write, unless the caller
+                # explicitly asked for a journaled change.
+                if half_life_change is None:
+                    raise HalfLifeMismatchError(
+                        self._journal.path,
+                        self._fold.half_life_seconds,
+                        float(config.half_life_seconds),
+                    )
+                self._change_half_life(
+                    float(config.half_life_seconds),
+                    half_life_change,
+                    _finite("clock.now()", self._clock.now()),
                 )
             self._index = ExactIndex()
             self._index.dim = self._fold.dim
@@ -386,7 +440,18 @@ class Substrate:
 
     @property
     def lam(self) -> float:
-        return self._decay.lambda_
+        """λ as the journal defines it (genesis plus change events)."""
+        return self._fold.lam
+
+    @property
+    def half_life_seconds(self) -> float | None:
+        return self._fold.half_life_seconds
+
+    @property
+    def half_life_change_pending(self) -> dict[str, Any] | None:
+        """The half-life change the next sleep pass would apply first, or None."""
+        pending = self._fold.half_life_change_pending
+        return None if pending is None else dict(pending)
 
     @property
     def seq(self) -> int:
@@ -435,6 +500,28 @@ class Substrate:
             _logger.error("moneta.v5 %s", self._poisoned)
             raise
         return seq
+
+    def _change_half_life(self, seconds: float, mode: str, when: float) -> int | None:
+        old = self._fold.half_life_seconds
+        if old == seconds:
+            return None
+        _logger.warning(
+            "moneta.v5 half-life change %ss -> %ss (%s) at t=%s; "
+            "the next sleep pass is a dry run until confirmed",
+            old,
+            seconds,
+            mode,
+            when,
+        )
+        return self._append(
+            {
+                "op": "half_life",
+                "t": when,
+                "mode": mode,
+                "from": old,
+                "half_life_seconds": seconds,
+            }
+        )
 
     def _resolve(self, context: str | None) -> ResolvedPolicy:
         return self._policy.resolve(context)
@@ -656,7 +743,32 @@ class Substrate:
     # Harness / operator operations (not part of the agent surface)
     # ------------------------------------------------------------------
 
-    def run_sleep_pass(self, *, t: float | None = None) -> SleepPassResult:
+    def set_half_life(
+        self, half_life_seconds: float, *, mode: str, t: float | None = None
+    ) -> int | None:
+        """Change the half-life the journal owns. One journaled event.
+
+        ``mode="forward"`` rebases every record at ``t`` (its utility under
+        the old half-life becomes its new anchor), so only decay after ``t``
+        uses the new value. ``mode="reinterpret"`` applies the new value from
+        each record's last anchor: a memory never attended is re-evaluated
+        from its deposit as if the new value had always held. Both are
+        deterministic on replay. The next :meth:`run_sleep_pass` is a dry run
+        until called with ``confirm_half_life_change=True``.
+
+        Returns the event's seq, or None when the value is unchanged.
+        """
+        if mode not in HALF_LIFE_CHANGE_MODES:
+            raise ValueError(f"mode must be one of {HALF_LIFE_CHANGE_MODES}, got {mode!r}")
+        seconds = _finite("half_life_seconds", half_life_seconds)
+        DecayConfig(half_life_seconds=seconds)  # range check
+        with self._lock:
+            self._check_open()
+            return self._change_half_life(seconds, mode, self._t(t))
+
+    def run_sleep_pass(
+        self, *, t: float | None = None, confirm_half_life_change: bool = False
+    ) -> SleepPassResult:
         """Retention and projection at ``t``.
 
         Retention thresholds are v1's locked Round 2 defaults. Every pass
@@ -664,6 +776,14 @@ class Substrate:
         staged, even when that is nothing. Staged records (including ones
         a previous failed pass left behind) are then projected in batches;
         each successful batch appends a ``consolidate`` event.
+
+        The first pass after a half-life change is a **dry run** unless
+        ``confirm_half_life_change=True``: it journals and projects nothing
+        and returns the sets it would prune and stage (``dry_run=True``,
+        ``would_prune_ids``, ``would_stage_ids``, ``half_life_change_seq``).
+        Tombstones are one-way, so a changed half-life never prunes on its
+        own (Round 4 half-life condition 2). The confirmed pass names the
+        change in its ``retain`` event.
         """
         with self._lock:
             self._check_open()
@@ -679,15 +799,41 @@ class Substrate:
                     prune.append(rec.entity_id)
                 elif u < STAGE_UTILITY_THRESHOLD and rec.attended >= STAGE_ATTENDED_THRESHOLD:
                     stage.append(rec.entity_id)
-            seq = self._append(
-                {
-                    "op": "retain",
-                    "t": when,
-                    "reason": "decay",
-                    "tombstone": [str(e) for e in prune],
-                    "stage": [str(e) for e in stage],
-                }
-            )
+            pending = self._fold.half_life_change_pending
+            change_seq = None if pending is None else pending["seq"]
+            if pending is not None and not confirm_half_life_change:
+                _logger.warning(
+                    "moneta.v5 sleep pass held as a dry run: half-life changed %ss -> %ss "
+                    "(%s, seq %s); it would prune %d and stage %d. Confirm with "
+                    "run_sleep_pass(confirm_half_life_change=True)",
+                    pending["from"],
+                    pending["half_life_seconds"],
+                    pending["mode"],
+                    change_seq,
+                    len(prune),
+                    len(stage),
+                )
+                return SleepPassResult(
+                    attention_updated=attention_updated,
+                    pruned=0,
+                    staged=0,
+                    authored_at=None,
+                    seq=self.seq,
+                    dry_run=True,
+                    would_prune_ids=tuple(prune),
+                    would_stage_ids=tuple(stage),
+                    half_life_change_seq=change_seq,
+                )
+            retain: dict[str, Any] = {
+                "op": "retain",
+                "t": when,
+                "reason": "decay",
+                "tombstone": [str(e) for e in prune],
+                "stage": [str(e) for e in stage],
+            }
+            if change_seq is not None:
+                retain["half_life_change_seq"] = change_seq
+            seq = self._append(retain)
             for eid in prune:
                 self._index.remove(eid)
 
@@ -737,6 +883,7 @@ class Substrate:
                 consolidated_ids=tuple(consolidated),
                 projection_error=error,
                 seq=seq,
+                half_life_change_seq=change_seq,
             )
 
     def explain(
@@ -1000,6 +1147,6 @@ class Substrate:
                 "records": counts,
                 "index": len(self._index),
                 "journal": None if self.journal_path is None else str(self.journal_path),
-                "half_life_seconds": self._decay.half_life_seconds,
+                "half_life_seconds": self._fold.half_life_seconds,
                 "projector": None if self._projector is None else self._projector.name,
             }

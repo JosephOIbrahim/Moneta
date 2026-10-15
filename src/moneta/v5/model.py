@@ -1,10 +1,29 @@
 """Records, events, and the fold that derives state from the journal.
 
 The fold is the whole semantic core of v5. Every piece of record state is
-a deterministic function of the journal prefix and the configured
-half-life, so replaying the same journal with the same half-life always
-reproduces the same state, bit for bit. (Changing the half-life
-reinterprets history on purpose; the journal notes when that happens.)
+a deterministic function of the journal prefix alone, so replaying the
+same journal always reproduces the same state, bit for bit, whatever
+the opener's Config says.
+
+The journal owns the half-life (Round 4 half-life ruling, condition 1)
+---------------------------------------------------------------------
+λ comes from the ``genesis`` event and from explicit ``half_life``
+change events, exactly as the dimension comes from the journal. Config
+never feeds the fold. A change event carries one of two modes:
+
+- ``forward``: every record is rebased at the change time
+  (``anchor_u = utility under the old λ at t``, ``anchor_t = t``), then
+  the new λ applies. History before the change keeps the old λ.
+- ``reinterpret``: the new λ applies from each record's current anchor.
+  A record never attended decays under the new λ from its deposit, so
+  its whole history is reinterpreted; attention already folded into an
+  anchor keeps the value it was folded with. (This is also v1's
+  semantics: v1 stored ``(U, last_evaluated)`` and a new λ applied from
+  there.)
+
+Either change leaves ``half_life_change_pending`` set until the next
+``retain`` event, so the substrate can hold the first sleep pass after
+a change as a dry run (condition 2).
 
 Utility semantics (the fix for v1's decay skip)
 -----------------------------------------------
@@ -35,7 +54,7 @@ from enum import StrEnum
 from typing import Any
 from uuid import UUID
 
-from ..decay import decay_value
+from ..decay import decay_value, lambda_from_half_life
 from ..types import EntityState, Memory
 
 
@@ -186,14 +205,18 @@ class Fold:
     has been durably appended, under its writer lock.
     """
 
-    def __init__(self, lam: float) -> None:
-        self.lam = lam
+    def __init__(self) -> None:
+        # λ is journal state: set by genesis and by half_life events only.
+        self.lam: float | None = None
+        self.half_life_seconds: float | None = None
         self.records: dict[UUID, Record] = {}
         self.by_key: dict[str, UUID] = {}
         self.dim: int | None = None
-        self.half_life_seconds: float | None = None
         self.last_seq = 0
         self.attended_since_pass: set = set()
+        # The latest half-life change not yet followed by a retain event:
+        # ``{"seq", "t", "from", "half_life_seconds", "mode"}`` or None.
+        self.half_life_change_pending: dict[str, Any] | None = None
 
     # -- replay --------------------------------------------------------
 
@@ -218,7 +241,41 @@ class Fold:
         if e.get("dim") is not None:
             self.dim = int(e["dim"])
         if e.get("half_life_seconds") is not None:
-            self.half_life_seconds = float(e["half_life_seconds"])
+            self._set_half_life(float(e["half_life_seconds"]))
+
+    def _set_half_life(self, seconds: float) -> None:
+        self.half_life_seconds = seconds
+        self.lam = lambda_from_half_life(seconds)
+
+    def _change_half_life(self, e: dict[str, Any], mode: str) -> None:
+        new = float(e["half_life_seconds"])
+        t = float(e["t"])
+        if mode == "forward":
+            if self.lam is None:
+                raise ValueError(
+                    f"forward half-life change at seq {e.get('seq')} has no prior half-life"
+                )
+            old_lam = self.lam
+            for rec in self.records.values():
+                if rec.status == Status.ERASED or rec.anchor_t >= t:
+                    continue  # nothing decayed yet before the change: nothing to rebase
+                rec.anchor_u = rec.utility_at(old_lam, t)
+                rec.anchor_t = t
+        elif mode != "reinterpret":
+            raise ValueError(f"unknown half-life change mode {mode!r} at seq {e.get('seq')}")
+        previous = self.half_life_seconds
+        self._set_half_life(new)
+        self.half_life_change_pending = {
+            "seq": e["seq"],
+            "t": t,
+            "from": previous,
+            "half_life_seconds": new,
+            "mode": mode,
+        }
+
+    def _op_half_life(self, e: dict[str, Any]) -> None:
+        """An explicit, journaled half-life change (Round 4 half-life ruling)."""
+        self._change_half_life(e, e["mode"])
 
     def _new_record(
         self, e: dict[str, Any], anchor_u: float, anchor_t: float, attended: int, status: Status
@@ -309,6 +366,7 @@ class Fold:
         self._set_status(e.get("tombstone", []), Status.TOMBSTONED, e, e.get("reason", "decay"))
         self._set_status(e.get("stage", []), Status.STAGED, e, "retention")
         self.attended_since_pass.clear()
+        self.half_life_change_pending = None
 
     def _op_consolidate(self, e: dict[str, Any]) -> None:
         self._set_status(e["ids"], Status.CONSOLIDATED, e, e.get("target"))
@@ -342,10 +400,17 @@ class Fold:
             rec.unit = _unit(vec) if vec is not None else None
 
     def _op_note(self, e: dict[str, Any]) -> None:
-        """Informational events (migration provenance, etc.). No state change
-        except recording which half-life the journal was last run with."""
+        """Informational events (migration provenance, etc.). No state change,
+        except a legacy ``half_life_change`` note.
+
+        Before the Round 4 ruling, opening with a different Config half-life
+        silently re-evaluated the whole journal under it and left this note.
+        Journals that carry one replay it as a ``reinterpret`` change at the
+        note's seq: the only reading that is a function of the journal. It
+        matches the old behavior exactly for records never attended.
+        """
         if e.get("kind") == "half_life_change":
-            self.half_life_seconds = float(e["half_life_seconds"])
+            self._change_half_life(e, "reinterpret")
 
     # -- queries -------------------------------------------------------
 

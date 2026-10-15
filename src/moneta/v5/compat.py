@@ -77,6 +77,17 @@ BEHAVIOR_CHANGES = {
     "free_threading": "no GIL assumption; the PEP 703 sentinel does not apply.",
     "snapshot_is_derived": "snapshot.json is a v1-format export; corrupting or deleting it loses nothing.",
     "snapshot_divergence": "a snapshot.json written by another writer is refused, except an embedder-swap rewrite.",
+    "half_life_owned_by_journal": (
+        "an existing store keeps the half-life it was created with; opening it with a different "
+        "MonetaConfig.half_life_seconds raises HalfLifeMismatchError and writes nothing, unless "
+        "Moneta(..., half_life_change='forward' | 'reinterpret') journals the change "
+        "(v1 applied a new value silently from each row's last evaluation)."
+    ),
+    "half_life_change_dry_run": (
+        "the first run_sleep_pass() after a half-life change is a dry run: it prunes, stages and "
+        "projects nothing, returns pruned=0 with dry_run=True and the would-prune set in "
+        "would_prune_ids, and repeats until run_sleep_pass(confirm_half_life_change=True)."
+    ),
 }
 
 
@@ -399,6 +410,7 @@ class Moneta:
         policy: PolicyResolver | None = None,
         clock: Clock | None = None,
         fsync: bool = True,
+        half_life_change: str | None = None,
     ) -> None:
         if config.storage_uri in _v1api._ACTIVE_URIS:
             raise MonetaResourceLockedError(
@@ -427,7 +439,10 @@ class Moneta:
                         clock=clock or SystemClock(),
                         policy=policy,
                         projector=projector,
-                    )
+                    ),
+                    # The journal owns the half-life; a different configured
+                    # value is refused unless the caller names a change mode.
+                    half_life_change=half_life_change,
                 )
             except BaseException:
                 projector.close()
@@ -528,8 +543,8 @@ class Moneta:
     def get_consolidation_manifest(self) -> list[Memory]:
         return self.v5.get_consolidation_manifest()
 
-    def run_sleep_pass(self) -> SleepPassResult:
-        result = self.v5.run_sleep_pass()
+    def run_sleep_pass(self, *, confirm_half_life_change: bool = False) -> SleepPassResult:
+        result = self.v5.run_sleep_pass(confirm_half_life_change=confirm_half_life_change)
         if self.durability is not None:
             self.durability.snapshot_ecs()  # v1 snapshotted after every pass
         return result

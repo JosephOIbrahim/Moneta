@@ -113,6 +113,30 @@ MUTS = [
         """    if sha in _read_known_shas(journal):""",
         "tests/v5/test_compat.py::test_missing_sidecar_after_a_crash_is_not_a_second_writer",
     ),
+    (
+        "HL1 mismatched half-life open not refused",
+        "src/moneta/v5/substrate.py",
+        """                if half_life_change is None:
+                    raise HalfLifeMismatchError(""",
+        """                if False:
+                    raise HalfLifeMismatchError(""",
+        "tests/v5/test_half_life.py::test_default_config_open_on_a_non_default_store_refuses_and_writes_nothing",
+    ),
+    (
+        "HL2 first pass after a change not held as a dry run",
+        "src/moneta/v5/substrate.py",
+        """            if pending is not None and not confirm_half_life_change:""",
+        """            if False:""",
+        "tests/v5/test_half_life.py::test_change_then_dry_run_then_confirm",
+    ),
+    (
+        "HL3 forward change does not rebase anchors",
+        "src/moneta/v5/model.py",
+        """                rec.anchor_u = rec.utility_at(old_lam, t)
+                rec.anchor_t = t""",
+        """                pass""",
+        "tests/v5/test_half_life.py::test_forward_keeps_history_and_applies_the_new_value_after_the_change",
+    ),
 ]
 failed_to_catch = []
 for name, path, old, new, test in MUTS:
