@@ -1,0 +1,21 @@
+[package]
+name = "moneta_native"
+version = "0.1.0"
+edition = "2021"
+publish = false
+description = "Optional native seams for Moneta (D1): exact-oracle scan kernel"
+license = "Proprietary"
+
+[lib]
+name = "moneta_native"
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+pyo3 = { version = "0.30.1", features = ["abi3-py311", "extension-module"] }
+
+[profile.release]
+# No fast-math anywhere: rustc never reassociates or contracts f64 ops,
+# which is what keeps the scan bit-identical to the Python oracle.
+opt-level = 3
+lto = "thin"
+codegen-units = 1

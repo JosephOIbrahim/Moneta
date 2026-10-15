@@ -388,13 +388,13 @@ class Moneta:
           1. Decay all (eval point 1).
           2. Over-fetch by cosine similarity from the shadow vector
              index.
-          3. Project hits to ``Memory`` via ECS (source of truth for
-             utility, attended_count, etc.).
-          4. Rerank by ``max(cosine_similarity, 0.0) * utility`` so
-             negative cosine (anti-correlated) never inverts the ranking.
-             Clamped at the query level; the vector index returns raw
-             cosine values.
-          5. Return the top ``limit`` after reranking.
+          3. Rerank by ``max(cosine_similarity, 0.0) * utility`` using
+             the ECS utility column (source of truth), so negative cosine
+             (anti-correlated) never inverts the ranking. Clamped at the
+             query level; the vector index returns raw cosine values.
+          4. Project only the top ``limit`` to ``Memory``
+             (``ECS.rank_hits``); the order is identical to projecting
+             every hit first.
         """
         now = time.time()
 
@@ -403,19 +403,12 @@ class Moneta:
         if self.ecs.n == 0:
             return []
 
-        over_fetch_k = max(len(self.vector_index), 1)
-        hits = self.vector_index.query(embedding, over_fetch_k)
+        hits = self.vector_index.iter_query(embedding)
 
-        ranked: list[tuple[float, Memory]] = []
-        for entity_id, cos_sim in hits:
-            memory = self.ecs.get_memory(entity_id)
-            if memory is None:
-                continue
-            ranked.append((max(cos_sim, 0.0) * memory.utility, memory))
-        ranked.sort(key=lambda t: t[0], reverse=True)
+        ranked = self.ecs.rank_hits(hits, limit)
 
         self.consolidation.mark_activity(now * 1000)
-        return [m for _, m in ranked[:limit]]
+        return ranked
 
     def signal_attention(self, weights: Dict[UUID, float]) -> None:
         """Record agent attention for the given entities.
