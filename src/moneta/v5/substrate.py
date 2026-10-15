@@ -505,6 +505,9 @@ class Substrate:
         old = self._fold.half_life_seconds
         if old == seconds:
             return None
+        if mode == "forward" and old is None:
+            # Validate before the append: the fold could not replay this event.
+            raise ValueError("a forward half-life change needs a prior half-life; use 'reinterpret'")
         _logger.warning(
             "moneta.v5 half-life change %ss -> %ss (%s) at t=%s; "
             "the next sleep pass is a dry run until confirmed",
