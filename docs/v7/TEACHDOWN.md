@@ -59,4 +59,51 @@ One more change is plain Python. The query used to build a full `Memory` object 
 
 ## Part 2 · The v7 paper
 
-*(Written after Fable's final verdict on the paper. See below.)*
+### What we built
+
+`docs/v7/BLUEPRINT_v7.md` is a **design**, not code. Nothing in v7 is built yet; the native seams above are v1-line work.
+
+v6 proposed a *governed loop*: a tuner that improves **how** Moneta recalls, never **what** it remembers. Every change it makes has to be reversible, judged by something it can't touch, and re-derivable from the journal. v7 rebuilds that loop as **five typed graphs**. A *typed graph* has named kinds of nodes and edges, and rules (*invariants*) that must always hold. Every invariant has a check, and every check has a deliberate *sabotage* it must catch, which proves the check isn't asleep.
+
+| Graph | What it holds |
+|---|---|
+| **Journal** | Every event, chained by hash. History is append-only, and the present is a pointer into it. |
+| **Policy derivation** | How a context's policy resolves. Owner values beat the loop's, and scopes only ever narrow. |
+| **Artifacts** | USD layers, eval sets and checkpoints. All are derived from the journal and never feed back into it. |
+| **Generation lifecycle** | `Proposed → Promoted → Adopted / RolledBack`. Each move is a signed event. |
+| **Authority** | Your key, what it signs, and the external anchor that catches truncation. |
+
+### How to run it (as the owner)
+
+1. **Read the top of the paper**, "Read this first": seven lines covering where things stand.
+2. **Open the decision queue at the top of §9.** It's ordered by when each decision is needed, and every row has a default. Leaving a row alone accepts its default.
+3. **Decide the "Now" row.** That's O35, the missing v5 code: recover it from the cloud session where v5 was built, or rule that mile 0 proceeds on v1 alone.
+4. **Next actions:** the Architect drafts the Round 4 brief (`docs/rounds/round-4-brief.md`), and mile 2 starts. Mile 2 is the Python-only experiment that can kill or confirm R2 and R3.
+
+### What you'll see
+
+The paper uses status tags on every claim:
+
+- `[V]` verified in code
+- `[M]` measured
+- `[P]` proposed
+- `[A]` assumed
+- `[U]` unknown
+
+A healthy paper keeps `[A]` and `[U]` visible instead of hiding them.
+
+### When it breaks
+
+- **Round 4 rejects E2 (reads never write) or E4 (prune is a tombstone).** v7 stops; the paper names this as its top risk.
+- **Mile 2 shows owner labels can't move the needle.** R3 flips to `mixed`, or v7 rescopes, using the flip conditions written in `RULINGS.md`.
+- **The paper drifts from the code.** Pass 4 re-anchored every citation; re-run that audit after any `src/` change.
+
+### Where it lives
+
+| File | What it is |
+|---|---|
+| `docs/v7/BLUEPRINT_v7.md` | the paper |
+| `docs/v7/RULINGS.md` | your rulings: R1–R5, O27, and the O35 search |
+| `docs/v7/pass1_rulings_brief.md` | the evidence behind them |
+| `docs/v7/jev/` | the Jev runs: every request and response, plus the scripts |
+| `docs/v7/pass*_*.json` | the loop's records: advocates, judges, 51 attack findings, audits, Fable's verdicts |
