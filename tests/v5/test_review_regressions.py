@@ -372,3 +372,35 @@ def test_empty_store_can_change_dimension():
 def test_manual_clock_is_deterministic():
     c = ManualClock(5.0)
     assert c.now() == 5.0 and c.advance(2) == 7.0
+
+
+# -- Round 4 E4 condition 4: id dedup is linear, order-preserving ---------
+
+
+def test_large_id_list_dedup_is_linear_and_keeps_first_seen_order():
+    # 40k distinct ids plus 40k duplicates. The old list-membership dedup
+    # took ~11 s on this input (5.58 s for 40k in the Round 4 brief); the
+    # dict-based dedup takes well under 0.1 s. The 3 s budget is ~40x the
+    # fixed path and ~4x below the quadratic one.
+    import time
+
+    n = 40_000
+    with Substrate(Config.ephemeral()) as m:
+        ids = [m.deposit(f"m{i}", [1.0, float(i % 7)]) for i in range(n)]
+        shuffled = ids[:]
+        random.Random(4).shuffle(shuffled)
+        request = shuffled + ids[::-1] + shuffled[: n // 2]
+        expected = [str(e) for e in shuffled]
+
+        start = time.perf_counter()
+        keys = m._known(request)
+        elapsed = time.perf_counter() - start
+        assert keys == expected
+        assert elapsed < 3.0, f"dedup of {len(request)} ids took {elapsed:.2f}s"
+
+        start = time.perf_counter()
+        m.tombstone(request, t=T0)
+        elapsed = time.perf_counter() - start
+        assert elapsed < 3.0, f"tombstone of {len(request)} ids took {elapsed:.2f}s"
+        assert m.recallable_count() == 0
+        assert all(m.status_of(e) == Status.TOMBSTONED for e in ids[:100])

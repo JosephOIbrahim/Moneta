@@ -941,14 +941,16 @@ class Substrate:
             return {"erased_records": len(erased), "events_scrubbed": scrubbed, "seq": self.seq}
 
     def _known(self, ids: Iterable[UUID]) -> list[str]:
-        keys: list[str] = []
+        # Ordered dedup in O(n): a dict keeps first-seen order with O(1)
+        # membership. A list membership check here was O(n^2) under the
+        # lock (Round 4 E4 condition 4: 40k ids took 5.58 s).
+        keys: dict[str, None] = {}
         for raw in ids:
             eid = raw if isinstance(raw, UUID) else UUID(str(raw))
             if eid not in self._fold.records:
                 raise UnknownEntityError(str(eid))
-            if str(eid) not in keys:
-                keys.append(str(eid))
-        return keys
+            keys[str(eid)] = None
+        return list(keys)
 
     def sync(self) -> int:
         """Force the journal to stable storage. Returns the durable seq."""
