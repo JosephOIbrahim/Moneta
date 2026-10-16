@@ -45,6 +45,7 @@ reused verbatim from :func:`moneta.decay.decay_value`.
 from __future__ import annotations
 
 import base64
+import copy
 import math
 import struct
 from array import array
@@ -76,6 +77,9 @@ class Status(StrEnum):
 
 
 RECALLABLE = frozenset({Status.LIVE, Status.STAGED, Status.CONSOLIDATED})
+
+# Removals from the live map before it is re-packed (see Fold._track).
+_LIVE_REPACK_MIN = 1024
 
 _V1_STATE = {
     Status.LIVE: EntityState.VOLATILE,
@@ -210,6 +214,15 @@ class Fold:
         self.lam: float | None = None
         self.half_life_seconds: float | None = None
         self.records: dict[UUID, Record] = {}
+        # The recallable subset of ``records``, in the same (deposit) order.
+        # Reads walk this map only, so dead records (tombstoned or erased)
+        # never cost recall time (Round 4 E4 condition 1). A record enters
+        # once, when it is created recallable, and leaves for good: no
+        # transition leads back to RECALLABLE, so the order cannot drift
+        # from ``records``. ``_track`` is the only writer.
+        self.live: dict[UUID, Record] = {}
+        self._live_removed = 0
+        self.repacks = 0
         self.by_key: dict[str, UUID] = {}
         self.dim: int | None = None
         self.last_seq = 0
@@ -236,6 +249,50 @@ class Fold:
         self.last_seq = event["seq"]
 
     # -- handlers ------------------------------------------------------
+
+    def _track(self, rec: Record) -> None:
+        """Keep ``live`` in step with ``rec.status``. Call after every status write."""
+        if rec.status in RECALLABLE:
+            self.live.setdefault(rec.entity_id, rec)
+        else:
+            self.live.pop(rec.entity_id, None)
+            self._live_removed += 1
+            # A dict never shrinks on deletion, and iterating it walks every
+            # slot it ever held. Re-pack once removals outnumber live
+            # entries: amortized O(1) per removal, order unchanged.
+            if self._live_removed > _LIVE_REPACK_MIN and self._live_removed > len(self.live):
+                self._repack_live()
+
+    def _repack_live(self) -> None:
+        """Rebuild ``live`` from fresh copies of its records, order unchanged.
+
+        Re-packing the dict drops its stale slots, but the surviving
+        ``Record`` objects would still sit where they were allocated,
+        interleaved with every record that died, so recall would pay cache
+        misses in proportion to the dead. Copies are allocated together.
+        A copy shares every field object (id, vector, unit), so the index
+        stays valid; ``records`` is repointed so both maps hold the copy.
+        ``repacks`` tells the substrate it may rebuild its index the same way.
+        """
+        fresh: dict[UUID, Record] = {}
+        for eid, rec in self.live.items():
+            twin = copy.copy(rec)
+            fresh[eid] = twin
+            self.records[eid] = twin
+        self.live = fresh
+        self._live_removed = 0
+        self.repacks += 1
+
+    def _settle_live(self) -> None:
+        """End of a status batch: re-pack once leftovers reach an eighth of ``live``.
+
+        ``_track``'s amortized rule can leave up to ``len(live)`` stale
+        slots behind a bulk tombstone; this bounds them per batch instead.
+        Each re-pack follows at least ``len(live) / 8`` removals, so its
+        O(live) copy is amortized O(1) per removal.
+        """
+        if self._live_removed and self._live_removed * 8 >= len(self.live):
+            self._repack_live()
 
     def _op_genesis(self, e: dict[str, Any]) -> None:
         if e.get("dim") is not None:
@@ -308,6 +365,7 @@ class Fold:
             rec.payload = ""
             rec.vector = rec.unit = None
         self.records[eid] = rec
+        self._track(rec)
         if rec.key is not None:
             self.by_key[rec.key] = eid
         return rec
@@ -333,6 +391,7 @@ class Fold:
         if rec.status_reason is not None:
             rec.status_t = float(e["t"])
             rec.status_seq = e["seq"]
+        self._track(rec)
 
     def _op_attend(self, e: dict[str, Any]) -> None:
         t = float(e["t"])
@@ -360,6 +419,8 @@ class Fold:
             rec.status_reason = reason
             rec.status_t = float(e["t"])
             rec.status_seq = e["seq"]
+            self._track(rec)
+        self._settle_live()
 
     def _op_retain(self, e: dict[str, Any]) -> None:
         """One sleep pass's retention decisions, applied atomically."""
@@ -385,6 +446,8 @@ class Fold:
             rec.status_seq = e["seq"]
             rec.payload = ""
             rec.vector = rec.unit = None
+            self._track(rec)
+        self._settle_live()
 
     def _op_revector(self, e: dict[str, Any]) -> None:
         """Re-embedding: new dimension, new vector for every recallable record.
@@ -415,9 +478,7 @@ class Fold:
     # -- queries -------------------------------------------------------
 
     def count_protected(self) -> int:
-        return sum(
-            1 for r in self.records.values() if r.status in RECALLABLE and r.protected_floor > 0.0
-        )
+        return sum(1 for r in self.live.values() if r.protected_floor > 0.0)
 
     def recallable(self) -> list[Record]:
-        return [r for r in self.records.values() if r.status in RECALLABLE]
+        return list(self.live.values())

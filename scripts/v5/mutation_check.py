@@ -65,9 +65,9 @@ MUTS = [
         "M2c explain edits reason",
         "src/moneta/v5/substrate.py",
         """            verdicts, winners = self._verdicts(policy, allowed)
-            verdict = verdicts[eid]""",
+            verdict = verdicts[eid] if rec.status in RECALLABLE else _dead_verdict(rec.status)""",
         '''            verdicts, winners = self._verdicts(policy, allowed)
-            verdict = verdicts[eid]; rec.status_reason = "touched"''',
+            verdict = verdicts[eid] if rec.status in RECALLABLE else _dead_verdict(rec.status); rec.status_reason = "touched"''',
         "tests/v5/test_review_regressions.py::test_reads_leave_all_record_state_untouched",
     ),
     (
@@ -179,6 +179,47 @@ MUTS = [
         """                    self.v5 = open_substrate(fresh, change=half_life_change)
                 except HalfLifeMismatchError""",
         "tests/v5/test_compat.py::test_hard_kill_then_a_half_life_change_restarts_before_journaling_the_change",
+    ),
+    (
+        "E4C1 dead records stay in the live map",
+        "src/moneta/v5/model.py",
+        """        else:
+            self.live.pop(rec.entity_id, None)""",
+        """        else:
+            pass""",
+        "tests/v5/test_dead_records.py::test_live_map_tracks_every_transition_and_survives_replay_and_compact",
+    ),
+    (
+        "E4C1 read path walks every record",
+        "src/moneta/v5/substrate.py",
+        """        for rec in self._fold.live.values():
+            if allowed is not None and rec.scope not in allowed:""",
+        """        for rec in self._fold.records.values():
+            if rec.status not in RECALLABLE:
+                ruled.append((rec, _dead_verdict(rec.status)))
+            elif allowed is not None and rec.scope not in allowed:""",
+        "tests/v5/test_dead_records.py::test_read_path_never_visits_dead_records",
+    ),
+    (
+        "E4C1 fold never settles the live map after a batch",
+        "src/moneta/v5/model.py",
+        """        if self._live_removed and self._live_removed * 8 >= len(self.live):""",
+        """        if False:""",
+        "tests/v5/test_dead_records.py::test_bulk_tombstone_leaves_no_stale_slots_behind",
+    ),
+    (
+        "E4C1 index keeps its stale layout after a re-pack",
+        "src/moneta/v5/substrate.py",
+        """        if self._fold.repacks != repacks:""",
+        """        if False:""",
+        "tests/v5/test_dead_records.py::test_bulk_tombstone_leaves_no_stale_slots_behind",
+    ),
+    (
+        "E4C1 re-pack leaves records where they were allocated",
+        "src/moneta/v5/model.py",
+        """            twin = copy.copy(rec)""",
+        """            twin = rec""",
+        "tests/v5/test_dead_records.py::test_bulk_tombstone_leaves_no_stale_slots_behind",
     ),
 ]
 failed_to_catch = []

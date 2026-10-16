@@ -312,6 +312,11 @@ class Explanation:
 # ----------------------------------------------------------------------
 
 
+def _dead_verdict(status: Status) -> str:
+    """The verdict of a record that can never be recalled, in any context."""
+    return Verdict.ERASED if status == Status.ERASED else Verdict.TOMBSTONED
+
+
 def _finite(name: str, value: Any) -> float:
     try:
         v = float(value)
@@ -398,11 +403,7 @@ class Substrate:
                     half_life_change,
                     _finite("clock.now()", self._clock.now()),
                 )
-            self._index = ExactIndex()
-            self._index.dim = self._fold.dim
-            for rec in self._fold.records.values():
-                if rec.status in RECALLABLE and rec.unit is not None:
-                    self._index.add(rec.entity_id, rec.unit)
+            self._rebuild_index(self._fold.dim)
         except BaseException:
             self._journal.close()
             raise
@@ -501,6 +502,32 @@ class Substrate:
             raise
         return seq
 
+    def _append_removal(self, event: dict[str, Any], ids: list[UUID]) -> int:
+        """Append an event that takes ``ids`` out of recall, and drop them from the index.
+
+        When the fold re-packed its live map for this event (a batch that
+        killed at least an eighth of it), the index is rebuilt from the
+        live map instead, so its store is as contiguous as one that never
+        held the dead (Round 4 E4 condition 1).
+        """
+        repacks = self._fold.repacks
+        seq = self._append(event)
+        if self._fold.repacks != repacks:
+            self._rebuild_index(self._fold.dim)
+        else:
+            for eid in ids:
+                self._index.remove(eid)
+        return seq
+
+    def _rebuild_index(self, dim: int | None) -> None:
+        """A fresh derived index over the live map, in deposit order."""
+        index = ExactIndex()
+        index.dim = dim
+        for rec in self._fold.live.values():
+            if rec.unit is not None:
+                index.add(rec.entity_id, rec.unit)
+        self._index = index
+
     def _change_half_life(self, seconds: float, mode: str, when: float) -> int | None:
         old = self._fold.half_life_seconds
         if old == seconds:
@@ -532,27 +559,33 @@ class Substrate:
     def _verdicts(
         self, policy: ResolvedPolicy, allowed: frozenset[str] | None
     ) -> tuple[dict[UUID, str], dict[str, UUID]]:
-        verdicts, winners, _ = self._classify(policy, allowed)
-        return verdicts, winners
+        """Verdict per recallable record (fold order) and slot winners."""
+        ruled, winners, _ = self._classify(policy, allowed)
+        return {rec.entity_id: verdict for rec, verdict in ruled}, winners
 
     def _classify(
         self, policy: ResolvedPolicy, allowed: frozenset[str] | None
-    ) -> tuple[dict[UUID, str], dict[str, UUID], list[Record]]:
-        """Verdict per record, slot winners, and the eligible records in fold order."""
-        verdicts: dict[UUID, str] = {}
+    ) -> tuple[list[tuple[Record, str]], dict[str, UUID], list[Record]]:
+        """(record, verdict) per recallable record, slot winners, and the eligible records.
+
+        Walks the fold's live map only, so the cost is O(recallable), never
+        O(every record ever deposited): dead records cannot slow recall
+        (Round 4 E4 condition 1). Their verdict needs no context and comes
+        from :func:`_dead_verdict`; they never compete for a slot. Verdicts
+        come back as a list, not a dict keyed by id, so recall (which only
+        needs ``eligible``) hashes no ids. ``eligible`` is in fold order.
+        """
+        ruled: list[tuple[Record, str]] = []
         eligible: list[Record] = []
         candidates: list[Record] = []
-        for rec in self._fold.records.values():
-            if rec.status == Status.ERASED:
-                verdicts[rec.entity_id] = Verdict.ERASED
-            elif rec.status == Status.TOMBSTONED:
-                verdicts[rec.entity_id] = Verdict.TOMBSTONED
-            elif allowed is not None and rec.scope not in allowed:
-                verdicts[rec.entity_id] = Verdict.NOT_ALLOWED
+        excluded = policy.exclude_records
+        for rec in self._fold.live.values():
+            if allowed is not None and rec.scope not in allowed:
+                ruled.append((rec, Verdict.NOT_ALLOWED))
             elif not policy.admits_scope(rec.scope):
-                verdicts[rec.entity_id] = Verdict.EXCLUDED_SCOPE
-            elif rec.entity_id in policy.exclude_records:
-                verdicts[rec.entity_id] = Verdict.EXCLUDED_RECORD
+                ruled.append((rec, Verdict.EXCLUDED_SCOPE))
+            elif excluded and rec.entity_id in excluded:
+                ruled.append((rec, Verdict.EXCLUDED_RECORD))
             else:
                 candidates.append(rec)
         by_slot: dict[str, list[Record]] = {}
@@ -571,13 +604,13 @@ class Substrate:
             winners[slot] = chosen.entity_id
         for rec in candidates:
             if rec.slot is not None and winners[rec.slot] != rec.entity_id:
-                verdicts[rec.entity_id] = Verdict.SLOT_LOSER
+                ruled.append((rec, Verdict.SLOT_LOSER))
             elif rec.unit is None:
-                verdicts[rec.entity_id] = Verdict.UNRANKABLE
+                ruled.append((rec, Verdict.UNRANKABLE))
             else:
-                verdicts[rec.entity_id] = Verdict.ELIGIBLE
+                ruled.append((rec, Verdict.ELIGIBLE))
                 eligible.append(rec)
-        return verdicts, winners, eligible
+        return ruled, winners, eligible
 
     @staticmethod
     def _allowed(allowed_scopes: Iterable[str] | None) -> frozenset[str] | None:
@@ -738,7 +771,7 @@ class Substrate:
         with self._lock:
             self._check_open()
             when = self._t(t)
-            staged = [r for r in self._fold.records.values() if r.status == Status.STAGED]
+            staged = [r for r in self._fold.live.values() if r.status == Status.STAGED]
             staged.sort(key=lambda r: r.seq)
             return [r.to_memory(self.lam, when) for r in staged]
 
@@ -794,7 +827,7 @@ class Substrate:
             attention_updated = len(self._fold.attended_since_pass)
             prune: list[UUID] = []
             stage: list[UUID] = []
-            for rec in sorted(self._fold.records.values(), key=lambda r: r.seq):
+            for rec in sorted(self._fold.live.values(), key=lambda r: r.seq):
                 if rec.status != Status.LIVE:
                     continue
                 u = rec.utility_at(self.lam, when)
@@ -836,12 +869,10 @@ class Substrate:
             }
             if change_seq is not None:
                 retain["half_life_change_seq"] = change_seq
-            seq = self._append(retain)
-            for eid in prune:
-                self._index.remove(eid)
+            seq = self._append_removal(retain, prune)
 
             pending = sorted(
-                (r for r in self._fold.records.values() if r.status == Status.STAGED),
+                (r for r in self._fold.live.values() if r.status == Status.STAGED),
                 key=lambda r: r.seq,
             )
             consolidated: list[UUID] = []
@@ -911,7 +942,7 @@ class Substrate:
                     eid, Verdict.UNKNOWN, "never deposited in this store", generation
                 )
             verdicts, winners = self._verdicts(policy, allowed)
-            verdict = verdicts[eid]
+            verdict = verdicts[eid] if rec.status in RECALLABLE else _dead_verdict(rec.status)
             winner = winners.get(rec.slot) if rec.slot is not None else None
             detail = {
                 Verdict.ELIGIBLE: "recallable in this context",
@@ -977,7 +1008,7 @@ class Substrate:
             when = self._t(t)
             if dim is not None and (isinstance(dim, bool) or not isinstance(dim, int) or dim < 1):
                 raise ValueError(f"dim must be a positive int, got {dim!r}")
-            wanted = {r.entity_id for r in self._fold.records.values() if r.status in RECALLABLE}
+            wanted = set(self._fold.live)
             given: dict[UUID, tuple[float, ...]] = {}
             for raw_id, vec in vectors.items():
                 eid = raw_id if isinstance(raw_id, UUID) else UUID(str(raw_id))
@@ -1002,11 +1033,7 @@ class Substrate:
             if missing:
                 event["unembedded"] = sorted(str(k) for k in missing)
             seq = self._append(event)
-            self._index = ExactIndex()
-            self._index.dim = dim
-            for rec in self._fold.records.values():
-                if rec.status in RECALLABLE and rec.unit is not None:
-                    self._index.add(rec.entity_id, rec.unit)
+            self._rebuild_index(dim)
             return seq
 
     def use_policy(self, resolver: PolicyResolver) -> None:
@@ -1031,10 +1058,8 @@ class Substrate:
             keys = self._known(ids)
             if not keys:
                 return None
-            seq = self._append({"op": "tombstone", "t": self._t(t), "ids": keys, "reason": reason})
-            for k in keys:
-                self._index.remove(UUID(k))
-            return seq
+            event = {"op": "tombstone", "t": self._t(t), "ids": keys, "reason": reason}
+            return self._append_removal(event, [UUID(k) for k in keys])
 
     def erase(
         self, ids: Iterable[UUID], *, reason: str = "erase", t: float | None = None
@@ -1052,10 +1077,8 @@ class Substrate:
             keys = self._known(ids)
             if not keys:
                 return None
-            seq = self._append({"op": "erase", "t": self._t(t), "ids": keys, "reason": reason})
-            for k in keys:
-                self._index.remove(UUID(k))
-            return seq
+            event = {"op": "erase", "t": self._t(t), "ids": keys, "reason": reason}
+            return self._append_removal(event, [UUID(k) for k in keys])
 
     def compact(self) -> dict[str, Any]:
         """Physically remove erased payloads and vectors from the journal."""
@@ -1136,7 +1159,7 @@ class Substrate:
 
     def recallable_count(self) -> int:
         with self._lock:
-            return sum(1 for r in self._fold.records.values() if r.status in RECALLABLE)
+            return len(self._fold.live)
 
     def stats(self) -> dict[str, Any]:
         with self._lock:
