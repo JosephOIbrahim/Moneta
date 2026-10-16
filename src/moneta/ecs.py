@@ -378,30 +378,38 @@ class ECS:
                     f"native decay failed under require: "
                     f"{type(native_error).__name__}: {native_error}"
                 ) from native_error
-        if native_error is not None:
-            # The oracle runs in place; if it fails part-way, put the
-            # columns back so the re-raised native error leaves them as
-            # the native call did (untouched).
-            saved_u = self._utility[:]
-            saved_t = self._last_evaluated[:]
+        if native_error is None:
+            self._decay_oracle(lam, now)
+            return
+        # Auto-mode fallback. The oracle runs in place; if it fails
+        # part-way, put the columns back so the re-raised native error
+        # leaves them as the native call did (untouched).
+        saved_u = self._utility[:]
+        saved_t = self._last_evaluated[:]
         try:
-            for i in range(n):
-                self._utility[i] = decay_value(
-                    self._utility[i],
-                    self._last_evaluated[i],
-                    self._protected_floor[i],
-                    lam,
-                    now,
-                )
-                self._last_evaluated[i] = now
+            self._decay_oracle(lam, now)
         except Exception as oracle_error:
-            if native_error is None:
-                raise
             self._utility[:] = saved_u
             self._last_evaluated[:] = saved_t
             raise native_error from oracle_error
-        if native_error is not None:
-            self._demote_decay(native_error)
+        self._demote_decay(native_error)
+
+    def _decay_oracle(self, lam: float, now: float) -> None:
+        """The reference decay loop, byte-for-byte as in v1.3.0-rc1
+        (``ecs.py:264-272``). Gate B: rollback lives at the call site in
+        ``decay_all``; ``tests/unit/test_decay_oracle_verbatim.py`` pins
+        these lines.
+        """
+        n = len(self._ids)
+        for i in range(n):
+            self._utility[i] = decay_value(
+                self._utility[i],
+                self._last_evaluated[i],
+                self._protected_floor[i],
+                lam,
+                now,
+            )
+            self._last_evaluated[i] = now
 
     def _demote_decay(self, error: BaseException) -> None:
         """Record an auto-mode decay fallback and demote this ECS."""

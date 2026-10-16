@@ -287,7 +287,7 @@ def test_decay_all_has_exactly_three_call_sites():
 def test_decay_kernels_only_inside_ecs_decay_methods():
     for rel, scope, name in _calls():
         if name in ("decay_value", "decay_batch"):
-            assert (rel, scope) in {("ecs.py", "ECS.decay_all"), ("ecs.py", "ECS.decay_one")}, (
+            assert (rel, scope) in {("ecs.py", "ECS._decay_oracle"), ("ecs.py", "ECS.decay_all"), ("ecs.py", "ECS.decay_one")}, (
                 rel, scope, name)
 
 
