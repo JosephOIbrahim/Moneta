@@ -31,7 +31,15 @@ with moneta.Moneta(moneta.MonetaConfig.ephemeral()) as m:
 
 **No background threads. No daemons. No LLM calls inside.** Four operations, full stop.
 
-> The name invokes **Juno Moneta** — Roman goddess of warning and memory, whose temple housed the Roman mint because she also *reminded*. Memory as advisory, not just storage.
+**What `v1.3.0-rc1` adds (prerelease, cut from branch `v7-native-seams`, not `main`):**
+
+- **Optional Rust native seams.** The v1 cosine scan and decay loop, plus v5's dot products and decay, run in Rust when the `moneta_native` wheel is installed. Results are bit-identical to the Python oracles. `MONETA_NATIVE=0` turns them off.
+- **A v5 preview beside v1.** `moneta.v5` is a reference implementation where the journal is the database. The v1 API (`moneta.Moneta`) is unchanged. Nothing has flipped on `main`.
+- **Tests:** 405 passing in four configurations (Python 3.14 and hython 3.11, each with `MONETA_NATIVE=0` and `=1`).
+
+**What is NOT done:** v5 is gated on owner rulings with open conditions, and 5.0.0 is not released. The open items are listed in the [v1.3.0-rc1 verdict](#v130-rc1-verdict).
+
+> The name invokes **Juno Moneta** — Roman goddess of warning and memory, whose temple housed the Roman mint because she also *reminded*. Memory as advisory, not only storage.
 
 ---
 
@@ -44,9 +52,21 @@ with moneta.Moneta(moneta.MonetaConfig.ephemeral()) as m:
 | **Phase 3** — Real USD integration | `v1.0.0` | Real USD writer, narrow lock, 775M-assertion safety verification |
 | **Singleton surgery** — handle API | `v1.1.0` | Module-level singleton replaced by `Moneta(config)` handle. Multi-instance per process. |
 | **Codeless schema migration** — typed `MonetaMemory` prims | **`v1.2.0-rc1`** | USD codeless schema; on-disk prims gain `typeName="MonetaMemory"`, USD camelCase attrs, `priorState` as token. Schema-aware in usdview. |
-| **Free-threading guard** — `AttentionLog` PEP 703 sentinel | (commit `76da067`) | `AttentionLog.__init__` raises `RuntimeError` under `sys._is_gil_enabled() is False`. Lock-free swap-and-drain correctness depends on the GIL; guard converts silent failure into a loud one. |
+| **Free-threading guard** — `AttentionLog` PEP 703 sentinel | `v1.2.0-rc2` (commit `76da067`) | `AttentionLog.__init__` raises `RuntimeError` under `sys._is_gil_enabled() is False`. Lock-free swap-and-drain correctness depends on the GIL; guard converts silent failure into a loud one. |
+| **Cosine clamp** — query ranking fix | `v1.2.0-rc3` (commit `c4a6218`) | Cosine clamped to `[0, 1]` in ranking. A negative cosine times a positive utility no longer ranks a reinforced memory below a zero-score one. |
+| **Native seams + v5 preview** | **`v1.3.0-rc1`** (prerelease) | Optional Rust seams with exact Python oracles. v5 reference implementation (journal as the database) beside v1. Round 4 owner rulings recorded. v1 API unchanged. |
 
-**Current version:** `v1.2.0-rc1`. **Test count:** 109 plain Python passing + 7 properly-gated pxr cases under plain Python (skipped); **149 passing total under hython** (OpenUSD 0.25.5).
+**Current version:** `v1.3.0-rc1` (prerelease, from branch `v7-native-seams`). `main` is at `v1.2.0-rc3` plus one docs commit.
+
+**Test matrix** (v1 and v5 suites together, 2026-10-15):
+
+| Interpreter | `MONETA_NATIVE=0` | `MONETA_NATIVE=1` |
+|---|---|---|
+| Python 3.14 | 405 passed | 405 passed |
+| hython 3.11 (OpenUSD 0.25.5) | 405 passed | 405 passed |
+| hython 3.11, **no wheel** | 347 passed, 35 native-only skipped | (same: no wheel means no native path) |
+
+**v5 mutation check:** `scripts/v5/mutation_check.py` reports `missed: []` (every planted mutation is caught).
 
 Sibling project: [Octavius](https://github.com/JosephOIbrahim) (coordination substrate on the same USD thesis). Moneta is memory; Octavius is coordination. They share [substrate conventions](docs/substrate-conventions.md) but not Python code — the stage is the interface.
 
@@ -80,7 +100,12 @@ python -c "import moneta; moneta.smoke_check(); print('OK')"
 pytest
 ```
 
-**You should see 109 passed, 7 skipped.** The skipped ones are pxr-gated USD tests — they run under hython if you have OpenUSD 0.25.5 installed (149 total under hython).
+**You should see every test pass or skip, with no failures.** The exact count depends on two things:
+
+- **Is `pxr` importable?** USD tests use `pytest.importorskip("pxr")`, so they skip under plain Python and run under hython (OpenUSD 0.25.5).
+- **Is the `moneta_native` wheel installed?** Native-only tests skip without it.
+
+With both present, the full suite is **405 passed**. See the [test matrix](#status) for each configuration.
 
 ### Stuck?
 
@@ -90,6 +115,8 @@ pytest
 | `No module named 'moneta'` | Run `pip install -e .[dev]` from the Moneta directory |
 | `pytest: command not found` | Run `python -m pytest` |
 | `TypeError: Moneta() missing 1 required ... 'config'` | That's by design (§5.3 of the design brief — no implicit defaults). Pass `MonetaConfig.ephemeral()` for tests. |
+| `ModuleNotFoundError: moneta_native` | Fine. Moneta runs the pure-Python path. Build the wheel (see [native seams](#optional-native-seams-rust)) only if you want the speed. |
+| `No module named 'moneta.v5'` in subprocess tests | A stale `site-packages/moneta` is shadowing the repo. Run from the repo root with `PYTHONPATH=src`. |
 
 ---
 
@@ -168,12 +195,12 @@ graph TB
 
     subgraph hot["Hot Tier — owned by handle"]
         ECS["ECS<br/>struct-of-arrays<br/>(ecs.py)"]
-        Decay["Lazy Exponential Decay<br/>U = max(floor, U·e⁻ᵏᵗ)<br/>(decay.py)"]
+        Decay["Lazy Exponential Decay<br/>U = max(floor, U·e⁻ᵏᵗ)<br/>(decay.py · optional native decay_batch)"]
         AttLog["AttentionLog<br/>append + drain<br/>aggregate at sleep pass<br/>(attention_log.py)<br/><i>GIL-required · PEP 703 sentinel</i>"]
     end
 
     subgraph shadow["Shadow Index — owned by handle"]
-        VecIdx["VectorIndex<br/>in-memory · LanceDB future<br/>(vector_index.py)"]
+        VecIdx["VectorIndex<br/>in-memory · Python oracle scan<br/>or native ScanIndex if wheel present<br/>LanceDB future<br/>(vector_index.py)"]
     end
 
     subgraph consolidation["Consolidation Engine — owned by handle"]
@@ -317,7 +344,7 @@ stateDiagram-v2
 
     note right of VOLATILE
         Utility decays via lazy exponential:
-        U_now = max(floor, U_last · exp(-λ · Δt))
+        U_now = max(floor, U_last · exp(-lambda · Δt))
         Default half-life: 6 hours
         (DEFAULT_HALF_LIFE_SECONDS in decay.py)
     end note
@@ -336,7 +363,7 @@ stateDiagram-v2
 ```mermaid
 flowchart TD
     trigger{"ConsolidationRunner.should_run()<br/>volatile_count > MAX_ENTITIES (10000)<br/>OR idle_ms > 5000"} -->|yes| drain_reduce["1. attention.drain_and_reduce()<br/>Utility += Σweights<br/>AttendedCount += signal_count<br/>(includes decay eval point 2)"]
-    drain_reduce --> decay3["2. ecs.decay_all(λ, now)<br/>decay eval point 3 (explicit)"]
+    drain_reduce --> decay3["2. ecs.decay_all(lambda, now)<br/>decay eval point 3 (explicit)"]
     decay3 --> classify["3. ConsolidationRunner.classify(ecs)<br/>→ (prune_ids, stage_ids)"]
 
     classify --> prune{"U &lt; 0.1 AND<br/>AC &lt; 3?<br/>(PRUNE_UTILITY_THRESHOLD)"}
@@ -371,7 +398,7 @@ graph LR
     subgraph real["UsdTarget branch (default)"]
         SW2["SequentialWriter<br/><b>identical class</b>"]
         RT["UsdTarget<br/><i>pxr/Sdf · narrow lock</i><br/><i>typeName='MonetaMemory'</i>"]
-        VI2["VectorIndex<br/><i>in-memory · LanceDB future</i>"]
+        VI2["VectorIndex<br/><i>in-memory · oracle or native scan</i><br/><i>LanceDB future</i>"]
         SW2 -->|AuthoringTarget Protocol| RT
         SW2 -->|VectorIndexTarget Protocol| VI2
     end
@@ -445,15 +472,25 @@ graph TB
 
     octavius["<b>Octavius</b> (coordination)<br/>· Visibility via LIVRPS shadowing<br/>· Coordination via shared stage<br/>· Priority via composition arc strength"]
 
+    v1["<b>moneta</b> v1 API · shipped<br/>four-op handle · ECS hot tier<br/>sequential writer · UsdTarget"]
+
+    v5["<b>moneta.v5</b> · preview, gated<br/>journal is the database<br/>records, index and USD derived by folding<br/>beside v1 · not on main"]
+
+    native["<b>moneta_native</b> · optional Rust wheel<br/>pure seams with exact Python oracles<br/>seam rule O27 · MONETA_NATIVE switch"]
+
     thesis --> moneta
     thesis --> octavius
+    moneta --> v1
+    moneta --> v5
+    native -.->|"scan + decay"| v1
+    native -.->|"dot + decay"| v5
 
     moneta <-. "stage-level composition<br/>no Python imports<br/>UUID-based prim naming<br/>LIVRPS priority discipline<br/>Sdf.ChangeBlock for batch writes<br/>UTC sublayer date routing" .-> octavius
 
     classDef green fill:#6E8B6E,color:#fff,stroke:#6E8B6E
     classDef blue fill:#7E94B0,color:#fff,stroke:#7E94B0
 
-    class moneta green
+    class moneta,v1,v5,native green
     class thesis,octavius blue
 ```
 
@@ -481,11 +518,65 @@ U_now = max(ProtectedFloor, U_last · exp(-λ · (t_now - t_last)))
 
 Tuning guide: [docs/decay-tuning.md](docs/decay-tuning.md)
 
-### Optional native seams (Rust)
+---
 
-`rust/moneta_native` is an optional PyO3 wheel that runs the cosine scan and the decay loop in Rust. Each has an exact Python oracle, and the conformance suites require bit-identical results, ties included. It is a drop-in: without it, or with `MONETA_NATIVE=0`, Moneta runs pure Python as before.
+## Optional native seams (Rust)
 
-At 10k memories × 384 dims on the owner's workstation:
+`rust/moneta_native` is an optional PyO3 wheel (abi3, so one build serves CPython 3.11 and later). It runs the hottest loops in Rust. **Each seam has an exact Python oracle**, and the conformance suites require bit-identical results, ties included. It is a drop-in: without it, or with `MONETA_NATIVE=0`, Moneta runs pure Python as before.
+
+### The seam rule (O27, owner-confirmed 2026-10-15)
+
+**Rust enters only behind a pure seam with an exact Python oracle, where it buys speed or a guarantee.**
+
+- The Python code is the oracle. If a conformance test goes red, the Rust is wrong, never the test.
+- The seams are on by default when the wheel is installed, behind the `MONETA_NATIVE` switch.
+- The same rule governs any future native crate.
+
+### The four seams
+
+| Seam | Rust function | Python oracle | Parity test (the contract) |
+|---|---|---|---|
+| **v1 scan** — `VectorIndex(backend="auto")` | `moneta_native.ScanIndex.scan` | `_oracle_scan` in `vector_index.py` | `tests/unit/test_native_scan_conformance.py` |
+| **v1 decay** — `ECS.decay_all` | `moneta_native.decay_batch` | `decay_value` in `decay.py` | `tests/unit/test_native_decay_parity.py` |
+| **v5 dot** — `ExactIndex.cosines` | `moneta_native.ScanIndex.dots` | the Python loop in `ExactIndex.cosines` (`v5/index.py`) | `tests/v5/test_native_index_parity.py` |
+| **v5 decay** — `moneta.v5.model.utilities_at` | `moneta_native.decay_batch` | `Record.utility_at` (`v5/model.py`) | `tests/v5/test_native_decay_parity.py` |
+
+`tests/unit/test_rank_early_stop.py` is the fifth contract file: it pins the exact early-stop rerank that every v1 path shares.
+
+**How bit-exact works:** the Rust sum reproduces CPython's own `sum()`. That is sequential left-to-right on Python 3.11, and Neumaier-compensated on Python 3.12 and later. So native results match the Python path on whichever interpreter is running.
+
+**Edge cases:**
+
+- A non-finite, non-numeric or empty vector permanently demotes that index to the Python backend. Answers stay exact; that index is now on the slow path. A log line says `vector_index demoted to python backend`.
+- A finite but huge component (around `1e308`) can overflow to a NaN cosine. That one query is answered by the oracle.
+
+### The switch
+
+| Setting | What runs |
+|---|---|
+| Wheel installed, `MONETA_NATIVE` unset or any value other than `0` (CPython only for v5) | Rust seams |
+| Wheel installed, `MONETA_NATIVE=0` | Python oracles (same answers, slower) |
+| Wheel not installed | Python oracles |
+
+Which seams are on: `VectorIndex` and `ECS` in v1; `m.native_decay` on a v5 `Substrate` (see [`docs/OPERATOR_CARD_native.md`](docs/OPERATOR_CARD_native.md) for the index backend).
+
+### Measured numbers
+
+**Measured on one Windows workstation.** Absolute numbers depend on the machine; each comparison is like for like (same script, seed and machine).
+
+| Measurement | Before | After |
+|---|---|---|
+| v1 query p95, 10k × 384 | 227–313 ms (pure Python) | **3.1–6.7 ms** (native scan + decay, bit-exact) |
+| v1 resident memory | ~185 MB | **~69 MB** |
+| v5 recall p95 | 184–194 ms | **14.4 ms** (Python 3.14; native dot + decay; dot seam alone 18.8–19.8 ms). On hython 3.11 the same configuration measures ~68 ms. |
+| v5 open resident memory | 312 MB | **194 MB** — see the note below |
+| v5 reopen at 1M events | 5.6 s | **0.06 s** (checkpoint) |
+| v5 dedup, 80k ids | 11.1 s | **0.07 s** |
+| v5 recall with 100k dead records | 3.6× slower than zero dead (Python index) / 19.9× (native index) | **within 10%** (1.05× / 0.99×) |
+
+**Where the v5 memory drop comes from:** the v5 memory drop (312 → 194 MB) comes from storing unit vectors as `array('d')`, **not from Rust**. The native index adds about 30 MB back.
+
+### v1 query detail
 
 The table below is 10k × 384, with N=200 queries and two runs per arm. The ranges cover fresh and aged utilities. `6cf05f5` is the starting point; every other row uses the same exact early-stop rerank.
 
@@ -496,7 +587,166 @@ The table below is 10k × 384, with N=200 queries and two runs per arm. The rang
 | numpy scan (D1 arm P) | 27–29 ms | 184 MB | **no** (75% of cosines differ) |
 | **native scan + native decay** | **3.1–6.7 ms** | **69 MB** | **yes** |
 
-Numpy already clears the 50 ms gate, so D1's latency gate did not fire. **Rust is admitted on the seam rule's guarantee clause** (v5/v6 §10: Rust goes only behind a pure seam with an exact oracle, where it buys speed or a guarantee; your confirmation is pending as O27 in `docs/v7/BLUEPRINT_v7.md`). It is the only fast path that is bit-identical to the oracle, and it adds no runtime dependency. It is also 4–9× tighter than numpy at p95 and uses 2.7× less memory. The 50 ms gate was set on a 2-vCPU container, so absolute numbers depend on the machine; the comparison above is like for like (same script, seed and machine). Raw data: `results/bench_query_fair_matrix.jsonl`. Build and test steps are in CLAUDE.md.
+**Gate:** numpy already clears the 50 ms gate, so D1's latency gate did not fire.
+
+**Why Rust, not numpy:** Rust is admitted on the seam rule's guarantee clause (v5/v6 §10: Rust goes only behind a pure seam with an exact oracle, where it buys speed or a guarantee). It is the only fast path that is bit-identical to the oracle, and it adds no runtime dependency. It is also 4–9× tighter than numpy at p95 and uses 2.7× less memory.
+
+**Ruling:** O27, confirmed by the owner on 2026-10-15 ([`docs/v7/RULINGS.md`](docs/v7/RULINGS.md)).
+
+**Caveat:** the 50 ms gate was set on a 2-vCPU container; the comparison above is like for like.
+
+**Raw data:** `results/bench_query_fair_matrix.jsonl` (v1) and `results/bench_v5_*.jsonl` (v5).
+
+### How the switch is checked
+
+```mermaid
+flowchart TD
+    call["Hot loop called<br/>scan · dot · decay"] --> wheel{"moneta_native<br/>importable?"}
+    wheel -->|"no"| oracle["Python oracle<br/>_oracle_scan · ExactIndex.cosines<br/>decay_value · Record.utility_at"]
+    wheel -->|"yes"| flag{"MONETA_NATIVE = 0?"}
+    flag -->|"yes"| oracle
+    flag -->|"no"| envelope{"vector index: inside the<br/>native envelope?<br/>finite · numeric · non-empty"}
+    envelope -->|"no: demote that index"| oracle
+    envelope -->|"yes"| rust["Rust seam<br/>ScanIndex.scan · ScanIndex.dots<br/>decay_batch"]
+    rust --> result["Same bits as the oracle<br/>ties included"]
+    rust -->|"cosine overflows to NaN"| oracle_q["oracle answers<br/>that query only"]
+    oracle_q --> result
+    oracle --> result
+    suite["Parity suites<br/>test_native_scan_conformance<br/>test_native_decay_parity · test_rank_early_stop<br/>v5 test_native_index_parity · test_native_decay_parity"] -.->|"checks both paths agree"| result
+
+    classDef green fill:#6E8B6E,color:#fff,stroke:#6E8B6E
+    classDef blue fill:#7E94B0,color:#fff,stroke:#7E94B0
+
+    class rust,oracle,oracle_q,result green
+    class call,wheel,flag,envelope,suite blue
+```
+
+### Build, test, measure
+
+**1. Build the wheel** (needs `rustup`, MSVC build tools on Windows, and `pip install maturin`):
+
+```bash
+cd rust/moneta_native
+cargo test --release
+maturin build --release -o dist
+pip install --force-reinstall dist/moneta_native-*.whl   # filename varies by platform
+```
+
+**2. Run the suite both ways** (from the repo root):
+
+```bash
+MONETA_NATIVE=0 PYTHONPATH=src python -m pytest tests -q
+MONETA_NATIVE=1 PYTHONPATH=src python -m pytest tests -q
+```
+
+**3. For a pxr interpreter such as hython:** do not install the wheel into the application. Unzip the abi3 wheel into a folder and add it to `PYTHONPATH`. Run once with `MONETA_NATIVE=0` and once with `=1`:
+
+```bash
+PYTHONPATH="src;<unzipped-wheel-dir>" "<hython3.11.exe>" -m pytest tests -q -p no:faulthandler -p no:cacheprovider
+```
+
+**You're good when** every configuration shows `405 passed`.
+
+**4. Measure:**
+
+```bash
+PYTHONPATH=src python scripts/bench_query.py --n 1000 10000          # v1; add --spread for aged utilities
+PYTHONPATH=src python scripts/v5/bench_recall_native.py --n 10000 --queries 200   # v5
+```
+
+Operator's card with failure fixes: [`docs/OPERATOR_CARD_native.md`](docs/OPERATOR_CARD_native.md).
+
+---
+
+## v5 preview — journal as the database
+
+**What it is:** `moneta.v5` is a reference implementation for the Round 4 (§9) escalation. It lives **beside v1** and changes nothing in v1. `moneta.Moneta` is still the v1 handle, and nothing has flipped on `main`.
+
+**What it is not:** a replacement for the four-op agent API, and not released. The locked v1 decisions (four-op API, decay math, concurrency primitive, atomicity, Phase 3 envelope) have **not** changed. v5 is gated on owner rulings and open conditions; **5.0.0 is not released.**
+
+### Three principles
+
+| Principle | What it means |
+|---|---|
+| **The journal is the database** | Every change is one checksummed (CRC32), fsync'd line appended to one file. Records, the vector index and USD layers are *derived* by folding the journal, and can be thrown away and rebuilt from it. |
+| **Reads are pure** | `recall` never mutates state. The decay formula is unchanged; "three evaluation points" becomes "zero mutation points: state changes only through journaled events". |
+| **Prune tombstones; erase is the real delete** | A pruned or tombstoned memory leaves recall but stays in the journal and in `explain()`. `erase()` removes payload and vector from derived state, but not yet from every derived copy (E4-2, open). |
+
+### What Round 4 added
+
+| Addition | What it does |
+|---|---|
+| **Checkpoint** | `Substrate.checkpoint()` or `Config(checkpoint_every=N)` writes a fold snapshot (`src/moneta/v5/checkpoint.py`). Open then replays only the tail. `verify()` is the full integrity check, since open no longer CRC-checks lines a checkpoint covers. |
+| **Half-life modes** | The journal owns the half-life. Each change is one journaled choice: `"forward"` (old decay keeps the old rate) or `"reinterpret"` (history recomputed). An open with a mismatched half-life raises `HalfLifeMismatchError`. The first sleep pass after a change is a **dry run** until confirmed. |
+| **Crash-safe migration** | Whether to migrate is decided from a journaled completion marker, not from whether the journal file exists. |
+| **Lock scope** | The sleep pass's USD projection and the snapshot export run with the writer lock released. |
+| **Dead records** | Dead records no longer slow recall. The O(n²) dedup is fixed. |
+
+### API sketch
+
+Names verified against `src/moneta/v5/`. This is the v5 preview surface, not the v1 agent API.
+
+```python
+from moneta.v5 import Substrate, Config, HalfLifeMismatchError
+
+with Substrate(Config(path="memory.v5.journal", checkpoint_every=10_000)) as m:
+    eid = m.deposit("prefers concise answers", embedding, scope="projA")
+    hits = m.recall(embedding, context="projA")      # RecallResult; hits.memories
+    m.signal_attention({eid: 0.3})
+    print(m.explain(eid, context="projA").detail)
+    m.run_sleep_pass()
+    m.checkpoint()                                    # open replays only the tail
+    m.verify()                                        # full integrity check
+
+# Changing the half-life is an explicit, journaled choice
+with Substrate(Config(path="memory.v5.journal", half_life_seconds=3600),
+               half_life_change="forward") as m:      # or "reinterpret"
+    m.run_sleep_pass()                                # dry run: nothing journaled
+    m.run_sleep_pass(confirm_half_life_change=True)   # applies the change
+```
+
+- **Retire or delete:** `m.tombstone(ids)` retires from recall; `m.erase(ids)` removes payload and vector from derived state, but not yet from every derived copy (E4-2, open).
+- **Existing v1 consumers:** `moneta.v5.compat.Moneta` takes the unchanged `MonetaConfig`.
+- **`compact()`** exists but is **not ratified** (Round 4 E4: v7 replaces it).
+
+### Write and read flow
+
+```mermaid
+flowchart TD
+    deposit["deposit · signal_attention<br/>tombstone · erase · set_half_life"] --> lock["writer lock"]
+    lock --> append["journal append<br/>one line: CRC32 + canonical JSON<br/>fsync before return"]
+    append --> fold["fold<br/>apply event to derived state"]
+    fold --> records["records<br/>status · utility anchors"]
+    fold --> index["ExactIndex<br/>unit vectors · derived, never persisted"]
+    records --> recall["recall<br/>pure read · max(cosine, 0) x utility<br/>pins one generation"]
+    index --> recall
+
+    sleep["run_sleep_pass"] --> retain["retain event journaled<br/>under the lock"]
+    retain --> project["USD projection<br/>runs outside the writer lock"]
+    project --> consolidate["consolidate event journaled"]
+
+    ckpt["checkpoint<br/>fold snapshot + checkpoint event"] --> reopen["reopen<br/>load snapshot, replay only the tail"]
+    append -.-> ckpt
+
+    classDef green fill:#6E8B6E,color:#fff,stroke:#6E8B6E
+    classDef blue fill:#7E94B0,color:#fff,stroke:#7E94B0
+
+    class append,fold,records,index,recall,project green
+    class deposit,lock,sleep,retain,consolidate,ckpt,reopen blue
+```
+
+### Status: gated
+
+The Round 4 owner rulings are in [`docs/v7/RULINGS.md`](docs/v7/RULINGS.md):
+
+| Ruling | Decision |
+|---|---|
+| **E1 + E2** — journal is the authority; reads are pure | For v5, with conditions |
+| **E3** — one ordered journal under a writer lock | For v5, closure gated on measured conditions |
+| **E4** — prune is a tombstone; erase is the real delete | Semantics only, gated |
+| **Half-life** — the journal owns it; each change is journaled | Ruled: forward or reinterpret, dry-run first pass |
+
+The open items are in the [v1.3.0-rc1 verdict](#v130-rc1-verdict).
 
 ---
 
@@ -516,7 +766,21 @@ src/moneta/
 ├── usd_target.py          # Real USD writer (narrow lock + typed MonetaMemory authoring)
 ├── mock_usd_target.py     # Phase 1 JSONL authoring target (A/B fallback)
 ├── manifest.py            # get_consolidation_manifest delegate
-└── __init__.py            # re-exports
+├── __init__.py            # re-exports
+└── v5/                    # v5 preview beside v1 (journal as the database)
+    ├── substrate.py       # Substrate + Config: deposit, recall, sleep pass, checkpoint, verify
+    ├── journal.py         # CRC-framed, fsync'd append-only journal + repair()
+    ├── checkpoint.py      # fold snapshots, so open replays only the tail
+    ├── model.py           # Record, Status, utilities_at (native decay seam)
+    ├── index.py           # ExactIndex (native dot seam), derived and never persisted
+    ├── policy.py          # context and scope policy resolvers
+    ├── compat.py          # v1-shaped Moneta over v5, takes MonetaConfig
+    └── usd/               # derived USD projection
+
+rust/moneta_native/                # optional PyO3 abi3 wheel: ScanIndex, decay_batch
+├── Cargo.toml
+├── pyproject.toml
+└── src/lib.rs                     # scan, dot and decay kernels (Python oracles in src/moneta/)
 
 schema/                            # Codeless schema artifacts (v1.2.0-rc1)
 ├── MonetaSchema.usda              # source: concrete typed schema, 6 attrs + 4 allowedTokens
@@ -524,17 +788,29 @@ schema/                            # Codeless schema artifacts (v1.2.0-rc1)
 └── generatedSchema.usda           # produced by usdGenSchema
 
 tests/
-├── unit/                                    # 70 plain-Python + 17 hython USD + 14 hython schema
+├── unit/                                    # plain-Python + hython USD + hython schema + native contract files
 ├── integration/                             # 22 plain-Python + 6 hython USD
 ├── load/                                    # 2 — 30-min synthetic session gate
 ├── test_twin_substrate.py                   # 3 mock disk-backed + 1 hython real USD
 ├── test_twin_substrate_adversarial.py       # 10 always-run + 1 hython
 ├── test_attention_log_gil_guard.py          # 2 plain-Python (PEP 703 sentinel)
 ├── test_schema_acceptance_gate.py           # 1 hython subprocess-isolated truth condition
-└── _schema_gate_subprocess.py               # subprocess body for the gate test
+├── _schema_gate_subprocess.py               # subprocess body for the gate test
+└── v5/                                      # v5 suite: journal, checkpoint, half-life, lock scope,
+                                             #   dead records, USD, native index + decay parity
+# Native contract files: tests/unit/test_native_scan_conformance.py,
+#   test_native_decay_parity.py, test_rank_early_stop.py
 
 scripts/
-└── usd_metabolism_bench_v2.py    # Phase 2 benchmark + Pass 5 stress test harness
+├── usd_metabolism_bench_v2.py    # Phase 2 benchmark + Pass 5 stress test harness
+├── bench_query.py                # v1 query latency + RSS (D1 gate measurement)
+├── bench_arm_p.py                # D1 arm P: numpy scan latency + exactness
+└── v5/                           # v5 benches (recall_native, checkpoint, lockscope,
+                                  #   dead_records, v5_vs_v1) + mutation_check.py
+
+results/
+├── bench_query_*.jsonl           # v1 native-seam measurements
+└── bench_v5_*.jsonl              # v5 checkpoint, lock scope, dead records, native recall
 
 docs/
 ├── api.md                       # four-op reference
@@ -545,6 +821,9 @@ docs/
 ├── phase2-closure.md            # Phase 2 rulings + operational envelope
 ├── phase3-closure.md            # Phase 3 closure record
 ├── pass5-q6-findings.md         # Q6 thread-safety ruling
+├── OPERATOR_CARD_native.md      # build / test / measure / off-switch for the native seams
+├── v5/                          # v5 blueprint + SYNAPSE compatibility notes
+├── v7/                          # BLUEPRINT_v7.md, RULINGS.md, V5_RECONCILIATION.md, Round 4 brief
 └── rounds/                      # Gemini Deep Think scoping outputs
 ```
 
@@ -560,6 +839,8 @@ These cannot be re-opened without [§9 escalation](MONETA.md):
 4. **Atomicity** — sequential write (USD first, vector second). No 2PC. Orphans benign.
 5. **Handle, not singleton** (`v1.1.0`) — `Moneta(config)` is the only constructor. `Moneta()` raises `TypeError`. Two handles on the same `storage_uri` raise `MonetaResourceLockedError`. In-memory `_ACTIVE_URIS` registry, not file locks.
 6. **Codeless typed schema** (`v1.2.0-rc1`) — on-disk prims have `typeName="MonetaMemory"`, USD camelCase attribute names, and `priorState` as a token with four `allowedTokens` (`volatile`, `staged_for_sync`, `consolidated`, `pruned`). Schema is registered via `plugInfo.json` + `generatedSchema.usda` at runtime; no C++ build step. The schema is an externally-visible contract — changes require a §9 escalation.
+
+**The v5 preview does not re-open any of these.** It is a reference implementation under the Round 4 §9 escalation, living beside v1. Until its gated rulings close, the six decisions above govern `moneta.Moneta`.
 
 ---
 
@@ -643,9 +924,37 @@ Surgery record: [SURGERY_complete_codeless_schema.md](SURGERY_complete_codeless_
 
 ---
 
+## v1.3.0-rc1 verdict
+
+**PRERELEASE — v1 unchanged, native seams on by default behind `MONETA_NATIVE`, v5 preview gated.**
+
+This release candidate is cut from branch `v7-native-seams`, not `main`. It adds the optional Rust seams (bit-identical to their Python oracles) and the v5 reference implementation beside v1. The seam rule is owner-confirmed (O27). The Round 4 rulings for v5 are recorded with blocking conditions; several are met and measured, pending owner acceptance. The main open items are below; the full status table is in [`docs/v7/BLUEPRINT_v7.md`](docs/v7/BLUEPRINT_v7.md) §8.
+
+| Surface | Before (`v1.2.0-rc3`) | After (`v1.3.0-rc1`) |
+|---|---|---|
+| v1 query p95, 10k × 384 | 227–313 ms | **3.1–6.7 ms** with the wheel, bit-exact |
+| v1 resident memory | ~185 MB | **~69 MB** with the wheel |
+| v5 | not in the repo | reference implementation beside v1 |
+| Test configurations | plain Python + hython | **4** (Python 3.14 and hython 3.11, native on and off), 405 passing in each |
+
+**Open — not done:**
+
+| Item | State |
+|---|---|
+| **E3-1** — sleep pass stall | Partial. A sleep pass with 1000 prunes stalls recall 73 ms against a 30 ms budget. Proposed fix: build the re-packed index outside the lock. |
+| **E4-2** — erase reach | `erase()` does not yet reach every derived copy. |
+| **E1-B1** — reopen budget | Missed at 99k records: 1.09 s against 1 s. |
+| **v5 defect** — zero-vector slot winner | A zero-vector slot winner hides its slot. |
+| **Other open conditions** | E1-B2, E1-B5, E1-P1–P3, E3-B1–B4. |
+| **v5 defect** — cross-interpreter drift | Last-bit score drift between Python 3.11 and 3.14. Native and Python agree on each interpreter; the two interpreters differ from each other. |
+
+Rulings: [docs/v7/RULINGS.md](docs/v7/RULINGS.md) | Blueprint: [docs/v7/BLUEPRINT_v7.md](docs/v7/BLUEPRINT_v7.md) | Reconciliation: [docs/v7/V5_RECONCILIATION.md](docs/v7/V5_RECONCILIATION.md) | Operator's card: [docs/OPERATOR_CARD_native.md](docs/OPERATOR_CARD_native.md)
+
+---
+
 ## Lineage
 
-Round 1 (scoping brief) → Round 2 (Gemini Deep Think architectural spec) → Round 2.5 (Claude prior-art review) → Round 3 (Gemini Deep Think validation) → **Phase 1** (5 passes, 94 tests, `v0.1.0`) → **Phase 2** (benchmark, `v0.2.0`) → **Phase 3** (7 passes, narrow lock, 775M-assertion safety, `v1.0.0`) → **Singleton surgery** (Scout / Forge / Crucible / Steward, `v1.1.0`) → **Codeless schema migration** (Auditor / Crucible / Schema Author / Forge, `v1.2.0-rc1`) → **Free-threading guard** (PEP 703 sentinel on `AttentionLog`, commit `76da067`) → **Documentarian followup** (api.md handle rewrite + CLAUDE.md hard-rule update, commit `6cb1fd1`).
+Round 1 (scoping brief) → Round 2 (Gemini Deep Think architectural spec) → Round 2.5 (Claude prior-art review) → Round 3 (Gemini Deep Think validation) → **Phase 1** (5 passes, 94 tests, `v0.1.0`) → **Phase 2** (benchmark, `v0.2.0`) → **Phase 3** (7 passes, narrow lock, 775M-assertion safety, `v1.0.0`) → **Singleton surgery** (Scout / Forge / Crucible / Steward, `v1.1.0`) → **Codeless schema migration** (Auditor / Crucible / Schema Author / Forge, `v1.2.0-rc1`) → **Free-threading guard** (PEP 703 sentinel on `AttentionLog`, commit `76da067`, `v1.2.0-rc2`) → **Documentarian followup** (api.md handle rewrite + CLAUDE.md hard-rule update, commit `6cb1fd1`) → **Cosine clamp** (`c4a6218`, `v1.2.0-rc3`) → **Native seams** (Rust behind exact Python oracles, seam rule O27) → **v5 merged beside v1** (journal as the database) → **Round 4 rulings** (E1–E4 + half-life, `docs/v7/RULINGS.md`) → **`v1.3.0-rc1`** (prerelease from `v7-native-seams`).
 
 ---
 
@@ -663,6 +972,11 @@ Round 1 (scoping brief) → Round 2 (Gemini Deep Think architectural spec) → R
 | [SURGERY_complete.md](SURGERY_complete.md) | `v1.1.0` singleton-to-handle surgery record |
 | [SURGERY_complete_codeless_schema.md](SURGERY_complete_codeless_schema.md) | `v1.2.0-rc1` codeless schema surgery record |
 | [`schema/`](schema/) | `MonetaSchema.usda` + `plugInfo.json` + `generatedSchema.usda` (codeless typed schema) |
+| [docs/OPERATOR_CARD_native.md](docs/OPERATOR_CARD_native.md) | Native seams: build, test, measure, off switch, failure fixes |
+| [docs/v5/BLUEPRINT.md](docs/v5/BLUEPRINT.md) | v5 design: the journal is the database |
+| [docs/v7/BLUEPRINT_v7.md](docs/v7/BLUEPRINT_v7.md) | v7 paper |
+| [docs/v7/RULINGS.md](docs/v7/RULINGS.md) | Owner rulings: O27 seam rule, Round 4 E1–E4, half-life |
+| [docs/v7/V5_RECONCILIATION.md](docs/v7/V5_RECONCILIATION.md) | How merged v5 reconciles with the blueprint |
 
 ---
 
