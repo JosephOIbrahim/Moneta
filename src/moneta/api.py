@@ -36,9 +36,11 @@ import time
 import uuid as _uuid
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Literal, Optional
 from uuid import UUID, uuid4
 
+from . import _native as _loader
+from ._build import build_info
 from .attention_log import AttentionEntry, AttentionLog
 from .consolidation import (
     DEFAULT_MAX_ENTITIES,
@@ -112,6 +114,15 @@ class MonetaConfig:
     mock_target_log_path, use_real_usd, usd_target_path:
         Preserved from the singleton-era ``MonetaConfig``. Semantics
         unchanged.
+    native:
+        Optional native-seam mode for this handle: ``None`` (decided by
+        ``MONETA_NATIVE``; unset means auto), ``"auto"``, ``"off"`` or
+        ``"require"``. Combined with ``MONETA_NATIVE`` by the SPEC section 2
+        truth table in :func:`moneta._native.resolve_handle` (env OFF is a
+        kill switch over ``"auto"``; env ``require`` tightens it; config
+        ``"require"`` + env OFF and config ``"off"`` + env ``require`` raise
+        :class:`~moneta.NativeConfigError`). Any other value raises
+        ``ValueError`` here. Not persisted.
 
     Cloud-anticipated fields appear as commented placeholders; their
     implementation is out of scope for this surgery.
@@ -136,9 +147,21 @@ class MonetaConfig:
     use_real_usd: bool = False
     usd_target_path: Optional[Path] = None
 
+    # Native seam mode (SPEC section 2). Additive and optional.
+    native: Optional[Literal["auto", "off", "require"]] = None
+
     # Cloud-anticipated (do not implement logic yet — see §5.3):
     # tenant_id: Optional[str] = None
     # sync_strategy: Optional[str] = None
+
+    def __post_init__(self) -> None:
+        if self.native is not None and (
+            not isinstance(self.native, str) or self.native not in _loader.MODES
+        ):
+            raise ValueError(
+                f"MonetaConfig.native={self.native!r}: expected None, "
+                f"'auto', 'off' or 'require'"
+            )
 
     @classmethod
     def ephemeral(cls, **overrides: Any) -> "MonetaConfig":
@@ -161,6 +184,10 @@ class MonetaConfig:
 # ----------------------------------------------------------------------
 # Process-level URI registry (§5.4)
 # ----------------------------------------------------------------------
+
+
+# Resolved handle mode -> VectorIndex backend (passed with _env=False).
+_HANDLE_BACKEND = {"auto": "auto", "off": "python", "require": "native"}
 
 
 # In-memory only. Per §5.4: "an ephemeral lock singleton" — structurally
@@ -193,6 +220,23 @@ class Moneta:
     """
 
     def __init__(self, config: MonetaConfig) -> None:
+        # Native mode: resolved once, before the store lock is touched, so a
+        # configuration error (NativeConfigError) or a required-but-missing
+        # wheel (NativeUnavailableError) never holds or leaks the lock.
+        # Off never probes, so an off handle never imports moneta_native.
+        env_class, env_raw = _loader.read_env()
+        native_mode, native_source = _loader.resolve_handle(
+            config.native, env_class, env_raw
+        )
+        if native_mode == "require":
+            wheel = _loader.wheel_info()
+            if wheel.state != _loader.LOADED:
+                raise _loader.NativeUnavailableError(
+                    f"native required (MonetaConfig.native={config.native!r}, "
+                    f"{_loader.ENV_VAR}={env_raw!r}) but moneta_native "
+                    f"{wheel.state}: {wheel.reason}"
+                )
+
         # Acquire URI lock first so a partial init below cannot leak the
         # lock to a concurrent caller.
         if config.storage_uri in _ACTIVE_URIS:
@@ -203,21 +247,29 @@ class Moneta:
             )
         _ACTIVE_URIS.add(config.storage_uri)
 
+        self._closed: bool = True  # until construction completes
+        self.durability: Optional[DurabilityManager] = None
         try:
             self.config: MonetaConfig = config
-            self._closed: bool = False
+            self.native_mode: str = native_mode
+            self.native_source: str = native_source
 
             self.decay: DecayConfig = DecayConfig(
                 half_life_seconds=config.half_life_seconds
             )
             self.attention: AttentionLog = AttentionLog()
 
+            # The resolved mode goes to every seam component explicitly
+            # (env is not re-read), so fresh and reopened handles select
+            # identically.
             self.vector_index: VectorIndex = VectorIndex(
                 embedding_dim=config.embedding_dim,
                 persist_path=config.vector_persist_path,
+                backend=_HANDLE_BACKEND[native_mode],
+                _env=False,
+                _source=native_source,
             )
 
-            self.durability: Optional[DurabilityManager] = None
             if (
                 config.snapshot_path is not None
                 and config.wal_path is not None
@@ -226,7 +278,9 @@ class Moneta:
                     snapshot_path=config.snapshot_path,
                     wal_path=config.wal_path,
                 )
-                self.ecs, wal_replay = self.durability.hydrate()
+                self.ecs, wal_replay = self.durability.hydrate(
+                    native=native_mode, _source=native_source
+                )
                 # Rebuild vector index from hydrated ECS (shadow rebuild).
                 for memory in self.ecs.iter_rows():
                     self.vector_index.upsert(
@@ -246,7 +300,7 @@ class Moneta:
                     len(wal_replay),
                 )
             else:
-                self.ecs = ECS()
+                self.ecs = ECS(native_mode, _source=native_source)
 
             # Authoring target: real USD (Phase 3) or mock (Phase 1 / dev).
             # UsdTarget imported function-level so api.py stays importable
@@ -271,19 +325,65 @@ class Moneta:
                 max_entities=config.max_entities
             )
         except BaseException:
-            # Partial init — release the lock so the consumer can retry.
-            _ACTIVE_URIS.discard(config.storage_uri)
+            # Partial init (including a NativeSeamError while rebuilding the
+            # index from a hydrated store): close the durability manager
+            # (hydrate only reads; nothing was written) and release the lock
+            # so the consumer can retry.
+            try:
+                if self.durability is not None:
+                    self.durability.close()
+            finally:
+                _ACTIVE_URIS.discard(config.storage_uri)
             raise
+        self._closed = False
 
+        st = self.native_status
+        src = st.source
         _logger.info(
             "Moneta.init uri=%s half_life=%.1fs max_entities=%d "
-            "durability=%s target=%s quota=%d",
+            "durability=%s target=%s quota=%d native=%s(%s) "
+            "scan=%s(%s) decay=%s(%s) wheel=%s:%s source=%s:%s",
             config.storage_uri,
             config.half_life_seconds,
             config.max_entities,
             "on" if self.durability is not None else "off",
             "usd" if config.use_real_usd else "mock",
             config.quota_override,
+            native_mode,
+            native_source,
+            st.scan.active,
+            st.scan.reason,
+            st.decay.active,
+            st.decay.reason,
+            st.wheel.state,
+            (st.wheel.sha256 or "-")[:12],
+            (src.commit or "-")[:12],
+            src.src_digest[:12],
+        )
+
+    # ------------------------------------------------------------------
+    # Native observability (a handle property, not an agent operation)
+    # ------------------------------------------------------------------
+
+    @property
+    def native_status(self) -> "_loader.NativeStatus":
+        """Frozen record of this handle's native seams. A new one per access.
+
+        ``scan`` and ``decay`` are the components' :class:`SeamStatus`;
+        ``wheel`` is the cached probe result (never probes, so an off
+        handle never imports ``moneta_native``); ``source`` is
+        :func:`moneta.build_info`; ``require_satisfied`` per SPEC section 4.
+        """
+        scan = self.vector_index.scan_seam_status()
+        decay = self.ecs.decay_seam_status()
+        return _loader.NativeStatus(
+            scan=scan,
+            decay=decay,
+            wheel=_loader.current_wheel(),
+            source=build_info(),
+            require_satisfied=_loader.require_satisfied(
+                self.native_mode, scan, decay
+            ),
         )
 
     # ------------------------------------------------------------------
@@ -346,6 +446,9 @@ class Moneta:
         ProtectedQuotaExceededError
             If ``protected_floor > 0.0`` and the ECS already holds
             ``self.config.quota_override`` protected entries.
+        NativeSeamError
+            Under native ``require``, if ``embedding`` is outside the
+            native envelope. Nothing is mutated.
         """
         if (
             protected_floor > 0.0
@@ -356,6 +459,10 @@ class Moneta:
                 f"exceeded; Phase 3 unpin tool required "
                 f"(ARCHITECTURE.md §10)"
             )
+        # Under require the index may never demote: a vector outside the
+        # native envelope (non-finite, non-numeric, empty, wrong dim) is
+        # rejected with NativeSeamError before any mutation. No-op otherwise.
+        self.vector_index.check_native_envelope(embedding)
 
         entity_id = uuid4()
         now = time.time()

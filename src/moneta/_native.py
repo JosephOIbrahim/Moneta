@@ -461,6 +461,60 @@ def resolve_component(
     return explicit_mode, source or "explicit", raw_env()
 
 
+def resolve_handle(
+    config_native: Optional[str], env_class: str, raw: Optional[str]
+) -> Tuple[str, str]:
+    """``(mode, requested_source)`` for a ``Moneta`` handle. Pure.
+
+    The SPEC section 2 truth table (config row x env class column):
+
+    ==========  ============  ============  ============  =================  ============
+    config      UNSET         AUTO          OFF           REQUIRE            UNKNOWN
+    ==========  ============  ============  ============  =================  ============
+    None        auto/default  auto/env      off/env       require/env        auto/env
+    "auto"      auto/config   auto/config   off/env       require/env        auto/config
+    "off"       off/config    off/config    off/config    NativeConfigError  off/config
+    "require"   req./config   req./config   NativeConfig  require/config     req./config
+    ==========  ============  ============  ============  =================  ============
+
+    The env kill switch (OFF) overrides config ``"auto"``, and env REQUIRE
+    tightens it. The two conflicts, config ``"require"`` with env OFF and
+    config ``"off"`` with env REQUIRE, raise :class:`NativeConfigError`
+    naming both values; they never fall back silently. (UNKNOWN warns in
+    :func:`read_env`, not here.)
+    """
+    if config_native is not None and config_native not in MODES:
+        raise ValueError(
+            f"MonetaConfig.native={config_native!r}: expected None, 'auto', 'off' or 'require'"
+        )
+    if env_class not in (UNSET, AUTO, OFF, REQUIRE, UNKNOWN):
+        raise ValueError(f"unknown env class {env_class!r}")
+    if config_native is None:
+        if env_class == UNSET:
+            return "auto", "default"
+        return mode_for_class(env_class), "env"
+    if config_native == "auto":
+        if env_class == OFF:
+            return "off", "env"
+        if env_class == REQUIRE:
+            return "require", "env"
+        return "auto", "config"
+    if config_native == "off":
+        if env_class == REQUIRE:
+            raise NativeConfigError(
+                f"MonetaConfig.native='off' conflicts with {ENV_VAR}={raw!r} (require): "
+                "the config disables native while the environment requires it"
+            )
+        return "off", "config"
+    # config_native == "require"
+    if env_class == OFF:
+        raise NativeConfigError(
+            f"MonetaConfig.native='require' conflicts with {ENV_VAR}={raw!r} (off): "
+            "the config requires native while the environment disables it"
+        )
+    return "require", "config"
+
+
 @dataclass(frozen=True)
 class SeamStatus:
     """One seam's selection and execution record. Frozen; a new one per call.
@@ -507,6 +561,40 @@ def seam_status(
         native_calls=native_calls,
         fallbacks=fb,
         all_native=active == "native" and not fb and not demoted,
+    )
+
+
+@dataclass(frozen=True)
+class NativeStatus:
+    """``Moneta.native_status``: one handle's native picture. Frozen; a new
+    record per access.
+
+    ``wheel`` is the cached probe result (``not_probed`` if nothing in the
+    process has probed; an off handle never probes). ``source`` is
+    :func:`moneta.build_info`. ``require_satisfied`` is None unless the
+    handle's mode is require; then True only when both seams are active
+    native, neither is demoted, and decay has no fallbacks. Scan per-query
+    oracle answers are permitted under require and do not clear it; they are
+    listed in ``scan.fallbacks``.
+    """
+
+    scan: SeamStatus
+    decay: SeamStatus
+    wheel: NativeWheel
+    source: object  # moneta._build.BuildInfo
+    require_satisfied: Optional[bool]
+
+
+def require_satisfied(mode: str, scan: SeamStatus, decay: SeamStatus) -> Optional[bool]:
+    """The ``NativeStatus.require_satisfied`` rule (SPEC section 4)."""
+    if mode != "require":
+        return None
+    return (
+        scan.active == "native"
+        and decay.active == "native"
+        and not scan.demoted
+        and not decay.demoted
+        and sum(decay.fallbacks.values()) == 0
     )
 
 
@@ -568,6 +656,9 @@ __all__ = [
     "NativeSeamError",
     "NativeWheel",
     "SeamStatus",
+    "NativeStatus",
+    "resolve_handle",
+    "require_satisfied",
     "classify_env",
     "mode_for_class",
     "read_env",

@@ -42,7 +42,7 @@ import os
 import threading
 import time
 from pathlib import Path
-from typing import List, Optional, Tuple
+from typing import List, Optional, Tuple, Union
 from uuid import UUID
 
 from .attention_log import AttentionEntry, AttentionLog
@@ -178,14 +178,25 @@ class DurabilityManager:
     # Hydrate
     # ------------------------------------------------------------------
 
-    def hydrate(self) -> Tuple[ECS, List[AttentionEntry]]:
-        """Load snapshot + replay WAL. Returns `(ECS, entries_to_replay)`."""
+    def hydrate(
+        self,
+        native: Union[bool, str, None] = None,
+        *,
+        _source: Optional[str] = None,
+    ) -> Tuple[ECS, List[AttentionEntry]]:
+        """Load snapshot + replay WAL. Returns `(ECS, entries_to_replay)`.
+
+        ``native`` is forwarded to both ``ECS()`` constructions (with
+        ``_source``), so a reopened handle selects the decay seam exactly
+        like a fresh one. The default (None) keeps the env-resolved
+        behaviour for direct callers. Reads only; never writes a file.
+        """
         if not self._snapshot_path.exists():
             _logger.info(
                 "durability.hydrate no snapshot at %s; starting fresh",
                 self._snapshot_path,
             )
-            return ECS(), self.wal_read()
+            return ECS(native, _source=_source), self.wal_read()
 
         with open(self._snapshot_path, "r", encoding="utf-8") as fp:
             snapshot = json.load(fp)
@@ -198,7 +209,7 @@ class DurabilityManager:
                 SNAPSHOT_VERSION,
             )
 
-        ecs = ECS()
+        ecs = ECS(native, _source=_source)
         snapshot_ts: float = float(snapshot.get("snapshot_created_at", 0.0))
         for row_data in snapshot.get("rows", []):
             memory = Memory(

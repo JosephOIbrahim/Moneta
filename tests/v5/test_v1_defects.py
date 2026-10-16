@@ -60,7 +60,12 @@ def test_v5_p1_deposit_is_durable_on_return(tmp_path):
 # P2 -------------------------------------------------------------------
 
 
-def test_v1_p2_rejected_deposit_leaves_an_orphan_row():
+def test_v1_p2_rejected_deposit_leaves_an_orphan_row(monkeypatch):
+    # Guard: the defect lives in the default (auto/off) handle. Under
+    # MONETA_NATIVE=require, v1's deposit envelope pre-check (SPEC 3) rejects
+    # a wrong-dim vector with NativeSeamError before any mutation, so this
+    # reproduction is pinned to the env-unset default.
+    monkeypatch.delenv("MONETA_NATIVE", raising=False)
     with Moneta(MonetaConfig.ephemeral()) as m:
         m.deposit("a", [1.0, 0.0])
         with pytest.raises(ValueError):

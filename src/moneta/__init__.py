@@ -17,9 +17,12 @@ from .types import EntityState, Memory
 from ._native import (
     NativeConfigError,
     NativeSeamError,
+    NativeStatus,
     NativeUnavailableError,
     NativeWheel,
+    SeamStatus,
 )
+from ._build import BuildInfo, build_info
 
 __all__ = [
     # Substrate handle (DEEP_THINK_BRIEF §5.1, §5.3)
@@ -31,8 +34,12 @@ __all__ = [
     "NativeConfigError",
     "NativeUnavailableError",
     "NativeSeamError",
-    # Native wheel identity (moneta._native)
+    # Native observability (moneta._native, moneta._build)
     "NativeWheel",
+    "NativeStatus",
+    "SeamStatus",
+    "build_info",
+    "BuildInfo",
     # Free-function smoke check (constructs its own ephemeral handle)
     "smoke_check",
     # Types
