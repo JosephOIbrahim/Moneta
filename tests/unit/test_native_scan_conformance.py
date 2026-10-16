@@ -17,9 +17,10 @@ from uuid import UUID, uuid4
 import pytest
 
 from moneta.types import EntityState
-from moneta.vector_index import VectorIndex, native_available
+from moneta.vector_index import VectorIndex
 
-needs_native = pytest.mark.skipif(not native_available(), reason="moneta_native not installed")
+# Needs the real wheel; skips visibly through the conftest native harness.
+needs_native = pytest.mark.native
 
 S = EntityState.VOLATILE
 
@@ -170,6 +171,7 @@ def test_upsert_dim_mismatch_raises_like_oracle():
 
 
 @needs_native
+@pytest.mark.native_fallback
 def test_non_finite_demotes_to_oracle_and_stays_exact(monkeypatch):
     # Demotion is an auto-mode behaviour; backend="native" is require, which
     # forbids it (next test). Env set per test so every matrix row agrees.
@@ -205,6 +207,7 @@ def test_non_finite_upsert_under_require_raises_and_changes_nothing():
 
 
 @needs_native
+@pytest.mark.native_fallback
 def test_non_finite_query_matches_oracle():
     rng = random.Random(7)
     py, nat = _pair()
@@ -268,6 +271,7 @@ def test_ids_are_uuids():
 
 @needs_native
 @pytest.mark.parametrize("seed", range(3))
+@pytest.mark.native_fallback
 def test_overflowing_finite_components_match_oracle_without_panic(seed):
     # Finite components near 1e308 overflow a norm or dot to inf, giving NaN
     # cosines. The native store must hand those queries to the oracle rather
@@ -287,6 +291,7 @@ def test_overflowing_finite_components_match_oracle_without_panic(seed):
 
 
 @needs_native
+@pytest.mark.native_fallback
 def test_overflow_through_the_public_query_op():
     from moneta import Moneta, MonetaConfig
 

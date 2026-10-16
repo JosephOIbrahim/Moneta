@@ -101,6 +101,7 @@ def _run_once(mp, env, fail):
         )
 
 
+@pytest.mark.native_fallback
 def test_sleep_pass_auto_failure_attention_once(iso):
     util, attended, log_len, st, calls = _run_once(iso, "auto", OverflowError("injected"))
     ref_util, ref_attended, ref_log, ref_st, ref_calls = _run_once(iso, "0", None)

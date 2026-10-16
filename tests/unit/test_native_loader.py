@@ -540,7 +540,8 @@ def test_identity_unexpected_error_does_not_block_classification(isolated, tmp_p
 # Real wheel (only when the 0.1.0 abi3 wheel is on the path)
 # ---------------------------------------------------------------------------
 
-needs_wheel = pytest.mark.skipif(not _native.native_available(), reason="moneta_native not loaded")
+# Needs the real wheel; skips visibly through the conftest native harness.
+needs_wheel = pytest.mark.native
 
 
 @needs_wheel
@@ -725,6 +726,7 @@ def test_vector_index_native_available_is_the_loader_shim(isolated):
 # ---------------------------------------------------------------------------
 
 
+@pytest.mark.native_fallback
 def test_counters_shape_increment_copy_and_reset(isolated):
     assert _native.counters() == {
         "scan": {"native_calls": 0, "fallbacks": {}},

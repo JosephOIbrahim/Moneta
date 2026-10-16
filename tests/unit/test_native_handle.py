@@ -94,10 +94,8 @@ def real(monkeypatch):
     _native._reset_for_tests()
 
 
-needs_wheel = pytest.mark.skipif(
-    not _native.native_available(),
-    reason=f"moneta_native {_native.current_wheel().state}: {_native.current_wheel().reason}",
-)
+# Needs the real wheel; skips visibly through the conftest native harness.
+needs_wheel = pytest.mark.native
 
 
 def _setenv(mp, raw):
@@ -453,6 +451,7 @@ def test_native_status_is_not_an_agent_op():
     assert isinstance(Moneta.__dict__["native_status"], property)
 
 
+@pytest.mark.native_fallback
 def test_require_satisfied_rules(iso):
     _state(iso, "loaded")
     with Moneta(MonetaConfig.ephemeral(native="require")) as m:
@@ -530,6 +529,7 @@ def test_init_log_names_python_reason_and_wheel_sha(iso, caplog):
     assert "wheel=absent:-" in line
 
 
+@pytest.mark.native_fallback
 def test_warning_once_per_handle_per_reason(iso, caplog):
     _state(iso, "loaded")
     caplog.set_level(logging.WARNING)
@@ -579,6 +579,7 @@ def test_require_deposit_rejected_changes_nothing(iso, tmp_path, bad):
         assert st.require_satisfied is True
 
 
+@pytest.mark.native_fallback
 def test_auto_deposit_nonfinite_demotes_and_counts(iso):
     _state(iso, "loaded")
     with Moneta(MonetaConfig.ephemeral(native="auto")) as m:
@@ -769,6 +770,7 @@ def test_cleanup_native_config_error(iso, tmp_path):
         assert m.ecs.n == 1 and len(m.attention) == 1
 
 
+@pytest.mark.native_fallback
 def test_cleanup_hydrate_native_seam_error(iso, tmp_path):
     cfg, snap, wal = _seed_store(iso, tmp_path, "moneta-test://cleanup-seam", nan_vector=True)
     before, mt = _files(snap, wal), _mtimes(snap, wal)
@@ -869,6 +871,7 @@ def _run_once_cfg(mp, native, fail):
         )
 
 
+@pytest.mark.native_fallback
 def test_exactly_once_auto_config(iso):
     util, attended, log_len, st, calls = _run_once_cfg(iso, "auto", OverflowError("injected"))
     ref_util, ref_attended, ref_log, ref_st, ref_calls = _run_once_cfg(iso, "off", None)

@@ -273,6 +273,7 @@ def test_dim_mismatch_and_zero_norm_queries_are_not_fallbacks(iso, mode):
 
 
 @pytest.mark.parametrize("backend", ["native", "auto"])
+@pytest.mark.native_fallback
 def test_nonfinite_query_is_counted_oracle_answer(iso, backend):
     _set_state(iso, "loaded")
     vi, rows = _filled(backend=backend)
@@ -289,6 +290,7 @@ def test_nonfinite_query_is_counted_oracle_answer(iso, backend):
 
 
 @pytest.mark.parametrize("backend", ["native", "auto"])
+@pytest.mark.native_fallback
 def test_cosine_overflow_is_counted_once_per_query(iso, backend):
     _set_state(iso, "loaded")
     vi, rows = _filled(backend=backend, n=10)
@@ -322,6 +324,7 @@ def test_python_backend_never_counts(iso):
 @pytest.mark.parametrize(
     "bad", [[math.inf, 0.0, 1.0, 0.0], [math.nan, 0.0, 0.0, 0.0], ["x", 0.0, 0.0, 0.0]]
 )
+@pytest.mark.native_fallback
 def test_auto_demotion_recorded_once(iso, caplog, bad):
     _set_state(iso, "loaded")
     vi, rows = _filled(backend="auto")
@@ -343,6 +346,7 @@ def test_auto_demotion_recorded_once(iso, caplog, bad):
     assert _native.counters()["scan"]["fallbacks"] == {"demoted:nonfinite_upsert": 1}
 
 
+@pytest.mark.native_fallback
 def test_auto_restore_outside_envelope_recorded(iso):
     _set_state(iso, "loaded")
     vi = VectorIndex(backend="auto")
@@ -358,6 +362,7 @@ def test_auto_restore_outside_envelope_recorded(iso):
     assert len(vi) == 1
 
 
+@pytest.mark.native_fallback
 def test_auto_restore_without_dim_recorded(iso):
     _set_state(iso, "loaded")
     vi, _ = _filled(backend="auto", n=2)
@@ -426,6 +431,7 @@ def test_require_store_refusal_backstop_raises_seam_error(iso):
     assert vi.backend == "native" and not vi.demoted
 
 
+@pytest.mark.native_fallback
 def test_auto_store_refusal_demotes(iso):
     _set_state(iso, "loaded")
     vi, rows = _filled(backend="auto")
@@ -481,6 +487,7 @@ def test_require_restore_hugeint_raises_seam_error_no_mutation(iso):
     assert vi.backend == "native" and not vi.demoted
 
 
+@pytest.mark.native_fallback
 def test_auto_restore_hugeint_demotes_instead_of_crashing(iso):
     _set_state(iso, "loaded")
     vi = VectorIndex(backend="auto")
@@ -502,6 +509,7 @@ def test_require_restore_valid_snapshot_stays_native(iso):
     assert vi.query(rows[3][1], 5) == src.query(rows[3][1], 5)
 
 
+@pytest.mark.native_fallback
 def test_require_permits_counted_per_query_oracle_answers(iso):
     _set_state(iso, "loaded")
     vi, rows = _filled(backend="native")

@@ -4,7 +4,7 @@
 ``moneta_native.decay_batch`` when the seam is on. It must give the exact
 doubles of the per-record oracle, so every RecallItem score and every
 retention verdict is bit-for-bit the same with MONETA_NATIVE=1 and =0.
-Skips when ``moneta_native`` is absent.
+Marked ``native``: skips visibly when ``moneta_native`` is not loaded.
 """
 
 from __future__ import annotations
@@ -18,7 +18,7 @@ import pytest
 from moneta.v5 import Config, Substrate
 from moneta.v5.model import RECALLABLE, utilities_at
 
-pytest.importorskip("moneta_native")
+pytestmark = pytest.mark.native
 
 DIM = 16
 T0 = 1_000_000.0

@@ -15,9 +15,9 @@ import pytest
 from moneta.decay import decay_value
 from moneta.ecs import ECS
 from moneta.types import EntityState
-from moneta.vector_index import native_available
 
-pytestmark = pytest.mark.skipif(not native_available(), reason="moneta_native not installed")
+# Needs the real wheel; skips visibly through the conftest native harness.
+pytestmark = pytest.mark.native
 
 
 def _bits(x: float) -> bytes:

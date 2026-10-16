@@ -114,6 +114,7 @@ KNOWN = [
 
 
 @pytest.mark.parametrize("fail,key,text", KNOWN, ids=[k[1] + ":" + str(k[0]) for k in KNOWN])
+@pytest.mark.native_fallback
 def test_auto_known_failure_runs_oracle_and_demotes(iso, caplog, fail, key, text):
     ecs, ctl = _ecs(iso, "auto", fail)
     caplog.set_level(logging.WARNING, logger="moneta.ecs")

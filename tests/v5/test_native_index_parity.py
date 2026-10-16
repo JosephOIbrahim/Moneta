@@ -2,11 +2,12 @@
 
 Bit-for-bit on whatever interpreter runs the suite: the Rust sum
 reproduces CPython's ``sum()`` (sequential on <= 3.11, Neumaier on >= 3.12).
-Skips when ``moneta_native`` is absent.
+Marked ``native``: skips visibly when ``moneta_native`` is not loaded.
 """
 
 from __future__ import annotations
 
+import importlib
 import random
 import struct
 import sys
@@ -18,7 +19,13 @@ from moneta.v5 import Config, Substrate
 from moneta.v5.index import ExactIndex
 from moneta.v5.model import _unit
 
-native = pytest.importorskip("moneta_native")
+pytestmark = pytest.mark.native
+
+
+@pytest.fixture
+def native():
+    """The wheel module, imported only inside a (native-marked) test."""
+    return importlib.import_module("moneta_native")
 
 
 def _bits(pairs):
@@ -37,7 +44,7 @@ def _pair(rng, n, dim):
     return a, b, ids
 
 
-def test_sum_kernel_matches_builtin_sum():
+def test_sum_kernel_matches_builtin_sum(native):
     rng = random.Random(0)
     comp = sys.version_info >= (3, 12)
     for _ in range(3000):

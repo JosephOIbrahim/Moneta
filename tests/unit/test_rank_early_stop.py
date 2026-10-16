@@ -14,9 +14,11 @@ import pytest
 
 from moneta.ecs import ECS
 from moneta.types import EntityState
-from moneta.vector_index import VectorIndex, native_available
+from moneta.vector_index import VectorIndex
 
-BACKENDS = ["python"] + (["native"] if native_available() else [])
+# Both backends are always collected; the native one skips visibly without the
+# wheel (conftest native harness) instead of silently disappearing.
+BACKENDS = ["python", pytest.param("native", marks=pytest.mark.native)]
 
 
 def _reference(ecs: ECS, hits, limit):

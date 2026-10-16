@@ -85,4 +85,6 @@ markers = [
     "unit: fast isolated unit tests",
     "integration: end-to-end deposit/query/attention/consolidation flow tests",
     "load: synthetic session harness tests (Phase 1 completion gate)",
+    "native: needs the moneta_native wheel; skips visibly when it is not loaded (SPEC section 6)",
+    "native_fallback: intentionally triggers a native fallback; exempt from the unexpected-fallback guard",
 ]
