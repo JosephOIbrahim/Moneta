@@ -324,6 +324,31 @@ class Moneta:
             self.consolidation: ConsolidationRunner = ConsolidationRunner(
                 max_entities=config.max_entities
             )
+            # Identity logging reads build_info() (file I/O on first use),
+            # so it stays inside the try: a failure here releases the lock.
+            st = self.native_status
+            src = st.source
+            _logger.info(
+                "Moneta.init uri=%s half_life=%.1fs max_entities=%d "
+                "durability=%s target=%s quota=%d native=%s(%s) "
+                "scan=%s(%s) decay=%s(%s) wheel=%s:%s source=%s:%s",
+                config.storage_uri,
+                config.half_life_seconds,
+                config.max_entities,
+                "on" if self.durability is not None else "off",
+                "usd" if config.use_real_usd else "mock",
+                config.quota_override,
+                native_mode,
+                native_source,
+                st.scan.active,
+                st.scan.reason,
+                st.decay.active,
+                st.decay.reason,
+                st.wheel.state,
+                (st.wheel.sha256 or "-")[:12],
+                (src.commit or "-")[:12],
+                src.src_digest[:12],
+            )
         except BaseException:
             # Partial init (including a NativeSeamError while rebuilding the
             # index from a hydrated store): close the durability manager
@@ -336,30 +361,6 @@ class Moneta:
                 _ACTIVE_URIS.discard(config.storage_uri)
             raise
         self._closed = False
-
-        st = self.native_status
-        src = st.source
-        _logger.info(
-            "Moneta.init uri=%s half_life=%.1fs max_entities=%d "
-            "durability=%s target=%s quota=%d native=%s(%s) "
-            "scan=%s(%s) decay=%s(%s) wheel=%s:%s source=%s:%s",
-            config.storage_uri,
-            config.half_life_seconds,
-            config.max_entities,
-            "on" if self.durability is not None else "off",
-            "usd" if config.use_real_usd else "mock",
-            config.quota_override,
-            native_mode,
-            native_source,
-            st.scan.active,
-            st.scan.reason,
-            st.decay.active,
-            st.decay.reason,
-            st.wheel.state,
-            (st.wheel.sha256 or "-")[:12],
-            (src.commit or "-")[:12],
-            src.src_digest[:12],
-        )
 
     # ------------------------------------------------------------------
     # Native observability (a handle property, not an agent operation)

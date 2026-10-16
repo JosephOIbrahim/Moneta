@@ -853,3 +853,37 @@ def test_exactly_once_auto_config(iso):
     assert calls == 1
     assert st.decay.demoted and st.decay.fallbacks == {"decay_error:OverflowError": 1}
     assert st.require_satisfied is None
+
+
+@pytest.mark.parametrize("durable", [False, True], ids=["ephemeral", "durable"])
+def test_cleanup_identity_failure_releases_lock(iso, tmp_path, durable):
+    """build_info() does I/O at init (INFO line); its failure must not leak
+    the URI lock or the durability manager."""
+    _state(iso, "loaded")
+    kw = dict(snapshot_path=tmp_path / "s.json", wal_path=tmp_path / "w.jsonl") if durable else {}
+    uri = f"moneta-test://identity-fail-{durable}"
+    if durable:
+        with Moneta(MonetaConfig(storage_uri=uri, native="off", **kw)) as m:
+            e = m.deposit("a", [1.0, 0.0])
+            m.run_sleep_pass()
+            m.signal_attention({e: 0.1})
+    before = _files(*(tmp_path / n for n in ("s.json", "w.jsonl")))
+    closed = []
+    real_close = durability_mod.DurabilityManager.close
+
+    def spy_close(self):
+        closed.append(self)
+        return real_close(self)
+
+    def boom():
+        raise PermissionError("simulated unreadable source file")
+
+    iso.setattr(durability_mod.DurabilityManager, "close", spy_close)
+    iso.setattr(api_mod, "build_info", boom)
+    with pytest.raises(PermissionError):
+        Moneta(MonetaConfig(storage_uri=uri, native="auto", **kw))
+    assert uri not in api_mod._ACTIVE_URIS
+    assert len(closed) == (1 if durable else 0)
+    assert _files(*(tmp_path / n for n in ("s.json", "w.jsonl"))) == before
+    iso.setattr(api_mod, "build_info", moneta.build_info)
+    _assert_unlocked(uri, **kw)
