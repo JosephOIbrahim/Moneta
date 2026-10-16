@@ -4,6 +4,9 @@ from __future__ import annotations
 
 import hashlib
 import json
+import subprocess
+import sys
+import textwrap
 from pathlib import Path
 from unittest import mock
 from uuid import UUID
@@ -192,6 +195,240 @@ def test_failed_migration_leaves_no_half_journal(tmp_path):
     # The URI is released after the failure.
     (tmp_path / "snapshot.json").unlink()
     Moneta(_cfg(tmp_path)).close()
+
+
+# ----------------------------------------------------------------------
+# Migration crash safety (Round 4 E1 condition 1)
+# ----------------------------------------------------------------------
+
+_ROWS = 50
+_WAL = 4  # entries newer than the snapshot; one older entry is skipped
+# genesis + begin note + one import per row + one attend per WAL entry + completion note
+_APPENDS = 1 + 1 + _ROWS + _WAL + 1
+
+
+def _write_v1_store(root: Path) -> None:
+    rows = []
+    for i in range(_ROWS):
+        rows.append(
+            {
+                "entity_id": str(UUID(int=i + 1)),
+                "payload": f"memory {i}",
+                "semantic_vector": [
+                    float((i * 7 + k * 3) % 11) - 5.0 + (0.5 if k == i % 4 else 0.0)
+                    for k in range(4)
+                ],
+                "utility": 0.2 + (i % 9) / 10.0,
+                "attended_count": i % 5,
+                "protected_floor": 0.3 if i % 13 == 0 else 0.0,
+                "last_evaluated": T0 - 100.0 * i,
+                "state": (0, 0, 0, 1, 2)[i % 5],
+                "usd_link": None,
+            }
+        )
+    (root / "snapshot.json").write_text(
+        json.dumps({"snapshot_version": 1, "snapshot_created_at": T0, "rows": rows})
+    )
+    wal = [
+        {"entity_id": str(UUID(int=3)), "weight": 0.5, "timestamp": T0 - 5.0},  # pre-snapshot
+        *(
+            {"entity_id": str(UUID(int=2 + 9 * j)), "weight": 0.25 * j, "timestamp": T0 + 10.0 * j}
+            for j in range(1, _WAL + 1)
+        ),
+    ]
+    (root / "wal.log").write_text("".join(json.dumps(e) + "\n" for e in wal))
+
+
+def _crash_migration(root: Path, after: int, *, legacy: bool = False) -> None:
+    """Run the first open of ``root`` in a child that os._exit()s after ``after`` appends.
+
+    ``legacy`` drops the begin note, reproducing a journal torn by pre-fix code.
+    """
+    code = textwrap.dedent(f"""
+        import os
+        from pathlib import Path
+        from moneta import MonetaConfig
+        from moneta.v5 import ManualClock
+        from moneta.v5.compat import MIGRATION_BEGIN, Moneta
+        from moneta.v5.substrate import Substrate
+
+        real = Substrate._append
+        count = 0
+
+        def append(self, event):
+            global count
+            if {legacy!r} and event.get("kind") == MIGRATION_BEGIN:
+                return self.seq
+            seq = real(self, event)
+            count += 1
+            if count == {after}:
+                print("HARD-KILL", flush=True)
+                os._exit(77)
+            return seq
+
+        Substrate._append = append
+        root = Path({str(root)!r})
+        Moneta(
+            MonetaConfig(
+                storage_uri="moneta-file://store",
+                snapshot_path=root / "snapshot.json",
+                wal_path=root / "wal.log",
+            ),
+            clock=ManualClock({T0 + 1000.0!r}),
+        )
+        os._exit(0)
+    """)
+    out = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True)
+    # hython's os._exit runs PySide teardown and can end in a segfault (139):
+    # the kill point was reached either way, and no Moneta cleanup ran.
+    assert "HARD-KILL" in out.stdout and out.returncode != 0, out.stderr[-2000:]
+
+
+def _state(m: Moneta) -> tuple:
+    rows = sorted(
+        (r.entity_id, r.payload, r.attended_count, round(r.utility, 12), int(r.state))
+        for r in m.ecs.iter_rows()
+    )
+    recall = [
+        [(r.entity_id, round(r.utility, 12)) for r in m.query(v, limit=_ROWS)]
+        for v in ([1.0, 0.0, 0.0, 0.0], [0.3, -1.0, 0.2, 0.5], [-2.0, 1.0, 1.0, -0.5])
+    ]
+    return rows, recall
+
+
+def _reference(tmp_path: Path) -> tuple:
+    ref = tmp_path / "reference"
+    ref.mkdir()
+    _write_v1_store(ref)
+    with Moneta(_cfg(ref, uri="moneta-file://reference"), clock=ManualClock(T0 + 1000.0)) as m:
+        assert m.migration["rows"] == _ROWS and m.migration["wal_applied"] == _WAL
+    with Moneta(_cfg(ref, uri="moneta-file://reference"), clock=ManualClock(T0 + 2000.0)) as m:
+        assert m.migration is None
+        return _state(m)
+
+
+@pytest.mark.parametrize(
+    "after",
+    [1, 2, 20, _APPENDS - 1, _APPENDS],
+    ids=["genesis", "begin-note", "20-appends", "all-but-completion", "completion"],
+)
+def test_hard_kill_mid_migration_reopens_with_every_record(tmp_path, after):
+    store = tmp_path / "store"
+    store.mkdir()
+    _write_v1_store(store)
+    _crash_migration(store, after)
+    journal = journal_path_for(_cfg(store))
+    # Reopen: the interrupted migration restarts from the preserved original.
+    with Moneta(_cfg(store), clock=ManualClock(T0 + 1000.0)) as m:
+        if after == _APPENDS:
+            # The completion note is durable: the migration finished, only
+            # the sidecar write was lost. Nothing to redo.
+            assert m.migration is None
+            assert not journal.with_name(journal.name + ".failed-migration").exists()
+        else:
+            assert m.migration["rows"] == _ROWS and m.migration["wal_applied"] == _WAL
+            assert m.migration["restarted"]["reason"] == ("never_began" if after == 1 else "begun")
+            assert m.migration["restarted"]["imports_found"] == max(0, min(after - 2, _ROWS))
+            assert journal.with_name(journal.name + ".failed-migration").exists()
+        assert m.ecs.n == _ROWS
+    # The third open is an ordinary open, and recall equals an uninterrupted run.
+    with Moneta(_cfg(store), clock=ManualClock(T0 + 2000.0)) as m:
+        assert m.migration is None
+        assert _state(m) == _reference(tmp_path)
+
+
+def test_hard_kill_before_the_first_append_reopens_with_every_record(tmp_path):
+    store = tmp_path / "store"
+    store.mkdir()
+    _write_v1_store(store)
+    journal = journal_path_for(_cfg(store))
+    journal.write_bytes(b"")  # the journal file exists, nothing was appended
+    with Moneta(_cfg(store), clock=ManualClock(T0 + 1000.0)) as m:
+        assert m.migration["rows"] == _ROWS
+    with Moneta(_cfg(store), clock=ManualClock(T0 + 2000.0)) as m:
+        assert _state(m) == _reference(tmp_path)
+
+
+def test_a_journal_torn_by_pre_fix_code_without_a_begin_note_is_restarted(tmp_path):
+    store = tmp_path / "store"
+    store.mkdir()
+    _write_v1_store(store)
+    _crash_migration(store, 20, legacy=True)
+    with Moneta(_cfg(store), clock=ManualClock(T0 + 1000.0)) as m:
+        assert m.migration["restarted"]["imports_found"] == 19
+        assert m.ecs.n == _ROWS
+    with Moneta(_cfg(store), clock=ManualClock(T0 + 2000.0)) as m:
+        assert _state(m) == _reference(tmp_path)
+
+
+def test_a_second_crash_during_the_restart_is_set_aside_beside_the_first(tmp_path):
+    store = tmp_path / "store"
+    store.mkdir()
+    _write_v1_store(store)
+    _crash_migration(store, 20)
+    _crash_migration(store, 30)  # the restart itself is killed
+    journal = journal_path_for(_cfg(store))
+    with Moneta(_cfg(store), clock=ManualClock(T0 + 1000.0)) as m:
+        assert m.ecs.n == _ROWS
+    assert journal.with_name(journal.name + ".failed-migration").exists()
+    assert journal.with_name(journal.name + ".failed-migration-1").exists()
+    with Moneta(_cfg(store), clock=ManualClock(T0 + 2000.0)) as m:
+        assert _state(m) == _reference(tmp_path)
+
+
+def test_an_unverifiable_migration_source_is_refused_without_changes(tmp_path):
+    from moneta.v5.compat import MigrationIncompleteError
+
+    store = tmp_path / "store"
+    store.mkdir()
+    _write_v1_store(store)
+    _crash_migration(store, 20)
+    original = store / "snapshot.json.v1-original"
+    good = original.read_bytes()
+    original.write_bytes(good.replace(b"memory 7", b"memory X"))
+    (store / "snapshot.json").unlink()
+    journal = journal_path_for(_cfg(store))
+    before = journal.read_bytes()
+    with pytest.raises(MigrationIncompleteError) as err:
+        Moneta(_cfg(store))
+    assert "18 of 50 rows imported" in str(err.value)
+    assert journal.read_bytes() == before
+    assert not journal.with_name(journal.name + ".failed-migration").exists()
+    # Restoring the original, as the message says, recovers every record.
+    original.write_bytes(good)
+    with Moneta(_cfg(store), clock=ManualClock(T0 + 1000.0)) as m:
+        assert m.ecs.n == _ROWS
+
+
+def test_a_v1_rewrite_after_an_interrupted_migration_is_not_overwritten(tmp_path):
+    from moneta.v5.compat import MigrationIncompleteError
+
+    store = tmp_path / "store"
+    store.mkdir()
+    _write_v1_store(store)
+    _crash_migration(store, 20)
+    snap = json.loads((store / "snapshot.json").read_text())
+    snap["rows"] = snap["rows"][:3]
+    (store / "snapshot.json").write_text(json.dumps(snap))  # v1 wrote after the crash
+    rewritten = (store / "snapshot.json").read_bytes()
+    with pytest.raises(MigrationIncompleteError, match="rewritten by a v1 writer"):
+        Moneta(_cfg(store))
+    assert (store / "snapshot.json").read_bytes() == rewritten
+
+
+def test_divergence_guidance_never_suggests_removing_the_journal(tmp_path):
+    from moneta.v5.compat import SnapshotDivergedError
+
+    with Moneta(_cfg(tmp_path)) as m:
+        m.deposit("kept", [1.0, 0.0])
+    with moneta.Moneta(_cfg(tmp_path, uri="rogue-v1")) as v1:
+        v1.deposit("written by v1", [0.0, 1.0])
+        v1.run_sleep_pass()
+    with pytest.raises(SnapshotDivergedError) as err:
+        Moneta(_cfg(tmp_path))
+    message = str(err.value)
+    assert "remove the journal" not in message
+    assert "do not delete it" in message
 
 
 def test_use_real_usd_projects_typed_prims(tmp_path):

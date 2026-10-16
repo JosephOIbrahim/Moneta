@@ -137,6 +137,31 @@ MUTS = [
         """                pass""",
         "tests/v5/test_half_life.py::test_forward_keeps_history_and_applies_the_new_value_after_the_change",
     ),
+    (
+        "E1C1 half-migrated journal not detected",
+        "src/moneta/v5/compat.py",
+        """    if progress["begin"] is not None or progress["imports"]:
+        reason = "begun\"""",
+        """    if False:
+        reason = "begun\"""",
+        "tests/v5/test_compat.py::test_hard_kill_mid_migration_reopens_with_every_record[20-appends]",
+    ),
+    (
+        "E1C1 no begin marker journaled",
+        "src/moneta/v5/compat.py",
+        """            "kind": MIGRATION_BEGIN,""",
+        """            "kind": "v1_migration_start",""",
+        "tests/v5/test_compat.py::test_hard_kill_mid_migration_reopens_with_every_record[begin-note]",
+    ),
+    (
+        "E1C1 interrupted migration decided by file existence",
+        "src/moneta/v5/compat.py",
+        """            if not fresh and snapshot is not None:
+                # Whether to migrate""",
+        """            if False:
+                # Whether to migrate""",
+        "tests/v5/test_compat.py::test_hard_kill_mid_migration_reopens_with_every_record[all-but-completion]",
+    ),
 ]
 failed_to_catch = []
 for name, path, old, new, test in MUTS:

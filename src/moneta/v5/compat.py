@@ -19,6 +19,14 @@ that file becomes a **derived v1-format export**:
   snapshot and WAL into the journal. Migration first copies the original
   snapshot byte-for-byte to ``snapshot.json.v1-original`` and never touches
   that copy or the WAL again.
+- Whether a store still needs migrating is decided from the journal, not
+  from whether the journal file exists: migration journals a
+  ``v1_migration_begin`` note right after genesis and a ``v1_migration``
+  completion note at the end. A journal that holds a begin (or any import)
+  without the completion note, or nothing but its genesis event beside a
+  v1 snapshot, is an interrupted migration: the next open sets that
+  journal aside as ``<journal>.failed-migration`` and migrates again from
+  the preserved original (Round 4 E1 condition 1).
 - ``durability.snapshot_ecs()``, ``run_sleep_pass()`` and ``close()`` write
   a fresh v1-format export (tmp -> fsync -> atomic replace, as v1 did) and
   record its hash in ``<journal>.v1export``. Any v1-format reader,
@@ -49,6 +57,7 @@ from uuid import UUID
 from .. import api as _v1api
 from ..api import MonetaConfig, MonetaResourceLockedError
 from ..types import EntityState, Memory
+from .journal import decode_frame
 from .model import RECALLABLE, DimensionMismatchError, Status, encode_vector
 from .policy import PolicyResolver
 from .substrate import (
@@ -64,6 +73,10 @@ _logger = logging.getLogger(__name__)
 
 JOURNAL_SUFFIX = ".v5.journal"
 EXPORT_SUFFIX = ".v1export"
+ORIGINAL_SUFFIX = ".v1-original"
+FAILED_MIGRATION_SUFFIX = ".failed-migration"
+MIGRATION_BEGIN = "v1_migration_begin"
+MIGRATION_DONE = "v1_migration"
 
 BEHAVIOR_CHANGES = {
     "deposit_durability": "deposit() is fsync'd to the journal before it returns; no sleep pass needed.",
@@ -77,6 +90,11 @@ BEHAVIOR_CHANGES = {
     "free_threading": "no GIL assumption; the PEP 703 sentinel does not apply.",
     "snapshot_is_derived": "snapshot.json is a v1-format export; corrupting or deleting it loses nothing.",
     "snapshot_divergence": "a snapshot.json written by another writer is refused, except an embedder-swap rewrite.",
+    "migration_crash_safe": (
+        "a v1 -> v5 migration interrupted at any point (even os._exit) is detected on the next "
+        "open from the journal's begin/completion notes; the half-built journal is set aside "
+        "as <journal>.failed-migration and the migration restarts from snapshot.json.v1-original."
+    ),
     "half_life_owned_by_journal": (
         "an existing store keeps the half-life it was created with; opening it with a different "
         "MonetaConfig.half_life_seconds raises HalfLifeMismatchError and writes nothing, unless "
@@ -95,6 +113,15 @@ class SnapshotDivergedError(RuntimeError):
     """``snapshot.json`` was written by something other than this v5 store."""
 
 
+class MigrationIncompleteError(RuntimeError):
+    """An interrupted v1 migration cannot be restarted automatically.
+
+    Raised only when the source the migration began from can no longer be
+    verified (``.v1-original`` missing or changed, or ``snapshot.json``
+    rewritten by a v1 writer in between). Nothing is moved or modified.
+    """
+
+
 def journal_path_for(config: MonetaConfig) -> Path | None:
     anchor = config.snapshot_path or config.wal_path
     if anchor is None:
@@ -105,6 +132,28 @@ def journal_path_for(config: MonetaConfig) -> Path | None:
 
 def _sidecar(journal: Path) -> Path:
     return journal.with_name(journal.name + EXPORT_SUFFIX)
+
+
+def _original(snapshot_path: Path) -> Path:
+    return snapshot_path.with_name(snapshot_path.name + ORIGINAL_SUFFIX)
+
+
+def _set_aside(journal: Path) -> Path:
+    """Rename a half-migrated journal (and its export sidecar) out of the way.
+
+    The first aside is ``<journal>.failed-migration``; later ones are
+    numbered so a second interrupted attempt never collides with the first.
+    """
+    aside = journal.with_name(journal.name + FAILED_MIGRATION_SUFFIX)
+    n = 1
+    while aside.exists():
+        aside = journal.with_name(f"{journal.name}{FAILED_MIGRATION_SUFFIX}-{n}")
+        n += 1
+    journal.rename(aside)
+    side = _sidecar(journal)
+    if side.exists():
+        side.rename(aside.with_name(aside.name + EXPORT_SUFFIX))
+    return aside
 
 
 def _atomic_write(path: Path, data: bytes) -> None:
@@ -202,6 +251,124 @@ def _journal_known_shas(substrate: Substrate) -> set[str]:
     return shas
 
 
+def _is_v1_snapshot(raw: bytes) -> bool:
+    """True for a v1-written snapshot (not one of v5's own v1-format exports)."""
+    try:
+        snap = json.loads(raw.decode("utf-8"))
+    except (ValueError, UnicodeDecodeError):
+        return False
+    return isinstance(snap, dict) and isinstance(snap.get("rows"), list) and "moneta_v5" not in snap
+
+
+def _migration_progress(journal: Path) -> dict[str, Any]:
+    """Read the journal's migration markers, stopping as soon as they are decided.
+
+    An ordinary store is decided at its first event after genesis, and a
+    migrated one at its completion note, so open never reads past the
+    migration prefix. Every line was validated by the substrate's open.
+    """
+    begin: dict[str, Any] | None = None
+    imports = 0
+    foreign: str | None = None
+    complete = False
+    with open(journal, "rb") as fp:
+        for raw in fp:
+            if not raw.endswith(b"\n"):
+                break
+            event = decode_frame(raw[:-1])
+            op, kind = event.get("op"), event.get("kind")
+            if op == "genesis":
+                continue
+            if op == "note" and kind == MIGRATION_DONE:
+                complete = True
+                break
+            if op == "note" and kind == MIGRATION_BEGIN:
+                begin = event
+                continue
+            if op == "import":
+                imports += 1
+                continue
+            if begin is None and imports == 0:
+                break  # an ordinary store: no migration ever began
+            if op in ("attend", "note"):
+                continue  # the WAL tail and provenance notes of the migration itself
+            foreign = op
+            break
+    return {"begin": begin, "imports": imports, "complete": complete, "foreign_op": foreign}
+
+
+def _unfinished_migration(substrate: Substrate, snapshot_path: Path) -> dict[str, Any] | None:
+    """Decide from the journal whether a v1 migration was interrupted.
+
+    Returns None for a completed migration or an ordinary store. Otherwise
+    returns ``{"reason", "source", "source_sha256", "rows_expected",
+    "imports_found"}`` naming the verified bytes to migrate again from.
+    Raises MigrationIncompleteError when that source cannot be verified.
+    """
+    journal = substrate.journal_path
+    if journal is None:
+        return None
+    original = _original(snapshot_path)
+    progress = _migration_progress(journal)
+    if progress["complete"]:
+        return None
+    if progress["begin"] is not None or progress["imports"]:
+        reason = "begun"
+    elif (
+        substrate.seq == 1
+        and snapshot_path.exists()
+        and _is_v1_snapshot(snapshot_path.read_bytes())
+    ):
+        # The process died after genesis and before the begin note.
+        reason = "never_began"
+    else:
+        return None
+
+    begin = progress["begin"] or {}
+    expected = begin.get("source_sha256")
+    rows_expected = begin.get("rows_expected")
+
+    def incomplete(why: str) -> MigrationIncompleteError:
+        total = "?" if rows_expected is None else rows_expected
+        return MigrationIncompleteError(
+            f"{journal} holds an interrupted v1 migration ({progress['imports']} of {total} "
+            f"rows imported) and it cannot be restarted automatically: {why}. Nothing was "
+            f"changed. Restore the original v1 snapshot to {original} (or to {snapshot_path} "
+            f"when there is no {original.name}), then reopen; the interrupted journal is set "
+            f"aside, not deleted."
+        )
+
+    if progress["foreign_op"] is not None:
+        raise incomplete(
+            f"a {progress['foreign_op']!r} event was written after the interrupted migration"
+        )
+    candidates = [original, snapshot_path] if original.exists() else [snapshot_path]
+    source = source_sha = None
+    for candidate in candidates:
+        if not candidate.exists():
+            continue
+        raw = candidate.read_bytes()
+        sha = hashlib.sha256(raw).hexdigest()
+        if sha == expected or (expected is None and _is_v1_snapshot(raw)):
+            source, source_sha = candidate, sha
+            break
+    if source is None:
+        raise incomplete("the snapshot it began from is missing or has changed")
+    if snapshot_path.exists() and source != snapshot_path:
+        current = snapshot_path.read_bytes()
+        if hashlib.sha256(current).hexdigest() != source_sha and _is_v1_snapshot(current):
+            # A v1 writer rewrote snapshot.json after the crash; restarting
+            # from the original would silently drop what it wrote.
+            raise incomplete(f"{snapshot_path} was rewritten by a v1 writer since")
+    return {
+        "reason": reason,
+        "source": source,
+        "source_sha256": source_sha,
+        "rows_expected": rows_expected,
+        "imports_found": progress["imports"],
+    }
+
+
 def _reconcile_snapshot(
     substrate: Substrate, snapshot_path: Path, configured_dim: int | None
 ) -> dict[str, Any] | None:
@@ -226,10 +393,18 @@ def _reconcile_snapshot(
         return None
 
     def diverged(why: str) -> SnapshotDivergedError:
+        original = _original(snapshot_path)
+        kept = (
+            f" The v1 snapshot this store was migrated from is preserved at {original}."
+            if original.exists()
+            else ""
+        )
         return SnapshotDivergedError(
             f"{snapshot_path} was written by another writer after v5 took over this store "
-            f"({why}). The journal {journal.name} is the source of truth. Move the snapshot "
-            f"aside to continue, or remove the journal to re-migrate from it."
+            f"({why}). The journal {journal.name} is the source of truth and holds every "
+            f"acknowledged write; do not delete it. To continue with the journal's state, "
+            f"rename the foreign snapshot aside (keep it: its differing rows are not imported) "
+            f"and reopen; the next export replaces it.{kept}"
         )
 
     try:
@@ -422,12 +597,12 @@ class Moneta:
         self.migration: dict[str, Any] | None = None
         self.revector: dict[str, Any] | None = None
         snapshot = None if config.snapshot_path is None else Path(config.snapshot_path)
-        try:
+        clock = clock or SystemClock()
+
+        def open_substrate(fresh: bool) -> Substrate:
             projector = self._make_projector(config)
-            path = journal_path_for(config)
-            fresh = path is None or not path.exists()
             try:
-                self.v5 = Substrate(
+                return Substrate(
                     Config(
                         path=path,
                         half_life_seconds=config.half_life_seconds,
@@ -436,7 +611,7 @@ class Moneta:
                         embedding_dim=config.embedding_dim if fresh else None,
                         protected_quota=config.quota_override,
                         fsync=fsync,
-                        clock=clock or SystemClock(),
+                        clock=clock,
                         policy=policy,
                         projector=projector,
                     ),
@@ -447,18 +622,50 @@ class Moneta:
             except BaseException:
                 projector.close()
                 raise
+
+        try:
+            path = journal_path_for(config)
+            fresh = path is None or not path.exists()
+            self.v5 = open_substrate(fresh)
+            restart: dict[str, Any] | None = None
+            if not fresh and snapshot is not None:
+                # Whether to migrate is decided from the journal's markers,
+                # not from whether the file exists (Round 4 E1 condition 1).
+                try:
+                    restart = _unfinished_migration(self.v5, snapshot)
+                except BaseException:
+                    self.v5.close()
+                    raise
+                if restart is not None:
+                    self.v5.close()
+                    restart["set_aside_at"] = str(_set_aside(path))
+                    _logger.warning(
+                        "moneta.v5 found an interrupted v1 migration in %s (%s, %d rows "
+                        "imported); restarting it from %s",
+                        path,
+                        restart["reason"],
+                        restart["imports_found"],
+                        restart["source"],
+                    )
+                    fresh = True
+                    self.v5 = open_substrate(fresh)
             try:
-                if fresh and snapshot is not None and snapshot.exists():
+                if fresh and snapshot is not None and (restart is not None or snapshot.exists()):
                     self.migration = migrate_v1(
                         self.v5,
                         snapshot,
                         None if config.wal_path is None else Path(config.wal_path),
+                        source=None if restart is None else restart["source"],
                     )
+                    if restart is not None:
+                        self.migration["restarted"] = {
+                            k: str(v) if isinstance(v, Path) else v for k, v in restart.items()
+                        }
             except BaseException:
                 self.v5.close()
                 if path is not None and path.exists():
                     # A half-migrated journal must not be mistaken for a migrated one.
-                    path.rename(path.with_name(path.name + ".failed-migration"))
+                    _set_aside(path)
                 raise
             try:
                 if not fresh and snapshot is not None:
@@ -561,7 +768,13 @@ _V1_STATUS = {
 }
 
 
-def migrate_v1(substrate: Substrate, snapshot_path: Path, wal_path: Path | None) -> dict[str, Any]:
+def migrate_v1(
+    substrate: Substrate,
+    snapshot_path: Path,
+    wal_path: Path | None,
+    *,
+    source: Path | None = None,
+) -> dict[str, Any]:
     """Import a v1 snapshot (+ WAL tail) into an empty v5 journal.
 
     Rows keep their entity ids, payloads, vectors, utility anchors,
@@ -570,20 +783,26 @@ def migrate_v1(substrate: Substrate, snapshot_path: Path, wal_path: Path | None)
     and recorded in a journaled ``note`` event; nothing is dropped silently.
     The original snapshot is preserved as ``<snapshot>.v1-original`` before
     anything else happens; v1 files are never modified.
+
+    Crash safety (Round 4 E1 condition 1): a ``v1_migration_begin`` note
+    (source sha256, expected row count) is journaled before the first row,
+    and the closing ``v1_migration`` note is the completion marker. A
+    journal with the first and not the second is an interrupted migration,
+    which the facade restarts from ``source`` (the preserved original).
     """
-    raw = snapshot_path.read_bytes()
-    original = snapshot_path.with_name(snapshot_path.name + ".v1-original")
+    raw = (source or snapshot_path).read_bytes()
+    original = _original(snapshot_path)
     if not original.exists():
         _atomic_write(original, raw)
     snapshot = json.loads(raw.decode("utf-8"))
     if not isinstance(snapshot, dict) or not isinstance(snapshot.get("rows"), list):
-        raise ValueError(f"{snapshot_path} is not a v1 snapshot")
+        raise ValueError(f"{source or snapshot_path} is not a v1 snapshot")
     snap_ts = float(snapshot.get("snapshot_created_at", 0.0))
     if not math.isfinite(snap_ts):
         snap_ts = 0.0
     sha = hashlib.sha256(raw).hexdigest()
     report: dict[str, Any] = {
-        "kind": "v1_migration",
+        "kind": MIGRATION_DONE,
         "snapshot": str(snapshot_path),
         "snapshot_sha256": sha,
         "original_preserved_at": str(original),
@@ -598,6 +817,16 @@ def migrate_v1(substrate: Substrate, snapshot_path: Path, wal_path: Path | None)
         "wal_invalid_weight": 0,
         "wal_before_snapshot": 0,
     }
+    # Not ``snapshot_sha256``: a begin note must never vouch for a snapshot.
+    substrate._append(
+        {
+            "op": "note",
+            "t": substrate._t(None),
+            "kind": MIGRATION_BEGIN,
+            "source_sha256": sha,
+            "rows_expected": len(snapshot["rows"]),
+        }
+    )
     dim = substrate.dim
     for row in snapshot["rows"]:
         vec = [float(x) for x in row["semantic_vector"]]
