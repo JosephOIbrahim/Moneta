@@ -1556,3 +1556,10 @@ v5 was merged beside v1 (`861bed9`) and Round 4 was ruled (`RULINGS.md:48-101`) 
 - **R2, R3, O4**: still `[A]`, as ruled (`RULINGS.md:97`).
 - **O28** (does `:82` bind the recall λ): not ruled by Round 4. Only the code fact that v5 range-checks its single λ was added.
 - **The patent posture**: no claim enumeration or claim-to-evidence mapping was added.
+
+---
+
+## After the Round 4 pass (`ba52ca7`)
+
+- Status column filled for all 23 condition IDs (§8 mile 0). Independent re-run at `ba52ca7`: 405 passed in each of Python 3.14 and hython 21.0.773 with `MONETA_NATIVE=0` and `=1`; hython without the wheel 347 passed, 35 skipped; `scripts/v5/mutation_check.py` on a `git archive HEAD` copy: `missed: []`.
+- Known nits, not fixed: `results/bench_v5_lockscope.jsonl` and `results/bench_v5_checkpoint.jsonl` record the parent commit in their "after" rows (measured on the uncommitted tree); pass-4 line citations into `lib.rs`, `api.py` and `CLAUDE.md` are disclosed as stale but not refreshed.
