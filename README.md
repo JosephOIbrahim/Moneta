@@ -60,11 +60,11 @@ with moneta.Moneta(moneta.MonetaConfig.ephemeral()) as m:
 
 **Test matrix, branch `harden/native-observability`** (v1 and v5 suites together, 2026-10-16, commit `98a998f084eb`, `src_digest` `f5c721630ac3`, wheel `.pyd` sha256 `ec6d7f0c35c5…`). Full identity and the verdict lines are in [Native qualification results](#native-qualification-results-on-this-branch).
 
-| Interpreter | `MONETA_NATIVE=0` | `MONETA_NATIVE=1` | `MONETA_NATIVE=require` |
-|---|---|---|---|
-| Python 3.14.2, wheel | 779 passed, 2 xfailed · `PYTHON-ONLY PASS` | 779 passed, 2 xfailed · `NATIVE QUALIFIED` | 779 passed, 2 xfailed · `NATIVE QUALIFIED` |
-| Python 3.14.2, **no wheel** | 708 passed, 71 skipped, 2 xfailed · `PYTHON-ONLY PASS` | (same as `=0`) | exit 4: refused, wheel not loaded |
-| hython 3.11 | PLANNED: awaiting owner coordination | PLANNED: awaiting owner coordination | PLANNED: awaiting owner coordination |
+| Interpreter | `MONETA_NATIVE` unset | `MONETA_NATIVE=0` | `MONETA_NATIVE=1` | `MONETA_NATIVE=require` |
+|---|---|---|---|---|
+| Python 3.14.2, wheel | not run | 779 passed, 2 xfailed · `PYTHON-ONLY PASS` | 779 passed, 2 xfailed · `NATIVE QUALIFIED` | 779 passed, 2 xfailed · `NATIVE QUALIFIED` |
+| Python 3.14.2, **no wheel** (absent or broken) | 708 passed, 71 skipped, 2 xfailed · `PYTHON-ONLY PASS` | not run | not run | exit 4: refused, wheel not loaded |
+| hython 3.11 | PLANNED: awaiting owner coordination | PLANNED: awaiting owner coordination | PLANNED: awaiting owner coordination | PLANNED: awaiting owner coordination |
 
 **The 2 xfailed are known unresolved defects B and D** (undrained attention lost across snapshot and restart), not passes. See [Known unresolved defects](#known-unresolved-defects-b-and-d).
 
