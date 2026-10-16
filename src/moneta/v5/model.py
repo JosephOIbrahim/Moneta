@@ -58,6 +58,11 @@ from uuid import UUID
 from ..decay import decay_value, lambda_from_half_life
 from ..types import EntityState, Memory
 
+try:  # Optional native decay seam; ``Record.utility_at`` is its oracle.
+    import moneta_native as _native
+except ImportError:  # pragma: no cover - exercised when the wheel is absent
+    _native = None
+
 
 class Status(StrEnum):
     """Record lifecycle. Residency, eligibility and deletion are separate axes.
@@ -180,6 +185,26 @@ class Record:
             state=_V1_STATE.get(self.status, EntityState.VOLATILE),
             usd_link=None,
         )
+
+
+def utilities_at(records: Sequence[Record], lam: float | None, t: float, native: bool) -> list[float]:
+    """Utility of each record at ``t``, in order: ``[r.utility_at(lam, t) ...]``.
+
+    With ``native`` (the caller's gate, see ``index.native_enabled``) the
+    column runs through ``moneta_native.decay_batch``, which is bit-identical
+    to :func:`moneta.decay.decay_value` (tests/unit/test_native_decay_parity.py,
+    tests/v5/test_native_decay_parity.py). Round 4 E2 before-5.0.0 condition 4.
+    An unset λ keeps the oracle, so its error is the oracle's.
+    """
+    if native and records and lam is not None and _native is not None:
+        return _native.decay_batch(
+            [r.anchor_u for r in records],
+            [r.anchor_t for r in records],
+            [r.protected_floor for r in records],
+            lam,
+            t,
+        )
+    return [r.utility_at(lam, t) for r in records]
 
 
 def _unit(vec: tuple[float, ...]) -> Sequence[float] | None:

@@ -138,7 +138,7 @@ Both suites must be green at every pass boundary from Pass 3 onward. The `-p no:
 Moneta runs without them. When the `moneta_native` wheel is installed, two seams switch on automatically, and each has an exact Python oracle. D1's latency gate did **not** fire: numpy (arm P) already clears 50 ms, but it isn't bit-exact. The seams are admitted under the seam rule (v5/v6 §10: Rust only behind a pure seam with an exact oracle, where it buys speed or a guarantee; owner confirmation pending as O27) (`results/bench_query_fair_matrix.jsonl`). The seams:
 
 - **Scan:** `VectorIndex(backend="auto")` stores vectors contiguously in Rust and scans them there. It must be bit-identical to `_oracle_scan`, ties included.
-- **Decay:** `ECS.decay_all` runs `decay_batch`, which must be bit-identical to `decay_value`.
+- **Decay:** `ECS.decay_all` runs `decay_batch`, which must be bit-identical to `decay_value`. In v5, recall and the sleep pass score their utility columns through `moneta.v5.model.utilities_at`, which uses the same kernel against the `Record.utility_at` oracle (`tests/v5/test_native_decay_parity.py`).
 
 `MONETA_NATIVE=0` forces the oracles. If a vector falls outside the native envelope (non-finite, non-numeric or empty), that index permanently demotes itself to the Python backend. If a finite but huge component (around 1e308) overflows to a NaN cosine, that query alone is answered by the oracle.
 

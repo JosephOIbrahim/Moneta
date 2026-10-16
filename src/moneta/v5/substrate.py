@@ -62,7 +62,7 @@ from ..consolidation import (
 from ..decay import DEFAULT_HALF_LIFE_SECONDS, DecayConfig
 from ..types import Memory
 from . import checkpoint as _checkpoint
-from .index import ExactIndex
+from .index import ExactIndex, native_enabled
 from .journal import FORMAT, FileJournal, MemoryJournal, scan
 from .model import (
     RECALLABLE,
@@ -72,6 +72,7 @@ from .model import (
     Status,
     decode_vector,
     encode_vector,
+    utilities_at,
     validate_vector,
 )
 from .policy import PlainPolicyResolver, PolicyResolver, ResolvedPolicy
@@ -386,6 +387,9 @@ class Substrate:
         self._clock = config.clock
         self._policy: PolicyResolver = config.policy or PlainPolicyResolver()
         self._projector: Projector | None = config.projector
+        # Native decay seam (Round 4 E2 condition 4): read once per open, like
+        # the index's dot seam, so MONETA_NATIVE flips apply on reopen.
+        self._native_decay = native_enabled()
 
         if config.path is not None:
             journal_path = Path(config.path).resolve()
@@ -475,6 +479,11 @@ class Substrate:
     @property
     def closed(self) -> bool:
         return self._closed
+
+    @property
+    def native_decay(self) -> bool:
+        """Whether recall and the sleep pass decay through ``moneta_native.decay_batch``."""
+        return self._native_decay
 
     @property
     def lam(self) -> float:
@@ -758,9 +767,9 @@ class Substrate:
                 return RecallResult((), generation, policy)
             _, _, eligible = self._classify(policy, allowed)
             cosines = self._index.cosines(query_vec, [r.entity_id for r in eligible])
+            utilities = utilities_at(eligible, self.lam, when, self._native_decay)
             scored = []
-            for (_eid, cos), rec in zip(cosines, eligible, strict=False):
-                u = rec.utility_at(self.lam, when)
+            for (_eid, cos), rec, u in zip(cosines, eligible, utilities, strict=False):
                 scored.append((max(cos, 0.0) * u, rec.seq, cos, rec))
             # The key is unique (seq), so the k smallest equal the sorted prefix.
             top = heapq.nsmallest(limit, scored, key=lambda s: (-s[0], s[1]))
@@ -873,10 +882,10 @@ class Substrate:
             attention_updated = len(self._fold.attended_since_pass)
             prune: list[UUID] = []
             stage: list[UUID] = []
-            for rec in sorted(self._fold.live.values(), key=lambda r: r.seq):
-                if rec.status != Status.LIVE:
-                    continue
-                u = rec.utility_at(self.lam, when)
+            live = sorted(
+                (r for r in self._fold.live.values() if r.status == Status.LIVE), key=lambda r: r.seq
+            )
+            for rec, u in zip(live, utilities_at(live, self.lam, when, self._native_decay), strict=True):
                 if u < PRUNE_UTILITY_THRESHOLD and rec.attended < PRUNE_ATTENDED_THRESHOLD:
                     prune.append(rec.entity_id)
                 elif u < STAGE_UTILITY_THRESHOLD and rec.attended >= STAGE_ATTENDED_THRESHOLD:

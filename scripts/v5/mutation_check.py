@@ -55,10 +55,8 @@ MUTS = [
     (
         "M2b recall bumps attended",
         "src/moneta/v5/substrate.py",
-        """                u = rec.utility_at(self.lam, when)
-                scored.append""",
-        """                u = rec.utility_at(self.lam, when); rec.attended += 0 if u is None else 1
-                scored.append""",
+        """                scored.append((max(cos, 0.0) * u, rec.seq, cos, rec))""",
+        """                rec.attended += 0 if u is None else 1; scored.append((max(cos, 0.0) * u, rec.seq, cos, rec))""",
         "tests/v5/test_review_regressions.py::test_reads_leave_all_record_state_untouched",
     ),
     (

@@ -1,4 +1,4 @@
-"""v5 recall latency and RSS, oracle vs native dot seam, on one journal.
+"""v5 recall latency and RSS, oracle vs native seams (dot + decay), on one journal.
 
 Builds one v5 journal (n records x dim), then reopens it with
 MONETA_NATIVE=0 and =1 in turn and times ``recall(q, 10)``. Reports p50 and
@@ -64,11 +64,13 @@ def main() -> None:
                 m.recall(q, 10)
                 lat.append((time.perf_counter() - t1) * 1000.0)
             native = m._index.native
+            decay = getattr(m, "native_decay", False)  # absent before Round 4 E2 condition 4
         lat.sort()
         print(json.dumps({
             "n": args.n, "dim": args.dim, "queries": args.queries,
             "python": sys.version.split()[0],
             "index": "native" if native else "python",
+            "decay": "native" if decay else "python",
             "p50_ms": round(statistics.median(lat), 3),
             "p95_ms": round(lat[int(0.95 * (len(lat) - 1))], 3),
             "open_s": round(open_s, 3),
