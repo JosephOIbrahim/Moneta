@@ -58,13 +58,17 @@ with moneta.Moneta(moneta.MonetaConfig.ephemeral()) as m:
 
 **Current version:** `v1.3.0-rc1` (prerelease, from branch `v7-native-seams`). `main` is at `v1.2.0-rc3` plus one docs commit.
 
-**Test matrix** (v1 and v5 suites together, 2026-10-15):
+**Test matrix, branch `harden/native-observability`** (v1 and v5 suites together, 2026-10-16, commit `98a998f084eb`, `src_digest` `f5c721630ac3`, wheel `.pyd` sha256 `ec6d7f0c35c5…`). Full identity and the verdict lines are in [Native qualification results](#native-qualification-results-on-this-branch).
 
-| Interpreter | `MONETA_NATIVE=0` | `MONETA_NATIVE=1` |
-|---|---|---|
-| Python 3.14 | 405 passed | 405 passed |
-| hython 3.11 (OpenUSD 0.25.5) | 405 passed | 405 passed |
-| hython 3.11, **no wheel** | 347 passed, 35 native-only skipped | (same: no wheel means no native path) |
+| Interpreter | `MONETA_NATIVE=0` | `MONETA_NATIVE=1` | `MONETA_NATIVE=require` |
+|---|---|---|---|
+| Python 3.14.2, wheel | 779 passed, 2 xfailed · `PYTHON-ONLY PASS` | 779 passed, 2 xfailed · `NATIVE QUALIFIED` | 779 passed, 2 xfailed · `NATIVE QUALIFIED` |
+| Python 3.14.2, **no wheel** | 708 passed, 71 skipped, 2 xfailed · `PYTHON-ONLY PASS` | (same as `=0`) | exit 4: refused, wheel not loaded |
+| hython 3.11 | PLANNED: awaiting owner coordination | PLANNED: awaiting owner coordination | PLANNED: awaiting owner coordination |
+
+**The 2 xfailed are known unresolved defects B and D** (undrained attention lost across snapshot and restart), not passes. See [Known unresolved defects](#known-unresolved-defects-b-and-d).
+
+*Before this hardening, `v1.3.0-rc1` recorded 405 passed in four configurations and 347 + 35 skipped without the wheel (2026-10-15). Those counts predate the qualification harness and the new tests, and could not tell whether Rust ran.*
 
 **v5 mutation check:** `scripts/v5/mutation_check.py` reports `missed: []` (every planted mutation is caught).
 
@@ -105,7 +109,7 @@ pytest
 - **Is `pxr` importable?** USD tests use `pytest.importorskip("pxr")`, so they skip under plain Python and run under hython (OpenUSD 0.25.5).
 - **Is the `moneta_native` wheel installed?** Native-only tests skip without it.
 
-With both present, the full suite is **405 passed**. See the [test matrix](#status) for each configuration.
+With the wheel and `pxr` present on Python 3.14, the full suite is **779 passed, 2 xfailed** (the 2 xfails are known defects B and D). The last lines of the summary print a native verdict. See the [test matrix](#status) for each configuration.
 
 ### Stuck?
 
@@ -115,7 +119,7 @@ With both present, the full suite is **405 passed**. See the [test matrix](#stat
 | `No module named 'moneta'` | Run `pip install -e .[dev]` from the Moneta directory |
 | `pytest: command not found` | Run `python -m pytest` |
 | `TypeError: Moneta() missing 1 required ... 'config'` | That's by design (§5.3 of the design brief — no implicit defaults). Pass `MonetaConfig.ephemeral()` for tests. |
-| `ModuleNotFoundError: moneta_native` | Fine. Moneta runs the pure-Python path. Build the wheel (see [native seams](#optional-native-seams-rust)) only if you want the speed. |
+| `ModuleNotFoundError: moneta_native` | Fine in the default auto mode: Moneta runs the pure-Python path. Build the wheel (see [native seams](#optional-native-seams-rust)) only if you want the speed. Under `require`, a missing wheel raises `NativeUnavailableError` instead. |
 | `No module named 'moneta.v5'` in subprocess tests | A stale `site-packages/moneta` is shadowing the repo. Run from the repo root with `PYTHONPATH=src`. |
 
 ---
@@ -522,7 +526,7 @@ Tuning guide: [docs/decay-tuning.md](docs/decay-tuning.md)
 
 ## Optional native seams (Rust)
 
-`rust/moneta_native` is an optional PyO3 wheel (abi3, so one build serves CPython 3.11 and later). It runs the hottest loops in Rust. **Each seam has an exact Python oracle**, and the conformance suites require bit-identical results, ties included. It is a drop-in: without it, or with `MONETA_NATIVE=0`, Moneta runs pure Python as before.
+`rust/moneta_native` is an optional PyO3 wheel (abi3, so one build serves CPython 3.11 and later). It runs the hottest loops in Rust. **Each seam has an exact Python oracle**, and the conformance suites require bit-identical results, ties included. It is a drop-in: without it, or with `MONETA_NATIVE` set to an off value (`0`, `false`, `off`, `no`), Moneta runs pure Python as before. **Installed is not the same as running:** each handle reports what actually ran in `Moneta.native_status`, and the test suite ends with a native verdict line.
 
 ### The seam rule (O27, owner-confirmed 2026-10-15)
 
@@ -545,20 +549,106 @@ Tuning guide: [docs/decay-tuning.md](docs/decay-tuning.md)
 
 **How bit-exact works:** the Rust sum reproduces CPython's own `sum()`. That is sequential left-to-right on Python 3.11, and Neumaier-compensated on Python 3.12 and later. So native results match the Python path on whichever interpreter is running.
 
-**Edge cases:**
+**Edge cases (auto mode, the default):**
 
-- A non-finite, non-numeric or empty vector permanently demotes that index to the Python backend. Answers stay exact; that index is now on the slow path. A log line says `vector_index demoted to python backend`.
-- A finite but huge component (around `1e308`) can overflow to a NaN cosine. That one query is answered by the oracle.
+- A non-finite, non-numeric or empty vector permanently demotes that index to the Python backend. Answers stay exact; that index is now on the slow path. One WARNING is logged per handle and reason, and `native_status.scan` shows `demoted=True` with a `demoted:<reason>` fallback count.
+- A finite but huge component (around `1e308`) can overflow to a NaN cosine. That one query is answered by the oracle and counted as `cosine_overflow`.
+- If native decay fails with a known native error, the oracle runs on the unchanged columns, decay is demoted for that handle, and the failure is counted as `decay_error:<ExcType>`.
 
-### The switch
+Under `require`, demotion is forbidden; see [What `require` means](#what-require-means).
 
-| Setting | What runs |
+### The switch: `MONETA_NATIVE` and `MonetaConfig.native`
+
+**The environment variable** is stripped and lower-cased, then read as one of five classes:
+
+| Class | Values | Asks for |
+|---|---|---|
+| **UNSET** | variable not set | auto (the default) |
+| **AUTO** | `""`, `1`, `true`, `on`, `yes`, `auto` | auto: native when the wheel loads, otherwise Python |
+| **OFF** | `0`, `false`, `off`, `no` | off: Python only; the handle never imports `moneta_native` |
+| **REQUIRE** | `require` | require: native, or a loud error |
+| **UNKNOWN** | anything else | auto, plus one `RuntimeWarning` per process; the raw value is shown in status |
+
+> **Behaviour change.** `false`, `off` and `no` used to turn native **on** (only the exact string `0` meant off). They now mean **off**. `1` still means auto.
+
+**The config field** is `MonetaConfig.native: None | "auto" | "off" | "require"` (default `None`). Any other value raises `ValueError` when the config is built. It is the only new config field; the four operations, the `Moneta(config)` signature and the snapshot and WAL formats are unchanged.
+
+**The handle's mode** is resolved once in `Moneta.__init__`, before the store lock is taken. Rows are the config value, columns the env class. The word in parentheses is the recorded `requested_source`.
+
+| config ↓ / env → | UNSET | AUTO | OFF | REQUIRE | UNKNOWN |
+|---|---|---|---|---|---|
+| `None` | auto (default) | auto (env) | off (env) | require (env) | auto (env, warns) |
+| `"auto"` | auto (config) | auto (config) | **off (env kill switch)** | **require (env tightens)** | auto (config, warns) |
+| `"off"` | off (config) | off (config) | off (config) | **`NativeConfigError`** | off (config, warns) |
+| `"require"` | require (config) | require (config) | **`NativeConfigError`** | require (config) | require (config, warns) |
+
+- **The two conflict cells are errors, never a silent fallback.** `NativeConfigError` (a `ValueError`) names both the env raw value and the config value.
+- **require with the wheel not loaded** (absent, broken or incompatible) raises `NativeUnavailableError` (a `RuntimeError`), naming the wheel state and reason. The lock is never left held.
+- **auto with the wheel not loaded** runs both seams in Python and records why.
+- The handle passes its mode to `VectorIndex`, `ECS` and hydrate, so a fresh handle and a reopened handle select identically.
+
+**Component arguments** used outside a handle are recorded with source `explicit` and ignore the env: `ECS(native=True)` and `VectorIndex(backend="native")` mean require; `ECS(native=False)` and `backend="python"` mean off; `ECS(native=None)` and `backend="auto"` follow the env with the same normalization.
+
+**v5 differs.** `moneta.v5` has not been changed and still treats only `MONETA_NATIVE=0` as off (`src/moneta/v5/index.py`). So `MONETA_NATIVE=false` turns the v1 seams off and leaves the v5 seams on. On a v5 `Substrate`, `m.native_decay` and `m._index.native` show which v5 seams are on.
+
+### What `require` means
+
+**Require is not "every operation ran in Rust".** It means, per seam:
+
+**Decay seam**
+- Every `ECS.decay_all` call executes `moneta_native.decay_batch`. There is no permitted fallback.
+- A native failure raises `NativeSeamError` (a `RuntimeError`) from the original exception, with the columns unchanged.
+- In a sleep pass, that leaves attention applied exactly once: no snapshot is written, the WAL keeps the signal, and a reopen replays it once.
+
+**Scan seam**
+- The index stays native for its whole life. Demotion is forbidden.
+- `deposit` checks the vector against the native envelope (finite, numeric, non-empty, correct dim) **before any mutation**. Outside it, `NativeSeamError` is raised: no ECS row, no index row, no WAL line, no attention change.
+- Hydrate that meets a stored vector outside the envelope raises `NativeSeamError` during construction. The store lock is released, and no snapshot or WAL file is modified.
+- **Two per-query oracle answers are permitted,** because the answer is exact and the trigger is the query input, not store state: `query_nonfinite` (the query has a non-finite component) and `cosine_overflow` (finite but huge components overflow to a NaN cosine). Each is counted per reason, and `scan.all_native` becomes False.
+- Dim-mismatch and zero-norm queries are not fallbacks. They return `[]` on both backends, and the native path still runs Rust.
+
+### Is native actually running? `native_status` and `build_info`
+
+**`Moneta.native_status`** is a read-only handle property (not an agent operation). Each access returns a new frozen `NativeStatus`:
+
+| Field | Meaning |
 |---|---|
-| Wheel installed, `MONETA_NATIVE` unset or any value other than `0` (CPython only for v5) | Rust seams |
-| Wheel installed, `MONETA_NATIVE=0` | Python oracles (same answers, slower) |
-| Wheel not installed | Python oracles |
+| `scan`, `decay` | One `SeamStatus` each (below). |
+| `wheel` | A frozen `NativeWheel`: `state` (`loaded`, `absent`, `broken`, `incompatible`, `not_probed`), `reason`, `version`, `api` (`NATIVE_API`, or `None` for the legacy 0.1.0 wheel), `path` (the `.pyd`), `sha256` (of the `.pyd`), `record_match` (sha256 vs the adjacent dist-info `RECORD`: `True`, `False` or `None`), `direct_url`. An off handle never probes, so its `wheel.state` can be `not_probed`. |
+| `source` | `moneta.build_info()` (below). |
+| `require_satisfied` | `None` unless the mode is require. Then True only if both seams are active native, neither is demoted, and decay has no fallbacks. Scan per-query fallbacks are allowed, and listed. |
 
-Which seams are on: `VectorIndex` and `ECS` in v1; `m.native_decay` on a v5 `Substrate` (see [`docs/OPERATOR_CARD_native.md`](docs/OPERATOR_CARD_native.md) for the index backend).
+| `SeamStatus` field | Meaning |
+|---|---|
+| `seam` | `"scan"` or `"decay"` |
+| `requested` | `auto`, `off` or `require` |
+| `requested_source` | `config`, `env`, `default` or `explicit` |
+| `env_raw` | the raw `MONETA_NATIVE` value, or `None` |
+| `active` | `native` or `python` |
+| `reason` | why Python is active (for example `off`, `moneta_native absent: …`, `demoted:nonfinite_upsert`), else `None` |
+| `demoted` | True once the component left native for good |
+| `native_calls` | **Rust invocations, not queries.** Each `ScanIndex.scan` return counts 1 (including each window inside one `iter_query`); each `decay_batch` return counts 1. |
+| `fallbacks` | `{reason: count}` of oracle executions by a component that was native at call time. Reasons: `query_nonfinite`, `cosine_overflow`, `decay_error:<ExcType>`, `demoted:<reason>`. |
+| `all_native` | `active == "native"`, no fallbacks, not demoted |
+
+The same counts are also kept process-wide in `moneta._native`, which the test harness reads. `Moneta.__init__` logs one INFO line with both seams' `active` and `reason`, `wheel.sha256[:12]`, `wheel.state`, `source.commit[:12]` and `source.src_digest[:12]`.
+
+**`moneta.build_info()`** returns a frozen `BuildInfo`, stdlib only, no subprocess, cached per process:
+
+| Field | Meaning |
+|---|---|
+| `path` | the `moneta` package directory actually imported |
+| `mode` | `git-src`, `editable`, `vcs`, `wheel` or `unknown` |
+| `commit`, `ref` | from `.git/HEAD`, then the loose ref, then `packed-refs` (a `gitdir:` file is followed) |
+| `dirty` | always `"unknown"` |
+| `version` | `pyproject.toml` in git-src mode; otherwise the installed distribution's, only if its location is `path` |
+| `version_mismatch` | True when an installed `moneta` distribution is somewhere else or reports another version |
+| `src_digest` | sha256 over the sorted relative POSIX paths of `src/moneta/**/*.py` (no `__pycache__`), each hashed as `path + b"\0" + content` with CRLF normalized to LF. The same commit gives the same digest on any checkout. |
+| `python` | implementation and version |
+
+**Verify what a process runs by `commit` + `src_digest` + the `.pyd` sha256. Never by version:** the version reads `1.3.0rc1` on both rc1 and this branch, and a stale installed dist-info can report a version that is not what runs. For this branch's measured runs, `src_digest` is `f5c721630ac32b9ffcf4bb81b63ce6151040b134dec645cc16236061f0e26de9` and the 0.1.0 abi3 wheel's `.pyd` sha256 is `ec6d7f0c35c5b345f983f4aa80cfea086f3aca454e9cd74a58b6208227b02833`. Docs-only commits leave `src_digest` unchanged.
+
+**Errors exported from `moneta`:** `NativeConfigError(ValueError)`, `NativeUnavailableError(RuntimeError)`, `NativeSeamError(RuntimeError)`. Also exported: `build_info`, `BuildInfo`, `NativeStatus`, `SeamStatus`, `NativeWheel`. Nothing was removed.
 
 ### Measured numbers
 
@@ -601,24 +691,30 @@ The table below is 10k × 384, with N=200 queries and two runs per arm. The rang
 
 ```mermaid
 flowchart TD
-    call["Hot loop called<br/>scan · dot · decay"] --> wheel{"moneta_native<br/>importable?"}
-    wheel -->|"no"| oracle["Python oracle<br/>_oracle_scan · ExactIndex.cosines<br/>decay_value · Record.utility_at"]
-    wheel -->|"yes"| flag{"MONETA_NATIVE = 0?"}
-    flag -->|"yes"| oracle
-    flag -->|"no"| envelope{"vector index: inside the<br/>native envelope?<br/>finite · numeric · non-empty"}
-    envelope -->|"no: demote that index"| oracle
-    envelope -->|"yes"| rust["Rust seam<br/>ScanIndex.scan · ScanIndex.dots<br/>decay_batch"]
+    init["Moneta config<br/>config.native + MONETA_NATIVE"] --> mode{"handle mode<br/>truth table"}
+    mode -->|"conflict"| cfgerr["NativeConfigError"]
+    mode -->|"off"| oracle["Python oracle<br/>_oracle_scan · decay_value<br/>wheel never imported"]
+    mode -->|"auto or require"| wheel{"moneta_native<br/>loaded?"}
+    wheel -->|"no, auto"| oracle
+    wheel -->|"no, require"| unavail["NativeUnavailableError"]
+    wheel -->|"yes"| envelope{"vector inside the<br/>native envelope?<br/>finite · numeric · non-empty · dim"}
+    envelope -->|"no, auto: demote that index"| oracle
+    envelope -->|"no, require"| seamerr["NativeSeamError<br/>nothing mutated"]
+    envelope -->|"yes"| rust["Rust seam<br/>ScanIndex.scan · decay_batch"]
     rust --> result["Same bits as the oracle<br/>ties included"]
-    rust -->|"cosine overflows to NaN"| oracle_q["oracle answers<br/>that query only"]
+    rust -->|"query non-finite or cosine overflow"| oracle_q["oracle answers<br/>that query only, counted"]
     oracle_q --> result
     oracle --> result
-    suite["Parity suites<br/>test_native_scan_conformance<br/>test_native_decay_parity · test_rank_early_stop<br/>v5 test_native_index_parity · test_native_decay_parity"] -.->|"checks both paths agree"| result
+    status["native_status<br/>active · reason · native_calls · fallbacks"] -.->|"reports"| result
+    suite["Parity suites + qualification<br/>test_native_scan_conformance · test_native_decay_parity<br/>test_rank_early_stop · test_native_executes"] -.->|"checks both paths agree"| result
 
     classDef green fill:#6E8B6E,color:#fff,stroke:#6E8B6E
     classDef blue fill:#7E94B0,color:#fff,stroke:#7E94B0
+    classDef red fill:#A86A5E,color:#fff,stroke:#A86A5E
 
     class rust,oracle,oracle_q,result green
-    class call,wheel,flag,envelope,suite blue
+    class init,mode,wheel,envelope,suite,status blue
+    class cfgerr,unavail,seamerr red
 ```
 
 ### Build, test, measure
@@ -632,20 +728,67 @@ maturin build --release -o dist
 pip install --force-reinstall dist/moneta_native-*.whl   # filename varies by platform
 ```
 
-**2. Run the suite both ways** (from the repo root):
+**2. Run the suite in each mode** (from the repo root; keep `src` first on `PYTHONPATH`, or subprocess tests can import a stale installed `moneta`):
 
 ```bash
-MONETA_NATIVE=0 PYTHONPATH=src python -m pytest tests -q
-MONETA_NATIVE=1 PYTHONPATH=src python -m pytest tests -q
+MONETA_NATIVE=1       PYTHONPATH=src python -m pytest tests -q -rsx
+MONETA_NATIVE=require PYTHONPATH=src python -m pytest tests -q -rsx
+MONETA_NATIVE=0       PYTHONPATH=src python -m pytest tests -q -rsx
 ```
 
-**3. For a pxr interpreter such as hython:** do not install the wheel into the application. Unzip the abi3 wheel into a folder and add it to `PYTHONPATH`. Run once with `MONETA_NATIVE=0` and once with `=1`:
+Add `MONETA_QUAL_REPORT=<file>.json` to save the verdict, counts and identity as JSON.
+
+**3. For a pxr interpreter such as hython:** do not install the wheel into the application. Unzip the abi3 wheel into a folder and add it to `PYTHONPATH`:
 
 ```bash
 PYTHONPATH="src;<unzipped-wheel-dir>" "<hython3.11.exe>" -m pytest tests -q -p no:faulthandler -p no:cacheprovider
 ```
 
-**You're good when** every configuration shows `405 passed`.
+The hython rows for this branch are **PLANNED: awaiting owner coordination**. They have not been run.
+
+**You're good when** the verdict line reads `NATIVE QUALIFIED` with the wheel under `=1` and `=require`, and `PYTHON-ONLY PASS` under `=0` and without the wheel.
+
+### Reading the verdict line
+
+The last block of the pytest summary is the native qualification report. Its header records the mode and env raw value; the wheel's state, version, api, path, sha256[:12] and `record_match`; `build_info`'s commit[:12], src_digest[:12] and path; the interpreter; and the `pxr` version or "absent". It also counts `native`-marked tests (collected, run, passed, skipped) and `native_fallback` tests. Then one verdict:
+
+| Verdict | Means |
+|---|---|
+| `NATIVE QUALIFIED` | All hold: the wheel is loaded with `record_match` True; the mode is auto or require; 0 `native` tests skipped; the collected `native` count meets the expected total; every qualification test passed; real Rust calls for both seams are above 0; 0 unexpected fallbacks; the suite is green. |
+| `NATIVE NOT QUALIFIED: <reasons>` | The wheel is loaded, but one of the above failed. The reasons name which. |
+| `PYTHON-ONLY PASS (not native qualified)` | The suite is green, but the wheel is not loaded or the mode is off. |
+| `PYTHON-ONLY FAIL (not native qualified): …` | The suite is red and native was not in play. |
+
+- **`MONETA_NATIVE=require` without a loaded wheel** stops pytest at configure time with a usage error (exit code 4).
+- **Native-only tests skip visibly** with the reason `moneta_native <state>: <reason>`. None vanish at collection.
+- **The fallback guard:** a test that makes a native component fall back without the `native_fallback` marker fails with `unexpected native fallback: <reasons>`. The fallback counts printed in the report come from the `native_fallback` tests, which trigger them on purpose.
+- **Under `MONETA_NATIVE=0` the report still shows real Rust calls.** They come from `native`-marked tests that request the backend explicitly (`backend="native"`, `ECS(native=True)`), which ignore the env. The verdict is still `PYTHON-ONLY PASS`, because the run mode is off.
+
+### Native qualification results on this branch
+
+All on branch `harden/native-observability`, Python 3.14.2 on Windows, `pxr` 0.26.5, run on 2026-10-16 at commit `98a998f084ebd5611d6d5daf673557d9ba017a89` (`src_digest` `f5c721630ac32b9ffcf4bb81b63ce6151040b134dec645cc16236061f0e26de9`, `build_info.mode` `git-src`). Wheel rows use the unzipped 0.1.0 abi3 wheel, `.pyd` sha256 `ec6d7f0c35c5b345f983f4aa80cfea086f3aca454e9cd74a58b6208227b02833`, `record_match=True`, `api=None` (legacy 0.1.0).
+
+| Run | Pytest | Native tests | Real Rust calls | Verdict |
+|---|---|---|---|---|
+| wheel, `MONETA_NATIVE=1` | 779 passed, 2 xfailed | 71/71 passed, 0 skipped; qualification 2/2 | scan 594, decay 512 | `NATIVE QUALIFIED` |
+| wheel, `MONETA_NATIVE=require` | 779 passed, 2 xfailed | 71/71 passed, 0 skipped; qualification 2/2 | scan 594, decay 512 | `NATIVE QUALIFIED` |
+| wheel, `MONETA_NATIVE=0` | 779 passed, 2 xfailed | 71/71 passed (explicit backends) | scan 235, decay 35 | `PYTHON-ONLY PASS (not native qualified)` |
+| no wheel (`ModuleNotFoundError`), env unset | 708 passed, 71 skipped, 2 xfailed | 0 run, 71 skipped visibly | 0, 0 | `PYTHON-ONLY PASS (not native qualified)` |
+| broken wheel (`ImportError: DLL load failed`), env unset | 708 passed, 71 skipped, 2 xfailed | 0 run, 71 skipped visibly | 0, 0 | `PYTHON-ONLY PASS (not native qualified)` |
+| no wheel, `MONETA_NATIVE=require` | exit 4, `MONETA_NATIVE='require' requires the native wheel` | — | — | (refused) |
+| hython 3.11, every row above | **PLANNED: awaiting owner coordination** | — | — | not run |
+
+The absent and broken rows were produced with test shims on `PYTHONPATH` that make `import moneta_native` raise those errors. The 0 unexpected-fallback count holds in every row.
+
+### Known unresolved defects: B and D
+
+**Undrained attention is currently lost across a bare snapshot and restart. This is not fixed.**
+
+- **Path B:** `signal_attention`, then a bare save with `m.durability.snapshot_ecs(m.ecs)` (the shape of SYNAPSE's save), then a restart. The signal is gone: the snapshot holds only ECS rows, and the save deletes the WAL.
+- **Path D:** a signal that arrives after a sleep pass has drained the attention log, but before that pass writes its snapshot, is lost the same way.
+- Both are pinned as `xfail(strict=True)` in `tests/integration/test_attention_snapshot_regression.py`. Every run prints a "Known unresolved defects" block listing them. Tests A, A2, C and E in the same file pass.
+- They are independent of the native seams: neither seam touches the WAL or the snapshot.
+- The repair design (R1′) is in `docs/design/R1-attention-durability.md`. It is not implemented on this branch.
 
 **4. Measure:**
 

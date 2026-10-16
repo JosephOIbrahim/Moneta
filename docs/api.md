@@ -20,6 +20,15 @@ from moneta import (
     EntityState,
     MonetaResourceLockedError,
     ProtectedQuotaExceededError,
+    # Native seams (optional moneta_native wheel)
+    NativeConfigError,
+    NativeUnavailableError,
+    NativeSeamError,
+    NativeStatus,
+    SeamStatus,
+    NativeWheel,
+    build_info,
+    BuildInfo,
 )
 ```
 
@@ -81,6 +90,13 @@ holds `config.quota_override` protected memories (default 100), `deposit`
 raises `ProtectedQuotaExceededError`. The quota is per-handle in v1.1.0+
 (it was a module-level constant in the singleton era).
 
+Under native mode `require` (see [Native seams](#native-seams-config-and-status)),
+`deposit` first checks `embedding` against the native envelope: finite,
+numeric, non-empty, and the index's dimension. Outside it, `deposit`
+raises `NativeSeamError` before any mutation: no ECS row, no index row,
+no WAL line, no attention change. In auto and off modes the check is a
+no-op, and the signature and return type are unchanged in every mode.
+
 ### `query(embedding, limit=5) -> List[Memory]`
 
 Retrieve the top-k memories most relevant to `embedding`. The retrieval
@@ -103,7 +119,8 @@ path, which stays the oracle. Measured on the owner's workstation at
 - Pure Python: p95 227–313 ms, about 185 MB resident.
 - Native: p95 3.1–6.7 ms, about 69 MB resident.
 
-`MONETA_NATIVE=0` forces the pure-Python path.
+`MONETA_NATIVE=0` (or `false`, `off`, `no`) forces the pure-Python path.
+See [Native seams](#native-seams-config-and-status) for the full switch.
 
 ```python
 results = m.query(embedding=[0.12, -0.45, 0.78, ...], limit=5)
@@ -158,6 +175,114 @@ print(f"pruned={result.pruned} staged={result.staged}")
 
 `run_sleep_pass()` is the harness's lever — it is not one of the four
 agent operations and is not part of the locked agent surface.
+
+## Native seams: config and status
+
+The optional `moneta_native` wheel runs the scan (`query` step 2) and the
+decay pass in Rust, bit-identical to the Python oracles. Nothing here is
+an agent operation; the four-op API is unchanged.
+
+### `MonetaConfig.native`
+
+`native: Optional[Literal["auto", "off", "require"]] = None`. Any other
+value raises `ValueError` when the config is built. The handle combines it
+with `MONETA_NATIVE` once, in `Moneta.__init__`, before the store lock is
+taken.
+
+`MONETA_NATIVE` is stripped and lower-cased, then classed:
+
+| Class | Values |
+|---|---|
+| UNSET | variable not set |
+| AUTO | `""`, `1`, `true`, `on`, `yes`, `auto` |
+| OFF | `0`, `false`, `off`, `no` |
+| REQUIRE | `require` |
+| UNKNOWN | anything else (one `RuntimeWarning` per process; treated like AUTO) |
+
+> **Behaviour change:** `false`, `off` and `no` used to mean native ON.
+> They now mean OFF. `1` still means auto.
+
+| config ↓ / env → | UNSET | AUTO | OFF | REQUIRE | UNKNOWN |
+|---|---|---|---|---|---|
+| `None` | auto (default) | auto (env) | off (env) | require (env) | auto (env, warns) |
+| `"auto"` | auto (config) | auto (config) | **off (env kill switch)** | **require (env tightens)** | auto (config, warns) |
+| `"off"` | off (config) | off (config) | off (config) | **`NativeConfigError`** | off (config, warns) |
+| `"require"` | require (config) | require (config) | **`NativeConfigError`** | require (config) | require (config, warns) |
+
+The word in parentheses is the recorded `requested_source`.
+
+- **auto:** native when the wheel loads, otherwise Python, with the reason recorded.
+- **off:** Python. The handle never imports `moneta_native`.
+- **require:** native or an error. A wheel that is absent, broken or
+  incompatible raises `NativeUnavailableError`. Under require, demotion is
+  forbidden: an out-of-envelope `deposit`, an out-of-envelope stored vector
+  at hydrate, and a native decay failure each raise `NativeSeamError`.
+  Two per-query oracle answers are permitted and counted, because the
+  answer is exact and the trigger is the query: `query_nonfinite` and
+  `cosine_overflow`. Dim-mismatch and zero-norm queries return `[]` on
+  both backends and are not fallbacks.
+
+**v5 divergence:** `moneta.v5` is unchanged and still treats only
+`MONETA_NATIVE=0` as off.
+
+### `Moneta.native_status -> NativeStatus`
+
+A read-only handle property, not an agent operation. Each access returns
+a new frozen record.
+
+```python
+st = m.native_status
+st.scan.active          # "native" | "python"
+st.decay.native_calls   # Rust invocations so far
+st.require_satisfied    # None unless the mode is require
+```
+
+| `NativeStatus` field | Meaning |
+|---|---|
+| `scan`, `decay` | `SeamStatus` for each seam |
+| `wheel` | `NativeWheel` (process-wide probe result) |
+| `source` | `moneta.build_info()` |
+| `require_satisfied` | `None` unless require; then True only if both seams are active native, neither is demoted, and decay has 0 fallbacks (scan per-query fallbacks are allowed and listed) |
+
+| `SeamStatus` field | Meaning |
+|---|---|
+| `seam` | `"scan"` or `"decay"` |
+| `requested` | `auto`, `off` or `require` |
+| `requested_source` | `config`, `env`, `default`, or `explicit` (a direct `ECS(native=…)` / `VectorIndex(backend=…)`) |
+| `env_raw` | raw `MONETA_NATIVE`, or `None` |
+| `active` | `native` or `python` |
+| `reason` | why Python is active, else `None` |
+| `demoted` | the component left native for good (auto only) |
+| `native_calls` | Rust invocations, not queries: each `ScanIndex.scan` return (each window of one `iter_query` counts), each `decay_batch` return |
+| `fallbacks` | `{reason: count}` of oracle runs by a component that was native at call time: `query_nonfinite`, `cosine_overflow`, `decay_error:<ExcType>`, `demoted:<reason>` |
+| `all_native` | `active == "native"`, no fallbacks, not demoted |
+
+| `NativeWheel` field | Meaning |
+|---|---|
+| `state` | `loaded`, `absent`, `broken`, `incompatible`, or `not_probed` (an off handle never probes) |
+| `reason`, `version` | why not loaded; the wheel's `__version__` |
+| `api` | `NATIVE_API`, or `None` for the legacy 0.1.0 wheel |
+| `path`, `sha256` | the extension `.pyd` and its sha256 |
+| `record_match` | `True`/`False` when the sha256 was compared with an adjacent dist-info `RECORD`, else `None` |
+| `direct_url` | the wheel's `direct_url.json`, or `None` |
+
+### `moneta.build_info() -> BuildInfo`
+
+Frozen, stdlib only, no subprocess, cached per process. Fields: `path`,
+`mode` (`git-src`, `editable`, `vcs`, `wheel`, `unknown`), `commit`,
+`ref`, `dirty` (always `"unknown"`), `version`, `version_mismatch`,
+`src_digest`, `python`.
+
+`src_digest` is sha256 over the sorted relative POSIX paths of
+`src/moneta/**/*.py` (no `__pycache__`), each fed as
+`path + b"\0" + content` with CRLF normalized to LF, so one commit gives
+one digest on any checkout.
+
+**Verify a running process by `commit` + `src_digest` + the `.pyd`
+sha256, never by version.** The version is `1.3.0rc1` on both rc1 and the
+`harden/native-observability` branch. Measured runs on that branch and
+how to read the suite's verdict line are in the README, "Optional native
+seams (Rust)".
 
 ## `Memory` type (ARCHITECTURE.md §3)
 
@@ -255,6 +380,18 @@ set on the config and those files exist on disk:
 4. Pre-snapshot WAL entries are filtered out (they are already captured
    by the snapshot).
 
+> **UNRESOLVED DEFECT (B and D): undrained attention is currently lost by
+> a bare snapshot.** Step 4's premise holds for applied attention only.
+> The snapshot holds ECS rows, not the undrained attention log, and every
+> snapshot deletes the WAL. So a `signal_attention` that no sleep pass has
+> applied yet is lost when a bare snapshot
+> (`m.durability.snapshot_ecs(m.ecs)`) is followed by a restart (path B),
+> or when it lands between a sleep pass's drain and that pass's snapshot
+> (path D). This also limits the "signals survive process death via the
+> flushed WAL" statement above. It is not fixed. Both paths are pinned as
+> strict xfail in `tests/integration/test_attention_snapshot_regression.py`;
+> the repair design is `docs/design/R1-attention-durability.md`.
+
 If no snapshot exists (cold start, or `kill -9` before the first
 successful pass), construction returns an empty ECS.
 
@@ -274,7 +411,9 @@ successful pass), construction returns an empty ECS.
   Run pxr-gated tests under `hython` (or any pxr-capable interpreter).
 - **`moneta_native` (optional)**: an abi3 wheel built from
   `rust/moneta_native` that serves Python 3.11+, hython included. It is
-  never required. See CLAUDE.md, "Optional native seams".
+  required only when a handle resolves to native mode `require`. See
+  [Native seams](#native-seams-config-and-status) and CLAUDE.md,
+  "Optional native seams".
 - **Codeless schema registration** — for typed-prim recognition in
   `usdview` and downstream consumers, set
   `PXR_PLUGINPATH_NAME=path/to/Moneta/schema` before launching. The
@@ -288,6 +427,21 @@ successful pass), construction returns an empty ECS.
 - `ProtectedQuotaExceededError` — raised when a protected `deposit`
   (`protected_floor > 0`) would exceed `config.quota_override`
   (default 100). Subclass of `RuntimeError`.
+- `NativeConfigError` — raised by `Moneta(config)` when `config.native`
+  and `MONETA_NATIVE` conflict: `"require"` with an OFF env value, or
+  `"off"` with `MONETA_NATIVE=require`. The message names both values.
+  Subclass of `ValueError`.
+- `NativeUnavailableError` — raised by `Moneta(config)` when the handle
+  resolves to `require` and the wheel is absent, broken or incompatible.
+  Names the wheel state and reason. Subclass of `RuntimeError`.
+- `NativeSeamError` — native `require` only: an out-of-envelope `deposit`
+  (nothing mutated), an out-of-envelope stored vector during hydrate (lock
+  released, no file modified), or a native decay failure (columns
+  unchanged; in a sleep pass no snapshot is written and the WAL keeps the
+  signal). Subclass of `RuntimeError`.
+- When any of the three is raised during construction, the `storage_uri`
+  lock is released and no file is modified: the next construct on the
+  same `storage_uri` succeeds.
 - `TypeError` — raised by `Moneta()` (no args) and by any `deposit` /
   `query` / `signal_attention` call with a missing required argument.
 

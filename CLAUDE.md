@@ -152,7 +152,15 @@ PYTHONPATH="src;<unzipped-wheel-dir>" "<hython3.11.exe>" -m pytest tests -q -p n
 PYTHONPATH=src python scripts/bench_query.py --n 1000 10000            # add --spread for aged utilities
 ```
 
-**Test matrix:** Python 3.14 and hython 3.11, each run with `MONETA_NATIVE=0` and `MONETA_NATIVE=1`. That is 405 passing in all four configurations (v1 and v5 suites together, 2026-10-15). Without the wheel (hython), 347 pass and 35 native-only tests skip.
+**Test matrix** (branch `harden/native-observability`, v1 and v5 suites together, 2026-10-16, commit `98a998f084eb`, `src_digest` `f5c721630ac3`, wheel `.pyd` sha256 `ec6d7f0c35c5…`, Python 3.14.2):
+
+- `MONETA_NATIVE=1` and `=require` with the wheel: 779 passed, 2 xfailed, verdict `NATIVE QUALIFIED`.
+- `MONETA_NATIVE=0` with the wheel: 779 passed, 2 xfailed, `PYTHON-ONLY PASS`.
+- Without the wheel, or with a broken wheel: 708 passed, 71 native-only tests skipped visibly, 2 xfailed, `PYTHON-ONLY PASS`. `MONETA_NATIVE=require` without the wheel exits 4.
+- hython 3.11, all rows: PLANNED: awaiting owner coordination.
+- The 2 xfailed are known unresolved defects B and D (undrained attention lost across snapshot and restart), not passes.
+
+Verify a run by `commit` + `src_digest` + `.pyd` sha256, never by version. Read the verdict line at the end of the pytest summary (README, "Reading the verdict line").
 
 The conformance suites are the contract for the native seams: `tests/unit/test_native_scan_conformance.py`, `test_native_decay_parity.py` and `test_rank_early_stop.py`. A native change that turns any of them red is a regression, not a tolerance question.
 
@@ -197,7 +205,7 @@ docs/
 - Do not violate the Phase 3 operational envelope (ARCHITECTURE.md §15.2).
 - Do not let documentation lag implementation by more than one PR (Documentarian contract).
 - Do not cross role boundaries without Architect review.
-- Do not break the existing test suite (405 passing under Python 3.14 and hython 3.11, with the native seams on and off; 347 + 35 native-only skips without the `moneta_native` wheel; 2026-10-15). Regression is higher priority than new work.
+- Do not break the existing test suite (Python 3.14.2 on branch `harden/native-observability` at `98a998f084eb`, 2026-10-16: 779 passed + 2 xfailed with the wheel under `MONETA_NATIVE=1`, `=require` and `=0`, with `NATIVE QUALIFIED` under `=1` and `=require`; 708 passed + 71 native-only skips + 2 xfailed without the `moneta_native` wheel; hython 3.11 rows PLANNED: awaiting owner coordination). The 2 xfails are unresolved defects B and D and must stay strict xfail until fixed. Regression is higher priority than new work.
 - Do not assume free-threaded Python (PEP 703) support. `AttentionLog.__init__` raises `RuntimeError` under `sys._is_gil_enabled() is False` because the lock-free swap-and-drain correctness argument requires the GIL. Removing the guard requires MONETA.md §9 Trigger 2 escalation; rewriting the attention log to be free-threaded-safe is in-scope for that escalation.
 - Follow `docs/agent-commandments.md` from Phase 3 Pass 3 onward.
 
