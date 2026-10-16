@@ -145,9 +145,16 @@ def test_auto_oracle_also_raises_reraises_native_chained(iso):
     bad_rows = [(0.9, 0.0, 0.0), ("not a number", 1.0, 0.0)]
     native_exc = TypeError("native refused")
     ecs, _ctl = _ecs(iso, "auto", native_exc, rows=bad_rows)
+    u_before, t_before = list(ecs._utility), list(ecs._last_evaluated)
     with pytest.raises(TypeError) as ei:
         ecs.decay_all(LAM, NOW)
     assert ei.value is native_exc
+    # Columns unchanged, bit for bit: row 0 decayed by the oracle before
+    # row 1 failed must be put back.
+    assert len(ecs._utility) == len(u_before) and len(ecs._last_evaluated) == len(t_before)
+    assert _bits([ecs._utility[0]]) == _bits([u_before[0]])
+    assert ecs._utility[1] is u_before[1]
+    assert _bits(ecs._last_evaluated) == _bits(t_before)
     assert isinstance(ei.value.__cause__, TypeError) and ei.value.__cause__ is not native_exc
     # Flags unchanged.
     assert ecs.native_decay is True and not ecs.decay_demoted

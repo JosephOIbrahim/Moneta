@@ -449,6 +449,8 @@ def test_auto_store_refusal_demotes(iso):
          "restore_outside_envelope"),
         ({"embedding_dim": 4, "records": [{"entity_id": None, "vector": [1.0, 0.0], "state": 0}]},
          "restore_outside_envelope"),
+        ({"embedding_dim": 4, "records": [{"entity_id": None, "vector": [10**400, 0, 0, 1], "state": 0}]},
+         "restore_outside_envelope"),
     ],
 )
 def test_require_restore_outside_envelope_raises_no_mutation(iso, snap, key):
@@ -462,6 +464,33 @@ def test_require_restore_outside_envelope_raises_no_mutation(iso, snap, key):
         vi.restore(snap)
     assert json.dumps(vi.snapshot(), sort_keys=True) == before
     assert vi.backend == "native" and not vi.demoted
+
+
+def test_require_restore_hugeint_raises_seam_error_no_mutation(iso):
+    # math.isfinite(10**400) raises OverflowError; restore must surface it
+    # as NativeSeamError, not a bare OverflowError.
+    _set_state(iso, "loaded")
+    vi = VectorIndex(backend="native")
+    vi.upsert(uuid4(), [1.0, 2.0], S)
+    dim, n = vi._dim, len(vi)
+    snap = {"backend": "in_memory", "embedding_dim": 2,
+            "records": [{"entity_id": str(uuid4()), "vector": [10**400, 1.0], "state": 0}]}
+    with pytest.raises(NativeSeamError, match="restore_outside_envelope"):
+        vi.restore(snap)
+    assert vi._dim == dim and len(vi) == n
+    assert vi.backend == "native" and not vi.demoted
+
+
+def test_auto_restore_hugeint_demotes_instead_of_crashing(iso):
+    _set_state(iso, "loaded")
+    vi = VectorIndex(backend="auto")
+    snap = {"backend": "in_memory", "embedding_dim": 2,
+            "records": [{"entity_id": str(uuid4()), "vector": [10**400, 1.0], "state": 0}]}
+    vi.restore(snap)
+    st = vi.scan_seam_status()
+    assert st.active == "python" and st.demoted
+    assert st.fallbacks == {"demoted:restore_outside_envelope": 1}
+    assert len(vi) == 1
 
 
 def test_require_restore_valid_snapshot_stays_native(iso):

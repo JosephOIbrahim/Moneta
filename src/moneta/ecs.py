@@ -340,7 +340,8 @@ class ECS:
           this ECS demotes to the oracle, records
           ``fallbacks["decay_error:<T>"]`` and logs one WARNING. If the
           oracle raises too, the original native error is re-raised with
-          the oracle's error chained and the flags are left unchanged.
+          the oracle's error chained; the flags and both columns are left
+          unchanged.
         - require: ``NativeSeamError`` from the original error; no oracle.
 
         Everything else (a ``ValueError`` after the column pre-check,
@@ -377,6 +378,12 @@ class ECS:
                     f"native decay failed under require: "
                     f"{type(native_error).__name__}: {native_error}"
                 ) from native_error
+        if native_error is not None:
+            # The oracle runs in place; if it fails part-way, put the
+            # columns back so the re-raised native error leaves them as
+            # the native call did (untouched).
+            saved_u = self._utility[:]
+            saved_t = self._last_evaluated[:]
         try:
             for i in range(n):
                 self._utility[i] = decay_value(
@@ -390,6 +397,8 @@ class ECS:
         except Exception as oracle_error:
             if native_error is None:
                 raise
+            self._utility[:] = saved_u
+            self._last_evaluated[:] = saved_t
             raise native_error from oracle_error
         if native_error is not None:
             self._demote_decay(native_error)

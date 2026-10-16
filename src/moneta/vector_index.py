@@ -175,7 +175,7 @@ def _oracle_scan(
 def _all_finite(vector: List[float]) -> bool:
     try:
         return all(math.isfinite(x) for x in vector)
-    except TypeError:
+    except (TypeError, ValueError, OverflowError):
         return False
 
 
@@ -566,7 +566,7 @@ class VectorIndex:
                 self._forbid_demotion(
                     "restore_without_dim", "restoring records without an embedding_dim"
                 )
-            if any(len(rec["vector"]) != dim or not _all_finite(rec["vector"]) for rec in recs):
+            if any(len(rec["vector"]) != dim or not _in_envelope(rec["vector"]) for rec in recs):
                 self._forbid_demotion(
                     "restore_outside_envelope", "snapshot outside native envelope"
                 )
