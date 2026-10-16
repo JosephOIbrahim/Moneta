@@ -221,6 +221,38 @@ MUTS = [
         """            twin = rec""",
         "tests/v5/test_dead_records.py::test_bulk_tombstone_leaves_no_stale_slots_behind",
     ),
+    (
+        "E3C1 projection runs under the writer lock",
+        "src/moneta/v5/substrate.py",
+        """        consolidated, error, authored_at, last = self._project_staged(staged, lam, when)""",
+        """        with self._lock: consolidated, error, authored_at, last = self._project_staged(staged, lam, when)""",
+        "tests/v5/test_lockscope.py::test_projection_runs_with_the_writer_lock_released",
+    ),
+    (
+        "E3C1 sleep passes not serialized",
+        "src/moneta/v5/substrate.py",
+        """        with self._pass_lock:
+            return self._sleep_pass(""",
+        """        if True:
+            return self._sleep_pass(""",
+        "tests/v5/test_lockscope.py::test_concurrent_sleep_passes_project_each_record_once",
+    ),
+    (
+        "E3C1 records that died mid-projection marked consolidated",
+        "src/moneta/v5/substrate.py",
+        """                    if now is not None and now.status == Status.STAGED:""",
+        """                    if now is not None:""",
+        "tests/v5/test_lockscope.py::test_records_that_die_during_projection_are_not_consolidated",
+    ),
+    (
+        "E3C2 export writes under the writer lock",
+        "src/moneta/v5/compat.py",
+        """    with _export_lock(substrate):
+        snap = _export_rows(substrate)""",
+        """    with _export_lock(substrate), substrate._lock:
+        snap = _export_rows(substrate)""",
+        "tests/v5/test_lockscope.py::test_export_writes_with_the_writer_lock_released",
+    ),
 ]
 failed_to_catch = []
 for name, path, old, new, test in MUTS:

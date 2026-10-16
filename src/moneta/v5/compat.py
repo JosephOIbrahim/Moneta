@@ -49,16 +49,18 @@ import json
 import logging
 import math
 import os
+import threading
+import weakref
 from collections.abc import Iterator
 from pathlib import Path
-from typing import Any
+from typing import Any, NamedTuple
 from uuid import UUID
 
 from .. import api as _v1api
 from ..api import MonetaConfig, MonetaResourceLockedError
 from ..types import EntityState, Memory
 from .journal import decode_frame
-from .model import RECALLABLE, DimensionMismatchError, Status, encode_vector
+from .model import _V1_STATE, RECALLABLE, DimensionMismatchError, Status, encode_vector
 from .policy import PolicyResolver
 from .substrate import (
     Clock,
@@ -195,51 +197,140 @@ def _write_known_sha(journal: Path, sha: str, source: str, seq: int) -> None:
     )
 
 
+_EXPORT_LOCKS: weakref.WeakKeyDictionary[Substrate, threading.Lock] = weakref.WeakKeyDictionary()
+_EXPORT_LOCKS_GUARD = threading.Lock()
+_EXPORT_CHUNK_BYTES = 1 << 20
+
+
+def _export_lock(substrate: Substrate) -> threading.Lock:
+    """One export at a time per handle, so exports land in the order they were taken.
+
+    It is not the writer lock: holding it never blocks recall or writes.
+    """
+    with _EXPORT_LOCKS_GUARD:
+        lock = _EXPORT_LOCKS.get(substrate)
+        if lock is None:
+            lock = _EXPORT_LOCKS[substrate] = threading.Lock()
+        return lock
+
+
+class _ExportRows(NamedTuple):
+    rows: list[tuple[Any, ...]]
+    created_at: float
+    seq: int
+    dim: int
+    journal: Path | None
+
+
+def _export_rows(substrate: Substrate) -> _ExportRows:
+    """The part of an export that needs the writer lock: references and scalars only.
+
+    Payloads (str) and vectors (tuple) are immutable, so holding references
+    after the lock is released is safe even if a later erase or revector
+    rebinds them on the record. Nothing is converted or serialized here.
+    """
+    with substrate._lock:
+        substrate._check_open()
+        substrate.sync()
+        rows = [
+            (
+                rec.seq,
+                rec.entity_id,
+                rec.payload,
+                rec.vector,
+                rec.anchor_u,
+                rec.attended,
+                rec.protected_floor,
+                rec.anchor_t,
+                rec.status,
+            )
+            for rec in substrate._fold.live.values()  # exactly the recallable records
+        ]
+        return _ExportRows(
+            rows, substrate._t(None), substrate.seq, substrate.dim or 0, substrate.journal_path
+        )
+
+
+def _encode_export(snap: _ExportRows) -> Iterator[bytes]:
+    """The v1 ``snapshot.json`` bytes, in ~1 MB chunks.
+
+    Byte-identical to ``json.dumps`` of the whole document, but encoded one
+    row at a time: a single ``json.dumps`` of 10k x 768 rows runs for
+    seconds inside C without ever yielding the GIL, which stalls every
+    reader thread even with no lock held.
+    """
+    dumps = json.dumps
+    zero = [0.0] * snap.dim
+    head = '{"snapshot_version": 1, "snapshot_created_at": ' + dumps(snap.created_at)
+    parts: list[str] = [head + ', "rows": [']
+    size = 0
+    for i, (_seq, eid, payload, vector, u, attended, floor, anchor_t, status) in enumerate(
+        sorted(snap.rows, key=lambda r: r[0])
+    ):
+        piece = dumps(
+            {
+                "entity_id": str(eid),
+                "payload": payload,
+                # A record left unembedded by a partial revector exports as
+                # a zero vector: v1 readers accept it and never rank it.
+                "semantic_vector": list(vector) if vector is not None else zero,
+                "utility": u,
+                "attended_count": attended,
+                "protected_floor": floor,
+                "last_evaluated": anchor_t,
+                "state": int(_V1_STATE.get(status, EntityState.VOLATILE)),
+                "usd_link": None,
+            }
+        )
+        parts.append(piece if i == 0 else ", " + piece)
+        size += len(piece)
+        if size >= _EXPORT_CHUNK_BYTES:
+            yield "".join(parts).encode("utf-8")
+            parts, size = [], 0
+    tail = dumps({"seq": snap.seq, "format": "v1-export"})
+    parts.append('], "moneta_v5": ' + tail + "}")
+    yield "".join(parts).encode("utf-8")
+
+
+def _write_export(snap: _ExportRows, snapshot_path: Path) -> str:
+    """Serialize, hash, fsync and atomically replace, with no substrate lock held.
+
+    The hash is recorded in the sidecar *before* the snapshot it names is
+    replaced in, as before; the sidecar keeps the previous hash too, so a
+    crash between the two leaves an accepted snapshot on disk either way.
+    """
+    snapshot_path = Path(snapshot_path)
+    snapshot_path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = snapshot_path.with_suffix(snapshot_path.suffix + ".tmp")
+    digest = hashlib.sha256()
+    with open(tmp, "wb") as fp:
+        for chunk in _encode_export(snap):
+            digest.update(chunk)
+            fp.write(chunk)
+        fp.flush()
+        os.fsync(fp.fileno())
+    sha = digest.hexdigest()
+    if snap.journal is not None:
+        _write_known_sha(snap.journal, sha, "export", snap.seq)
+    os.replace(tmp, snapshot_path)
+    return sha
+
+
 def export_v1_snapshot(substrate: Substrate, snapshot_path: Path) -> str:
     """Write the recallable records as a v1 ``snapshot.json``. Returns its sha256.
 
     Rows carry v5's utility *anchors* as v1's ``(utility, last_evaluated)``
     pair, which is exactly v1's lazy-decay state, so v1 hydrates them
     unchanged.
+
+    Round 4 E3 condition 2: only the row copy takes the writer lock
+    (:func:`_export_rows`); serializing, hashing, writing and fsync run
+    with it released (:func:`_write_export`), so SYNAPSE's per-pass export
+    no longer stalls readers for the length of the write.
     """
-    with substrate._lock:
-        substrate._check_open()
-        substrate.sync()
-        rows = []
-        for rec in sorted(substrate._fold.records.values(), key=lambda r: r.seq):
-            if rec.status not in RECALLABLE:
-                continue
-            memory = rec.to_memory(substrate.lam, rec.anchor_t)
-            rows.append(
-                {
-                    "entity_id": str(rec.entity_id),
-                    "payload": rec.payload,
-                    # A record left unembedded by a partial revector exports as
-                    # a zero vector: v1 readers accept it and never rank it.
-                    "semantic_vector": (
-                        list(rec.vector) if rec.vector is not None else [0.0] * (substrate.dim or 0)
-                    ),
-                    "utility": rec.anchor_u,
-                    "attended_count": rec.attended,
-                    "protected_floor": rec.protected_floor,
-                    "last_evaluated": rec.anchor_t,
-                    "state": int(memory.state),
-                    "usd_link": None,
-                }
-            )
-        data = json.dumps(
-            {
-                "snapshot_version": 1,
-                "snapshot_created_at": substrate._t(None),
-                "rows": rows,
-                "moneta_v5": {"seq": substrate.seq, "format": "v1-export"},
-            }
-        ).encode("utf-8")
-        sha = hashlib.sha256(data).hexdigest()
-        if substrate.journal_path is not None:
-            _write_known_sha(substrate.journal_path, sha, "export", substrate.seq)
-        _atomic_write(snapshot_path, data)
-        return sha
+    with _export_lock(substrate):
+        snap = _export_rows(substrate)
+        return _write_export(snap, snapshot_path)
 
 
 def _journal_known_shas(substrate: Substrate) -> set[str]:

@@ -34,6 +34,7 @@ Everything added is keyword-only.
 
 from __future__ import annotations
 
+import copy
 import heapq
 import logging
 import math
@@ -359,6 +360,11 @@ class Substrate:
         if isinstance(quota, bool) or not isinstance(quota, int) or quota < 0:
             raise ValueError(f"protected_quota must be an int >= 0, got {quota!r}")
         self._lock = threading.RLock()
+        # Serializes sleep passes (and close) without blocking readers: the
+        # pass releases ``_lock`` while the projector writes (Round 4 E3
+        # condition 1), so this is what keeps two passes from projecting the
+        # same staged batch. Order: ``_pass_lock`` before ``_lock``, never after.
+        self._pass_lock = threading.RLock()
         self._closed = False
         self._poisoned: str | None = None
         self._clock = config.clock
@@ -425,7 +431,9 @@ class Substrate:
         return False
 
     def close(self) -> None:
-        with self._lock:
+        # Waits for an in-flight sleep pass: the projector must not be closed
+        # under a batch it is still writing.
+        with self._pass_lock, self._lock:
             if self._closed:
                 return
             self._closed = True
@@ -820,7 +828,16 @@ class Substrate:
         Tombstones are one-way, so a changed half-life never prunes on its
         own (Round 4 half-life condition 2). The confirmed pass names the
         change in its ``retain`` event.
+
+        Projection runs with the writer lock released (Round 4 E3 condition
+        1): readers and writers proceed while the projector authors and
+        saves; one pass at a time (see :meth:`_project_staged`).
         """
+        with self._pass_lock:
+            return self._sleep_pass(t, confirm_half_life_change)
+
+    def _sleep_pass(self, t: float | None, confirm_half_life_change: bool) -> SleepPassResult:
+        """Body of :meth:`run_sleep_pass`. Caller holds ``_pass_lock``."""
         with self._lock:
             self._check_open()
             when = self._t(t)
@@ -870,55 +887,98 @@ class Substrate:
             if change_seq is not None:
                 retain["half_life_change_seq"] = change_seq
             seq = self._append_removal(retain, prune)
+            # Copies of the staged records, taken under the lock: the
+            # projector reads them with the lock released. A copy shares the
+            # record's immutable vector tuple, so taking it is cheap.
+            staged = [
+                copy.copy(r)
+                for r in sorted(self._fold.live.values(), key=lambda r: r.seq)
+                if r.status == Status.STAGED
+            ]
+            lam = self.lam
+        consolidated, error, authored_at, last = self._project_staged(staged, lam, when)
+        return SleepPassResult(
+            attention_updated=attention_updated,
+            pruned=len(prune),
+            staged=len(stage),
+            authored_at=authored_at,
+            pruned_ids=tuple(prune),
+            staged_ids=tuple(stage),
+            consolidated_ids=tuple(consolidated),
+            projection_error=error,
+            seq=seq if last is None else last,
+            half_life_change_seq=change_seq,
+        )
 
-            pending = sorted(
-                (r for r in self._fold.live.values() if r.status == Status.STAGED),
-                key=lambda r: r.seq,
-            )
-            consolidated: list[UUID] = []
-            error: str | None = None
-            authored_at: float | None = None
-            for start in range(0, len(pending), MAX_BATCH_SIZE):
-                batch = pending[start : start + MAX_BATCH_SIZE]
-                memories = [r.to_memory(self.lam, when) for r in batch]
-                if self._projector is None:
-                    target, batch_id = "none", None
-                else:
-                    try:
-                        batch_id = self._projector.project(memories, when)
-                        target = self._projector.name
-                    except Exception as exc:  # noqa: BLE001 - reported, and retried next pass
-                        error = f"{type(exc).__name__}: {exc}"
-                        _logger.error(
-                            "moneta.v5 projection failed; %d records stay staged: %s",
-                            len(pending) - start,
-                            error,
-                        )
-                        break
-                ids = [str(r.entity_id) for r in batch]
-                seq = self._append(
-                    {
-                        "op": "consolidate",
-                        "t": when,
-                        "ids": ids,
-                        "target": target,
-                        "batch": batch_id,
-                    }
-                )
-                consolidated.extend(r.entity_id for r in batch)
-                authored_at = when
-            return SleepPassResult(
-                attention_updated=attention_updated,
-                pruned=len(prune),
-                staged=len(stage),
-                authored_at=authored_at,
-                pruned_ids=tuple(prune),
-                staged_ids=tuple(stage),
-                consolidated_ids=tuple(consolidated),
-                projection_error=error,
-                seq=seq,
-                half_life_change_seq=change_seq,
-            )
+    def _project_staged(
+        self, staged: list[Record], lam: float, when: float
+    ) -> tuple[list[UUID], str | None, float | None, int | None]:
+        """Project staged records in 500-record batches with the writer lock released.
+
+        Round 4 E3 condition 1, restoring §15.6's narrow lock: USD authoring
+        and ``layer.Save()`` run with no substrate lock held, so recall and
+        writes never wait on them. Each successful batch then takes the lock
+        just long enough to append its ``consolidate`` event.
+
+        A record that left STAGED while its batch was being written
+        (tombstoned or erased meanwhile) is not marked consolidated: it is
+        named under ``projected_dead`` instead, so the derived copy the
+        projector already wrote stays traceable from the journal. A failed
+        batch stops the pass and leaves it and every later batch STAGED for
+        the next pass to retry. Caller holds ``_pass_lock`` and not ``_lock``.
+
+        Returns ``(consolidated ids, error, authored_at, last seq appended)``.
+        """
+        consolidated: list[UUID] = []
+        error: str | None = None
+        authored_at: float | None = None
+        last: int | None = None
+        for start in range(0, len(staged), MAX_BATCH_SIZE):
+            batch = staged[start : start + MAX_BATCH_SIZE]
+            if self._projector is None:
+                target, batch_id = "none", None
+            else:
+                memories = [r.to_memory(lam, when) for r in batch]
+                try:
+                    batch_id = self._projector.project(memories, when)
+                    target = self._projector.name
+                except Exception as exc:  # noqa: BLE001 - reported, and retried next pass
+                    error = f"{type(exc).__name__}: {exc}"
+                    _logger.error(
+                        "moneta.v5 projection failed; %d records stay staged: %s",
+                        len(staged) - start,
+                        error,
+                    )
+                    break
+            with self._lock:
+                self._check_open()
+                ids: list[str] = []
+                dead: list[str] = []
+                for r in batch:
+                    now = self._fold.records.get(r.entity_id)
+                    if now is not None and now.status == Status.STAGED:
+                        ids.append(str(r.entity_id))
+                    else:
+                        dead.append(str(r.entity_id))
+                event: dict[str, Any] = {
+                    "op": "consolidate",
+                    "t": when,
+                    "ids": ids,
+                    "target": target,
+                    "batch": batch_id,
+                }
+                if dead and self._projector is not None:
+                    event["projected_dead"] = dead
+                    _logger.warning(
+                        "moneta.v5 %d records left STAGED while batch %s was projected; "
+                        "not marked consolidated (named under projected_dead)",
+                        len(dead),
+                        batch_id,
+                    )
+                last = self._append(event)
+            consolidated.extend(UUID(k) for k in ids)
+            authored_at = when
+        return consolidated, error, authored_at, last
 
     def explain(
         self,
