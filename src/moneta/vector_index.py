@@ -75,6 +75,7 @@ from __future__ import annotations
 
 import logging
 import math
+import threading
 from pathlib import Path
 from typing import Iterable, Iterator, List, Optional, Tuple
 from uuid import UUID
@@ -103,22 +104,36 @@ def native_available() -> bool:
     return _loader.native_available()
 
 
-def _resolve_backend(backend: str):
-    """``(backend, module)``. Only an auto or native request probes the wheel."""
+# backend= argument -> requested mode when it does not read the env.
+_BACKEND_MODE = {"python": "off", "native": "require", "auto": "auto"}
+
+
+def _resolve_backend(backend: str, env: bool = True, source: Optional[str] = None):
+    """``(mode, source, env_raw, module, reason)`` for a ``backend=`` request.
+
+    ``python`` is off and ``native`` is require (explicit, env ignored).
+    ``auto`` is env-resolved (``MONETA_NATIVE``), unless ``env=False``,
+    which the handle uses to pass an already-resolved auto. Off never
+    probes; require raises ``NativeUnavailableError`` (a RuntimeError)
+    when the wheel is not loaded.
+    """
     if backend not in _BACKENDS:
         raise ValueError(f"unknown vector index backend {backend!r}; expected one of {_BACKENDS}")
-    if backend == "python":
-        return "python", None
-    if backend == "native":
-        # Raises NativeUnavailableError (a RuntimeError) when not loaded.
-        return "native", _loader.select("require")[0]
-    # auto: native when loaded, unless MONETA_NATIVE is an OFF value. Env
-    # "require" keeps today's behaviour until the handle truth table lands.
-    mode, _cls, _raw = _loader.env_mode()
-    if mode == "off":
-        return "python", None
-    mod = _loader.select("auto")[0]
-    return ("native", mod) if mod is not None else ("python", None)
+    explicit = None if (backend == "auto" and env) else _BACKEND_MODE[backend]
+    mode, source, env_raw = _loader.resolve_component(explicit, source)
+    mod, reason = _loader.select(mode)
+    return mode, source, env_raw, mod, reason
+
+
+def _in_envelope(vector) -> bool:
+    """Inside the native store's exactness envelope: non-empty, every
+    component numeric and finite."""
+    try:
+        if len(vector) == 0:
+            return False
+        return all(math.isfinite(x) for x in vector)
+    except (TypeError, ValueError, OverflowError):
+        return False
 
 
 def _oracle_scan(
@@ -182,8 +197,22 @@ class VectorIndex:
         envelope (non-finite values, non-numeric components, zero-dim
         vectors) permanently demotes that index to the oracle.
 
-    ``backend="auto"`` (the default) picks native when the wheel is
-    installed, unless ``MONETA_NATIVE=0``.
+    ``backend="auto"`` (the default) resolves from ``MONETA_NATIVE``: an
+    OFF value forces the oracle, ``require`` behaves as ``"native"``, and
+    anything else picks native when the wheel is loaded.
+
+    Mode semantics (SPEC section 3, scan seam):
+
+    auto
+        Envelope demotion (permanent for this index) and the per-query
+        oracle answers work as before, and both are recorded: demotion as
+        ``fallbacks["demoted:<reason>"]``, per-query answers as
+        ``query_nonfinite`` / ``cosine_overflow``.
+    require (``backend="native"``, or env ``require``)
+        Demotion is forbidden. An upsert or restore outside the envelope
+        raises ``NativeSeamError`` before any mutation. The per-query
+        oracle answers stay permitted (the answer is exact and the trigger
+        is the query, not store state) and are counted.
     """
 
     def __init__(
@@ -191,6 +220,9 @@ class VectorIndex:
         embedding_dim: Optional[int] = None,
         persist_path: Optional[Path] = None,
         backend: str = "auto",
+        *,
+        _env: bool = True,
+        _source: Optional[str] = None,
     ) -> None:
         self._dim: Optional[int] = embedding_dim
         self._persist_path = persist_path
@@ -200,7 +232,18 @@ class VectorIndex:
                 "backend (see module docstring for the LanceDB rationale)",
                 persist_path,
             )
-        self.backend, self._native = _resolve_backend(backend)
+        mode, source, env_raw, self._native, reason = _resolve_backend(backend, _env, _source)
+        self.backend = "native" if self._native is not None else "python"
+        self.requested_mode: str = mode
+        self.requested_source: str = source
+        self.env_raw: Optional[str] = env_raw
+        # Why the oracle is active (None while native is).
+        self.fallback_reason: Optional[str] = reason
+        self.demoted: bool = False
+        self._native_calls = 0
+        self._fallbacks: dict[str, int] = {}
+        self._warned: set[str] = set()
+        self._counter_lock = threading.Lock()
         self._reset()
         _logger.info("vector_index initialized (%s backend)", self.backend)
 
@@ -214,15 +257,79 @@ class VectorIndex:
         self._states: dict[UUID, EntityState] = {}
         self._dead = 0
 
-    def _demote(self, reason: str) -> None:
+    # --- seam bookkeeping ---------------------------------------------
+
+    def _count_native_call(self) -> None:
+        with self._counter_lock:
+            self._native_calls += 1
+        _loader.count_native_call("scan")
+
+    def _count_fallback(self, key: str) -> None:
+        with self._counter_lock:
+            self._fallbacks[key] = self._fallbacks.get(key, 0) + 1
+        _loader.count_fallback("scan", key)
+
+    def _forbid_demotion(self, key: str, message: str) -> None:
+        """Under require, demotion is forbidden: raise before any mutation."""
+        if self.requested_mode == "require":
+            raise _loader.NativeSeamError(
+                f"vector_index outside the native envelope under require ({key}): {message}"
+            )
+
+    def _record_demotion(self, key: str, message: str) -> None:
+        self._forbid_demotion(key, message)
+        self.backend = "python"
+        self.demoted = True
+        self.fallback_reason = f"demoted:{key}"
+        self._count_fallback(f"demoted:{key}")
+        if key not in self._warned:
+            self._warned.add(key)
+            _logger.warning("vector_index demoted to python backend: %s", message)
+
+    def _demote(self, key: str, message: str) -> None:
         """Move every row to the oracle backend, preserving order and values."""
         if self.backend == "python":
             return
-        _logger.warning("vector_index demoted to python backend: %s", reason)
+        self._forbid_demotion(key, message)
         records = {eid: (vec, state) for eid, vec, state in self._native_rows()}
         self._reset()
         self._records = records
-        self.backend = "python"
+        self._record_demotion(key, message)
+
+    def scan_seam_status(self) -> "_loader.SeamStatus":
+        """Frozen record of the scan seam for this index (SPEC section 4)."""
+        with self._counter_lock:
+            calls = self._native_calls
+            fallbacks = dict(self._fallbacks)
+        return _loader.seam_status(
+            seam="scan",
+            requested=self.requested_mode,
+            requested_source=self.requested_source,
+            env_raw=self.env_raw,
+            active=self.backend,
+            reason=self.fallback_reason,
+            demoted=self.demoted,
+            native_calls=calls,
+            fallbacks=fallbacks,
+        )
+
+    def check_native_envelope(self, vector: List[float]) -> None:
+        """Under require, raise ``NativeSeamError`` unless ``vector`` is
+        inside the native envelope (finite, numeric, non-empty, and the
+        index dim once known). A no-op in auto and off. Mutates nothing,
+        so a handle can call it before any write."""
+        if self.requested_mode != "require":
+            return
+        if not _in_envelope(vector):
+            raise _loader.NativeSeamError(
+                "vector outside the native envelope under require "
+                "(non-finite, non-numeric or empty)"
+            )
+        if self._dim is not None and len(vector) != self._dim:
+            raise _loader.NativeSeamError(
+                f"vector outside the native envelope under require: "
+                f"dim {len(vector)}, index dim {self._dim}"
+            )
 
     def _native_rows(self):
         for slot, eid in enumerate(self._slot_ids):
@@ -262,6 +369,11 @@ class VectorIndex:
         state: EntityState,
     ) -> None:
         """Insert or replace an entity's vector and state."""
+        if self.backend == "native" and self.requested_mode == "require" and not _in_envelope(vector):
+            # Checked before the dim is latched or anything is stored.
+            self._forbid_demotion(
+                "nonfinite_upsert", "non-finite, non-numeric or empty vector upserted"
+            )
         if self._dim is None:
             self._dim = len(vector)
         elif len(vector) != self._dim:
@@ -283,8 +395,14 @@ class VectorIndex:
                     self._store.set(slot, vec)
                 self._states[entity_id] = state
                 return
-            except (TypeError, ValueError, OverflowError):
-                self._demote("non-finite, non-numeric or empty vector upserted")
+            except (TypeError, ValueError, OverflowError) as e:
+                if self.requested_mode == "require":
+                    raise _loader.NativeSeamError(
+                        f"native store refused an upsert under require: {type(e).__name__}: {e}"
+                    ) from e
+                self._demote(
+                    "nonfinite_upsert", "non-finite, non-numeric or empty vector upserted"
+                )
         self._records[entity_id] = (vec, state)
 
     def update_state(self, entity_id: UUID, state: EntityState) -> None:
@@ -353,6 +471,7 @@ class VectorIndex:
         q = list(vector)
         if not _all_finite(q):
             # Outside the native envelope: answer with the oracle itself.
+            self._count_fallback("query_nonfinite")
             return _oracle_scan(
                 ((eid, vec) for eid, vec, _s in self._native_rows()), q, k
             )
@@ -361,9 +480,11 @@ class VectorIndex:
         except ArithmeticError:
             # A NaN cosine (overflow from huge finite components): only the
             # oracle's own sort reproduces its ordering, so let it answer.
+            self._count_fallback("cosine_overflow")
             return _oracle_scan(
                 ((eid, vec) for eid, vec, _s in self._native_rows()), q, k
             )
+        self._count_native_call()
         ids = self._slot_ids
         return [(ids[slot], cos) for slot, cos in window]
 
@@ -394,9 +515,14 @@ class VectorIndex:
                 window = self._store.scan(q, k)
             except ArithmeticError:
                 # NaN cosine: replay the oracle's full order and skip what
-                # was already yielded (the windows are its prefixes).
-                yield from self.query(q, total)[done:]
+                # was already yielded (the windows are its prefixes). The
+                # oracle answer is counted once, as cosine_overflow.
+                self._count_fallback("cosine_overflow")
+                yield from _oracle_scan(
+                    ((eid, vec) for eid, vec, _s in self._native_rows()), q, total
+                )[done:]
                 return
+            self._count_native_call()
             for slot, cos in window[done:]:
                 yield ids[slot], cos
             if len(window) < k:
@@ -429,18 +555,31 @@ class VectorIndex:
         }
 
     def restore(self, snapshot: dict) -> None:
-        """Replace current state with a snapshot produced by `snapshot()`."""
+        """Replace current state with a snapshot produced by `snapshot()`.
+
+        Under require, a snapshot the native store cannot hold raises
+        ``NativeSeamError`` before anything is replaced."""
+        if self.backend == "native" and self.requested_mode == "require":
+            dim = snapshot.get("embedding_dim")
+            recs = snapshot.get("records", [])
+            if not dim and recs:
+                self._forbid_demotion(
+                    "restore_without_dim", "restoring records without an embedding_dim"
+                )
+            if any(len(rec["vector"]) != dim or not _all_finite(rec["vector"]) for rec in recs):
+                self._forbid_demotion(
+                    "restore_outside_envelope", "snapshot outside native envelope"
+                )
         self._dim = snapshot.get("embedding_dim")
         if self.backend == "native" and not self._dim and snapshot.get("records"):
-            self._demote("restoring records without an embedding_dim")
+            self._demote("restore_without_dim", "restoring records without an embedding_dim")
         self._reset()
         records = snapshot.get("records", [])
         if self.backend == "native" and any(
             len(rec["vector"]) != self._dim or not _all_finite(rec["vector"])
             for rec in records
         ):
-            _logger.warning("vector_index demoted to python backend: snapshot outside native envelope")
-            self.backend = "python"
+            self._record_demotion("restore_outside_envelope", "snapshot outside native envelope")
         for rec in records:
             eid = UUID(rec["entity_id"])
             vec = list(rec["vector"])

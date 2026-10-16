@@ -26,8 +26,9 @@ from __future__ import annotations
 import heapq
 import logging
 import math
+import threading
 from array import array
-from typing import Iterable, Optional, Sequence
+from typing import Iterable, Optional, Sequence, Union
 from uuid import UUID
 
 from . import _native as _loader
@@ -35,6 +36,29 @@ from .decay import decay_value
 from .types import EntityState, Memory
 
 _logger = logging.getLogger(__name__)
+
+
+class NativeResultError(TypeError):
+    """``decay_batch`` returned something other than ``list[float]`` of
+    length n. Handled as a known native failure, keyed
+    ``decay_error:NativeResultError``."""
+
+
+def _check_decay_result(out: object, n: int) -> Optional[NativeResultError]:
+    if type(out) is not list:
+        return NativeResultError(
+            f"decay_batch returned {type(out).__name__}, expected list"
+        )
+    if len(out) != n:
+        return NativeResultError(
+            f"decay_batch returned length {len(out)}, expected {n}"
+        )
+    for x in out:
+        if type(x) is not float:
+            return NativeResultError(
+                f"decay_batch returned a {type(x).__name__} element, expected float"
+            )
+    return None
 
 
 def _compact_vector(values: "Iterable[float]") -> "Sequence[float]":
@@ -54,24 +78,52 @@ class ECS:
     indexed by row position.
     """
 
-    def __init__(self, native: Optional[bool] = None) -> None:
-        # Native decay kernel: on by default when moneta_native is installed
-        # (an OFF MONETA_NATIVE value, 0/false/off/no, forces the oracle).
-        # Bit-identical to decay_value
-        # (tests/unit/test_native_decay_parity.py).
-        # The module comes from moneta._native and is captured per ECS;
-        # an off ECS never imports moneta_native.
+    def __init__(
+        self,
+        native: Union[bool, str, None] = None,
+        *,
+        _source: Optional[str] = None,
+    ) -> None:
+        # Native decay kernel (moneta_native.decay_batch), bit-identical to
+        # decay_value (tests/unit/test_native_decay_parity.py).
+        #
+        #   native=None       env-resolved (MONETA_NATIVE; unset means auto)
+        #   native=True       require   (explicit, ignores env)
+        #   native=False      off       (explicit, ignores env)
+        #   native="auto"|"off"|"require"   that mode, ignoring env (the
+        #                     handle passes its resolved mode this way, with
+        #                     its own ``_source``)
+        #
+        # require + wheel not loaded raises NativeUnavailableError (a
+        # RuntimeError). off never imports moneta_native. The module comes
+        # from moneta._native and is captured per ECS.
         if native is None:
-            mode, _cls, _raw = _loader.env_mode()
-            # Env "require" keeps today's behaviour (native when loaded) until
-            # the handle-level truth table lands; only OFF skips the probe.
-            self._native = None if mode == "off" else _loader.select("auto")[0]
-        elif native:
-            # Raises NativeUnavailableError (a RuntimeError) when not loaded.
-            self._native = _loader.select("require")[0]
+            explicit = None
+        elif native is True:
+            explicit = "require"
+        elif native is False:
+            explicit = "off"
+        elif isinstance(native, str):
+            explicit = native
         else:
-            self._native = None
+            raise ValueError(
+                f"ECS(native={native!r}): expected None, a bool, or 'auto'/'off'/'require'"
+            )
+        mode, source, env_raw = _loader.resolve_component(explicit, _source)
+        self._native, reason = _loader.select(mode)
+        self.native_mode: str = mode
+        self.native_source: str = source
+        self.native_env_raw: Optional[str] = env_raw
+        # Why the oracle is active (None while native is). native_decay stays
+        # a public, mutable bool; raising it on an ECS without a module does
+        # nothing.
+        self.fallback_reason: Optional[str] = reason
         self.native_decay: bool = self._native is not None
+        self.decay_demoted: bool = False
+        self._decay_native_calls = 0
+        self._decay_fallbacks: dict[str, int] = {}
+        self._warned: set[str] = set()
+        self._counter_lock = threading.Lock()
 
         # Parallel columns. Indices [0, n) are live; there are no holes.
         self._ids: list[UUID] = []
@@ -108,6 +160,27 @@ class ECS:
     def count_protected(self) -> int:
         """ARCHITECTURE.md §10 quota backstop."""
         return sum(1 for pf in self._protected_floor if pf > 0.0)
+
+    def decay_seam_status(self) -> "_loader.SeamStatus":
+        """Frozen record of the decay seam for this ECS (SPEC section 4)."""
+        active = "native" if (self.native_decay and self._native is not None) else "python"
+        reason = self.fallback_reason
+        if active == "python" and reason is None:
+            reason = "native_decay lowered by caller"
+        with self._counter_lock:
+            calls = self._decay_native_calls
+            fallbacks = dict(self._decay_fallbacks)
+        return _loader.seam_status(
+            seam="decay",
+            requested=self.native_mode,
+            requested_source=self.native_source,
+            env_raw=self.native_env_raw,
+            active=active,
+            reason=reason,
+            demoted=self.decay_demoted,
+            native_calls=calls,
+            fallbacks=fallbacks,
+        )
 
     # ------------------------------------------------------------------
     # Structural write operations
@@ -257,23 +330,86 @@ class ECS:
 
         Called at evaluation points 1 (before retrieval) and 2 (after
         attention reduce). Decayed values are clamped to `protected_floor`.
+
+        Native failure strategy (SPEC section 5). Known native failures
+        are ``TypeError``, ``OverflowError`` and a result that is not a
+        ``list`` of n floats (``NativeResultError``). Nothing is assigned on
+        a failure (Rust takes owned copies of the columns).
+
+        - auto: the oracle loop runs on the unchanged columns. On success
+          this ECS demotes to the oracle, records
+          ``fallbacks["decay_error:<T>"]`` and logs one WARNING. If the
+          oracle raises too, the original native error is re-raised with
+          the oracle's error chained and the flags are left unchanged.
+        - require: ``NativeSeamError`` from the original error; no oracle.
+
+        Everything else (a ``ValueError`` after the column pre-check,
+        ``ZeroDivisionError``, ``MemoryError``, a Rust panic, ...)
+        propagates untouched.
         """
         n = len(self._ids)
+        native_error: Optional[BaseException] = None
         if self.native_decay and self._native is not None and n:
-            self._utility[:] = self._native.decay_batch(
-                self._utility, self._last_evaluated, self._protected_floor, lam, now
+            if not (
+                len(self._utility)
+                == len(self._last_evaluated)
+                == len(self._protected_floor)
+                == n
+            ):
+                raise RuntimeError("ECS column invariant broken")
+            try:
+                out = self._native.decay_batch(
+                    self._utility, self._last_evaluated, self._protected_floor, lam, now
+                )
+            except (TypeError, OverflowError) as e:
+                native_error = e
+            else:
+                native_error = _check_decay_result(out, n)
+                if native_error is None:
+                    self._utility[:] = out
+                    self._last_evaluated[:] = [now] * n
+                    with self._counter_lock:
+                        self._decay_native_calls += 1
+                    _loader.count_native_call("decay")
+                    return
+            if self.native_mode == "require":
+                raise _loader.NativeSeamError(
+                    f"native decay failed under require: "
+                    f"{type(native_error).__name__}: {native_error}"
+                ) from native_error
+        try:
+            for i in range(n):
+                self._utility[i] = decay_value(
+                    self._utility[i],
+                    self._last_evaluated[i],
+                    self._protected_floor[i],
+                    lam,
+                    now,
+                )
+                self._last_evaluated[i] = now
+        except Exception as oracle_error:
+            if native_error is None:
+                raise
+            raise native_error from oracle_error
+        if native_error is not None:
+            self._demote_decay(native_error)
+
+    def _demote_decay(self, error: BaseException) -> None:
+        """Record an auto-mode decay fallback and demote this ECS."""
+        key = f"decay_error:{type(error).__name__}"
+        self.native_decay = False
+        self.decay_demoted = True
+        self.fallback_reason = f"{key}: {error}"
+        with self._counter_lock:
+            self._decay_fallbacks[key] = self._decay_fallbacks.get(key, 0) + 1
+        _loader.count_fallback("decay", key)
+        if key not in self._warned:
+            self._warned.add(key)
+            _logger.warning(
+                "ECS native decay failed (%s: %s); demoted to the python oracle",
+                type(error).__name__,
+                error,
             )
-            self._last_evaluated[:] = [now] * n
-            return
-        for i in range(n):
-            self._utility[i] = decay_value(
-                self._utility[i],
-                self._last_evaluated[i],
-                self._protected_floor[i],
-                lam,
-                now,
-            )
-            self._last_evaluated[i] = now
 
     def decay_one(self, entity_id: UUID, lam: float, now: float) -> None:
         """Decay a single entity in place. Used by narrow hydration paths."""

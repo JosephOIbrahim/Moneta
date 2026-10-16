@@ -424,6 +424,93 @@ def select(mode: str) -> Tuple[Optional[ModuleType], Optional[str]]:
 
 
 # ---------------------------------------------------------------------------
+# Component-level mode resolution (SPEC section 2, component table)
+# ---------------------------------------------------------------------------
+
+MODES = ("auto", "off", "require")
+SOURCES = ("config", "env", "default", "explicit")
+
+
+def raw_env() -> Optional[str]:
+    """The raw ``MONETA_NATIVE`` value; never warns (for status records)."""
+    return os.environ.get(ENV_VAR)
+
+
+def resolve_component(
+    explicit_mode: Optional[str], source: Optional[str] = None
+) -> Tuple[str, str, Optional[str]]:
+    """``(mode, requested_source, env_raw)`` for one seam component.
+
+    ``explicit_mode=None`` resolves from ``MONETA_NATIVE`` (same
+    normalization as the handle; UNKNOWN warns once and is auto); the
+    source is ``env``, or ``default`` when the variable is unset.
+    An explicit mode ignores env and is recorded as ``explicit`` unless the
+    caller (the handle) passes its own ``source``.
+    """
+    if source is not None and source not in SOURCES:
+        raise ValueError(f"unknown requested_source {source!r}; expected one of {SOURCES}")
+    if explicit_mode is None:
+        mode, env_class, raw = env_mode()
+        if source is None:
+            source = "default" if env_class == UNSET else "env"
+        return mode, source, raw
+    if explicit_mode not in MODES:
+        raise ValueError(
+            f"unknown native mode {explicit_mode!r}; expected 'auto', 'off' or 'require'"
+        )
+    return explicit_mode, source or "explicit", raw_env()
+
+
+@dataclass(frozen=True)
+class SeamStatus:
+    """One seam's selection and execution record. Frozen; a new one per call.
+
+    ``native_calls`` counts successful Rust invocations (each
+    ``ScanIndex.scan`` return, each validated ``decay_batch`` return), not
+    queries. ``fallbacks`` counts oracle executions by a component whose
+    ``active`` was native at call time, keyed by reason.
+    """
+
+    seam: str
+    requested: str
+    requested_source: str
+    env_raw: Optional[str]
+    active: str  # "native" | "python"
+    reason: Optional[str]  # why python is active, else None
+    demoted: bool
+    native_calls: int
+    fallbacks: dict
+    all_native: bool
+
+
+def seam_status(
+    *,
+    seam: str,
+    requested: str,
+    requested_source: str,
+    env_raw: Optional[str],
+    active: str,
+    reason: Optional[str],
+    demoted: bool,
+    native_calls: int,
+    fallbacks: dict,
+) -> SeamStatus:
+    fb = dict(fallbacks)
+    return SeamStatus(
+        seam=seam,
+        requested=requested,
+        requested_source=requested_source,
+        env_raw=env_raw,
+        active=active,
+        reason=None if active == "native" else reason,
+        demoted=demoted,
+        native_calls=native_calls,
+        fallbacks=fb,
+        all_native=active == "native" and not fb and not demoted,
+    )
+
+
+# ---------------------------------------------------------------------------
 # Process-wide aggregate counters (read by the test harness)
 # ---------------------------------------------------------------------------
 
@@ -480,6 +567,7 @@ __all__ = [
     "NativeUnavailableError",
     "NativeSeamError",
     "NativeWheel",
+    "SeamStatus",
     "classify_env",
     "mode_for_class",
     "read_env",
@@ -488,6 +576,9 @@ __all__ = [
     "current_wheel",
     "native_available",
     "select",
+    "raw_env",
+    "resolve_component",
+    "seam_status",
     "count_native_call",
     "count_fallback",
     "counters",

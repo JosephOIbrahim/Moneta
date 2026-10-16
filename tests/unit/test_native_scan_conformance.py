@@ -170,14 +170,36 @@ def test_upsert_dim_mismatch_raises_like_oracle():
 
 
 @needs_native
-def test_non_finite_demotes_to_oracle_and_stays_exact():
+def test_non_finite_demotes_to_oracle_and_stays_exact(monkeypatch):
+    # Demotion is an auto-mode behaviour; backend="native" is require, which
+    # forbids it (next test). Env set per test so every matrix row agrees.
+    monkeypatch.setenv("MONETA_NATIVE", "auto")
     rng = random.Random(6)
-    py, nat = _pair()
+    py, nat = VectorIndex(backend="python"), VectorIndex(backend="auto")
+    assert nat.backend == "native"
     for _ in range(20):
         _apply((py, nat), "upsert", uuid4(), _vec(rng, 4), S)
     bad = uuid4()
     _apply((py, nat), "upsert", bad, [math.inf, 0.0, 1.0, 0.0], S)
     assert nat.backend == "python"
+    assert nat.demoted and nat.fallback_reason == "demoted:nonfinite_upsert"
+    q = _vec(rng, 4)
+    assert repr(nat.query(q, 30)) == repr(py.query(q, 30))
+
+
+@needs_native
+def test_non_finite_upsert_under_require_raises_and_changes_nothing():
+    from moneta import NativeSeamError
+
+    rng = random.Random(6)
+    py, nat = _pair()
+    for _ in range(20):
+        _apply((py, nat), "upsert", uuid4(), _vec(rng, 4), S)
+    before = json.dumps(nat.snapshot(), sort_keys=True)
+    with pytest.raises(NativeSeamError):
+        nat.upsert(uuid4(), [math.inf, 0.0, 1.0, 0.0], S)
+    assert nat.backend == "native" and not nat.demoted
+    assert json.dumps(nat.snapshot(), sort_keys=True) == before
     q = _vec(rng, 4)
     assert repr(nat.query(q, 30)) == repr(py.query(q, 30))
 
