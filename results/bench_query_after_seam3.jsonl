@@ -1,0 +1,6 @@
+{"n": 1000, "dim": 384, "backend": "python", "utilities": "fresh", "queries": 50, "p50_ms": 20.935, "p95_ms": 22.106, "rss_delta_mb": 18.68}
+{"n": 10000, "dim": 384, "backend": "python", "utilities": "fresh", "queries": 50, "p50_ms": 257.827, "p95_ms": 288.268, "rss_delta_mb": 182.3}
+{"n": 10000, "dim": 384, "backend": "python", "utilities": "spread", "queries": 50, "p50_ms": 210.318, "p95_ms": 226.131, "rss_delta_mb": 186.08}
+{"n": 1000, "dim": 384, "backend": "native", "utilities": "fresh", "queries": 50, "p50_ms": 0.383, "p95_ms": 0.434, "rss_delta_mb": 9.84}
+{"n": 10000, "dim": 384, "backend": "native", "utilities": "fresh", "queries": 50, "p50_ms": 2.925, "p95_ms": 3.08, "rss_delta_mb": 65.98}
+{"n": 10000, "dim": 384, "backend": "native", "utilities": "spread", "queries": 50, "p50_ms": 4.521, "p95_ms": 6.206, "rss_delta_mb": 67.59}

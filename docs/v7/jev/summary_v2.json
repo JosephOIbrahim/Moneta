@@ -1,0 +1,491 @@
+{
+  "protocol": "v2: all cyclic rotations, one question per request, 2 repeats; settled = same top in every rotation with mean p >= 0.6 and no option swinging >= 0.2 across rotations",
+  "model_versions": [
+    "jev-1.13.0"
+  ],
+  "r1_policy_history": {
+    "status": "contested",
+    "top_by_rotation": [
+      "journal_values",
+      "one_timeline",
+      "one_timeline"
+    ],
+    "mean_over_rotations": {
+      "one_timeline": 0.6167,
+      "journal_values": 0.3083,
+      "layer_chain": 0.0417,
+      "none_of_these": 0.0333
+    },
+    "position_swing": {
+      "one_timeline": 0.37,
+      "journal_values": 0.365,
+      "layer_chain": 0.02,
+      "none_of_these": 0.01
+    },
+    "rotations": [
+      {
+        "order": [
+          "one_timeline",
+          "journal_values",
+          "layer_chain",
+          "none_of_these"
+        ],
+        "mean": {
+          "one_timeline": 0.4,
+          "journal_values": 0.515,
+          "layer_chain": 0.045,
+          "none_of_these": 0.04
+        },
+        "choices": [
+          "journal_values",
+          "journal_values"
+        ]
+      },
+      {
+        "order": [
+          "journal_values",
+          "layer_chain",
+          "one_timeline",
+          "none_of_these"
+        ],
+        "mean": {
+          "journal_values": 0.15,
+          "layer_chain": 0.05,
+          "one_timeline": 0.77,
+          "none_of_these": 0.03
+        },
+        "choices": [
+          "one_timeline",
+          "one_timeline"
+        ]
+      },
+      {
+        "order": [
+          "layer_chain",
+          "one_timeline",
+          "journal_values",
+          "none_of_these"
+        ],
+        "mean": {
+          "layer_chain": 0.03,
+          "one_timeline": 0.6799999999999999,
+          "journal_values": 0.26,
+          "none_of_these": 0.03
+        },
+        "choices": [
+          "one_timeline",
+          "one_timeline"
+        ]
+      }
+    ]
+  },
+  "r2_first_knob": {
+    "status": "contested",
+    "top_by_rotation": [
+      "recall_half_life",
+      "recall_half_life",
+      "recall_half_life"
+    ],
+    "mean_over_rotations": {
+      "recall_half_life": 0.6033,
+      "utility_exponent": 0.3833,
+      "both": 0.0,
+      "none_of_these": 0.0133
+    },
+    "position_swing": {
+      "recall_half_life": 0.095,
+      "utility_exponent": 0.095,
+      "both": 0.0,
+      "none_of_these": 0.01
+    },
+    "rotations": [
+      {
+        "order": [
+          "recall_half_life",
+          "utility_exponent",
+          "both",
+          "none_of_these"
+        ],
+        "mean": {
+          "recall_half_life": 0.5700000000000001,
+          "utility_exponent": 0.42000000000000004,
+          "both": 0.0,
+          "none_of_these": 0.01
+        },
+        "choices": [
+          "recall_half_life",
+          "recall_half_life"
+        ]
+      },
+      {
+        "order": [
+          "utility_exponent",
+          "both",
+          "recall_half_life",
+          "none_of_these"
+        ],
+        "mean": {
+          "utility_exponent": 0.405,
+          "both": 0.0,
+          "recall_half_life": 0.575,
+          "none_of_these": 0.02
+        },
+        "choices": [
+          "recall_half_life",
+          "recall_half_life"
+        ]
+      },
+      {
+        "order": [
+          "both",
+          "recall_half_life",
+          "utility_exponent",
+          "none_of_these"
+        ],
+        "mean": {
+          "both": 0.0,
+          "recall_half_life": 0.665,
+          "utility_exponent": 0.32499999999999996,
+          "none_of_these": 0.01
+        },
+        "choices": [
+          "recall_half_life",
+          "recall_half_life"
+        ]
+      }
+    ]
+  },
+  "r3_labels": {
+    "status": "contested",
+    "top_by_rotation": [
+      "owner_labels",
+      "owner_labels",
+      "owner_labels",
+      "owner_labels"
+    ],
+    "mean_over_rotations": {
+      "use_signals": 0.0912,
+      "model_labels": 0.1338,
+      "owner_labels": 0.5525,
+      "mixed": 0.1187,
+      "none_of_these": 0.1025
+    },
+    "position_swing": {
+      "use_signals": 0.095,
+      "model_labels": 0.155,
+      "owner_labels": 0.13,
+      "mixed": 0.08,
+      "none_of_these": 0.025
+    },
+    "rotations": [
+      {
+        "order": [
+          "use_signals",
+          "model_labels",
+          "owner_labels",
+          "mixed",
+          "none_of_these"
+        ],
+        "mean": {
+          "use_signals": 0.055,
+          "model_labels": 0.09,
+          "owner_labels": 0.59,
+          "mixed": 0.155,
+          "none_of_these": 0.11
+        },
+        "choices": [
+          "owner_labels",
+          "owner_labels"
+        ]
+      },
+      {
+        "order": [
+          "model_labels",
+          "owner_labels",
+          "mixed",
+          "use_signals",
+          "none_of_these"
+        ],
+        "mean": {
+          "model_labels": 0.060000000000000005,
+          "owner_labels": 0.56,
+          "mixed": 0.16,
+          "use_signals": 0.1,
+          "none_of_these": 0.11499999999999999
+        },
+        "choices": [
+          "owner_labels",
+          "owner_labels"
+        ]
+      },
+      {
+        "order": [
+          "owner_labels",
+          "mixed",
+          "use_signals",
+          "model_labels",
+          "none_of_these"
+        ],
+        "mean": {
+          "owner_labels": 0.46499999999999997,
+          "mixed": 0.08,
+          "use_signals": 0.15,
+          "model_labels": 0.215,
+          "none_of_these": 0.09
+        },
+        "choices": [
+          "owner_labels",
+          "owner_labels"
+        ]
+      },
+      {
+        "order": [
+          "mixed",
+          "use_signals",
+          "model_labels",
+          "owner_labels",
+          "none_of_these"
+        ],
+        "mean": {
+          "mixed": 0.08,
+          "use_signals": 0.06,
+          "model_labels": 0.17,
+          "owner_labels": 0.595,
+          "none_of_these": 0.095
+        },
+        "choices": [
+          "owner_labels",
+          "owner_labels"
+        ]
+      }
+    ]
+  },
+  "r4_pointer": {
+    "status": "settled",
+    "top_by_rotation": [
+      "owner_gate",
+      "owner_gate",
+      "owner_gate"
+    ],
+    "mean_over_rotations": {
+      "shadow_only": 0.0367,
+      "owner_gate": 0.9133,
+      "probation": 0.005,
+      "none_of_these": 0.045
+    },
+    "position_swing": {
+      "shadow_only": 0.03,
+      "owner_gate": 0.045,
+      "probation": 0.01,
+      "none_of_these": 0.035
+    },
+    "rotations": [
+      {
+        "order": [
+          "shadow_only",
+          "owner_gate",
+          "probation",
+          "none_of_these"
+        ],
+        "mean": {
+          "shadow_only": 0.02,
+          "owner_gate": 0.9299999999999999,
+          "probation": 0.01,
+          "none_of_these": 0.04
+        },
+        "choices": [
+          "owner_gate",
+          "owner_gate"
+        ]
+      },
+      {
+        "order": [
+          "owner_gate",
+          "probation",
+          "shadow_only",
+          "none_of_these"
+        ],
+        "mean": {
+          "owner_gate": 0.925,
+          "probation": 0.005,
+          "shadow_only": 0.04,
+          "none_of_these": 0.03
+        },
+        "choices": [
+          "owner_gate",
+          "owner_gate"
+        ]
+      },
+      {
+        "order": [
+          "probation",
+          "shadow_only",
+          "owner_gate",
+          "none_of_these"
+        ],
+        "mean": {
+          "probation": 0.0,
+          "shadow_only": 0.05,
+          "owner_gate": 0.885,
+          "none_of_these": 0.065
+        },
+        "choices": [
+          "owner_gate",
+          "owner_gate"
+        ]
+      }
+    ]
+  },
+  "r5_tamper": {
+    "status": "settled",
+    "top_by_rotation": [
+      "seals_and_signing",
+      "seals_and_signing",
+      "seals_and_signing"
+    ],
+    "mean_over_rotations": {
+      "seals_and_signing": 0.925,
+      "seals_only": 0.0,
+      "per_line_chain": 0.0183,
+      "none_of_these": 0.0567
+    },
+    "position_swing": {
+      "seals_and_signing": 0.045,
+      "seals_only": 0.0,
+      "per_line_chain": 0.015,
+      "none_of_these": 0.03
+    },
+    "rotations": [
+      {
+        "order": [
+          "seals_and_signing",
+          "seals_only",
+          "per_line_chain",
+          "none_of_these"
+        ],
+        "mean": {
+          "seals_and_signing": 0.9,
+          "seals_only": 0.0,
+          "per_line_chain": 0.025,
+          "none_of_these": 0.07500000000000001
+        },
+        "choices": [
+          "seals_and_signing",
+          "seals_and_signing"
+        ]
+      },
+      {
+        "order": [
+          "seals_only",
+          "per_line_chain",
+          "seals_and_signing",
+          "none_of_these"
+        ],
+        "mean": {
+          "seals_only": 0.0,
+          "per_line_chain": 0.01,
+          "seals_and_signing": 0.945,
+          "none_of_these": 0.045
+        },
+        "choices": [
+          "seals_and_signing",
+          "seals_and_signing"
+        ]
+      },
+      {
+        "order": [
+          "per_line_chain",
+          "seals_and_signing",
+          "seals_only",
+          "none_of_these"
+        ],
+        "mean": {
+          "per_line_chain": 0.02,
+          "seals_and_signing": 0.93,
+          "seals_only": 0.0,
+          "none_of_these": 0.05
+        },
+        "choices": [
+          "seals_and_signing",
+          "seals_and_signing"
+        ]
+      }
+    ]
+  },
+  "r4_pointer_neutral": {
+    "status": "settled",
+    "top_by_rotation": [
+      "owner_gate",
+      "owner_gate",
+      "owner_gate"
+    ],
+    "mean_over_rotations": {
+      "shadow_only": 0.07,
+      "owner_gate": 0.7933,
+      "probation": 0.02,
+      "none_of_these": 0.1167
+    },
+    "position_swing": {
+      "shadow_only": 0.075,
+      "owner_gate": 0.145,
+      "probation": 0.02,
+      "none_of_these": 0.11
+    },
+    "rotations": [
+      {
+        "order": [
+          "shadow_only",
+          "owner_gate",
+          "probation",
+          "none_of_these"
+        ],
+        "mean": {
+          "shadow_only": 0.03,
+          "owner_gate": 0.885,
+          "probation": 0.02,
+          "none_of_these": 0.065
+        },
+        "choices": [
+          "owner_gate",
+          "owner_gate"
+        ]
+      },
+      {
+        "order": [
+          "owner_gate",
+          "probation",
+          "shadow_only",
+          "none_of_these"
+        ],
+        "mean": {
+          "owner_gate": 0.755,
+          "probation": 0.03,
+          "shadow_only": 0.105,
+          "none_of_these": 0.11
+        },
+        "choices": [
+          "owner_gate",
+          "owner_gate"
+        ]
+      },
+      {
+        "order": [
+          "probation",
+          "shadow_only",
+          "owner_gate",
+          "none_of_these"
+        ],
+        "mean": {
+          "probation": 0.01,
+          "shadow_only": 0.07500000000000001,
+          "owner_gate": 0.74,
+          "none_of_these": 0.175
+        },
+        "choices": [
+          "owner_gate",
+          "owner_gate"
+        ]
+      }
+    ]
+  }
+}

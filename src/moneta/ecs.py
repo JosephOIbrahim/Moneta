@@ -23,15 +23,32 @@ maintained alongside every structural mutation.
 """
 from __future__ import annotations
 
+import heapq
 import logging
 import math
-from typing import Optional
+import os
+from array import array
+from typing import Iterable, Optional, Sequence
 from uuid import UUID
 
 from .decay import decay_value
 from .types import EntityState, Memory
 
 _logger = logging.getLogger(__name__)
+
+try:  # Optional native seam (seam rule, O27); the Python loop below is its oracle.
+    import moneta_native as _native
+except ImportError:  # pragma: no cover - exercised when the wheel is absent
+    _native = None
+
+
+def _compact_vector(values: "Iterable[float]") -> "Sequence[float]":
+    """Store a vector as packed doubles; fall back to a list for anything
+    array('d') cannot hold (non-numeric or out-of-range components)."""
+    try:
+        return array("d", values)
+    except (TypeError, OverflowError):
+        return list(values)
 
 
 class ECS:
@@ -42,11 +59,23 @@ class ECS:
     indexed by row position.
     """
 
-    def __init__(self) -> None:
+    def __init__(self, native: Optional[bool] = None) -> None:
+        # Native decay kernel: on by default when moneta_native is installed
+        # (MONETA_NATIVE=0 forces the oracle). Bit-identical to decay_value
+        # (tests/unit/test_native_decay_parity.py).
+        if native is None:
+            native = _native is not None and os.environ.get("MONETA_NATIVE", "1") != "0"
+        elif native and _native is None:
+            raise RuntimeError("native=True requested but moneta_native is not installed")
+        self.native_decay: bool = bool(native)
+
         # Parallel columns. Indices [0, n) are live; there are no holes.
         self._ids: list[UUID] = []
         self._payloads: list[str] = []
-        self._embeddings: list[list[float]] = []
+        # Embeddings are held as array('d') (8 bytes per component) rather
+        # than lists of float objects (~32 bytes each). Memory snapshots
+        # still hand out plain lists; values are the same doubles.
+        self._embeddings: list[Sequence[float]] = []
         self._utility: list[float] = []
         self._attended: list[int] = []
         self._protected_floor: list[float] = []
@@ -97,7 +126,7 @@ class ECS:
         row = len(self._ids)
         self._ids.append(entity_id)
         self._payloads.append(payload)
-        self._embeddings.append(list(embedding))
+        self._embeddings.append(_compact_vector(embedding))
         self._utility.append(float(utility))
         self._attended.append(0)
         self._protected_floor.append(float(protected_floor))
@@ -159,7 +188,7 @@ class ECS:
         row = len(self._ids)
         self._ids.append(memory.entity_id)
         self._payloads.append(memory.payload)
-        self._embeddings.append(list(memory.semantic_vector))
+        self._embeddings.append(_compact_vector(memory.semantic_vector))
         self._utility.append(float(memory.utility))
         self._attended.append(int(memory.attended_count))
         self._protected_floor.append(float(memory.protected_floor))
@@ -225,7 +254,14 @@ class ECS:
         Called at evaluation points 1 (before retrieval) and 2 (after
         attention reduce). Decayed values are clamped to `protected_floor`.
         """
-        for i in range(len(self._ids)):
+        n = len(self._ids)
+        if self.native_decay and n:
+            self._utility[:] = _native.decay_batch(
+                self._utility, self._last_evaluated, self._protected_floor, lam, now
+            )
+            self._last_evaluated[:] = [now] * n
+            return
+        for i in range(n):
             self._utility[i] = decay_value(
                 self._utility[i],
                 self._last_evaluated[i],
@@ -295,6 +331,54 @@ class ECS:
             scored.append((cos_sim * self._utility[i], i))
         scored.sort(key=lambda t: t[0], reverse=True)
         return [self._row_to_memory(row) for _, row in scored[:k]]
+
+    def rank_hits(
+        self,
+        hits: "Iterable[tuple[UUID, float]]",
+        limit: int,
+    ) -> list[Memory]:
+        """Rerank vector-index hits by ``max(cosine, 0.0) * utility``.
+
+        ``hits`` are ``(entity_id, cosine)`` pairs in the index's order
+        (cosine descending); ids absent from the ECS are skipped. Equal
+        scores keep hit order (stable sort). Only the returned top
+        ``limit`` rows are projected to ``Memory``.
+
+        Exact early stop: with ``u_max = max(utility) >= 0``, every later
+        hit scores at most ``max(cos, 0) * u_max`` (IEEE multiplication by a
+        non-negative factor is monotone), and that bound is non-increasing
+        along the hits. Once it is ``<=`` the current ``limit``-th best
+        score, no later hit can enter the top ``limit``: a strictly lower
+        score loses, and an equal one sorts after the earlier holder. The
+        result is identical to ranking every hit.
+        """
+        id_to_row = self._id_to_row
+        utility = self._utility
+        ranked: list[tuple[float, int]] = []
+        # The bound needs every utility finite (NaN breaks ordering) and
+        # u_max >= 0; otherwise rank every hit, exactly as before.
+        can_stop = limit > 0 and bool(utility) and math.isfinite(sum(utility))
+        u_max = max(utility) if can_stop else 0.0
+        can_stop = can_stop and u_max >= 0.0
+        best: list[float] = []  # min-heap of the top `limit` scores so far
+        for entity_id, cos_sim in hits:
+            pos = cos_sim if cos_sim > 0.0 else 0.0
+            if can_stop and len(best) == limit and pos * u_max <= best[0]:
+                break
+            row = id_to_row.get(entity_id)
+            if row is None:
+                continue
+            score = max(cos_sim, 0.0) * utility[row]
+            ranked.append((score, row))
+            if score != score:  # NaN cosine: fall back to ranking every hit
+                can_stop = False
+            if can_stop:
+                if len(best) < limit:
+                    heapq.heappush(best, score)
+                elif score > best[0]:
+                    heapq.heapreplace(best, score)
+        ranked.sort(key=lambda t: t[0], reverse=True)
+        return [self._row_to_memory(row) for _, row in ranked[:limit]]
 
     def staged_entities(self) -> list[Memory]:
         """Return every entity currently in STAGED_FOR_SYNC."""

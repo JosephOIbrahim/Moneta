@@ -1,0 +1,3 @@
+{"arm_p_exactness": {"n": 2000, "cosines_not_bit_equal": 1496, "of": 2000, "order_differs": false}}
+{"n": 1000, "dim": 384, "backend": "arm_p_numpy", "queries": 30, "p50_ms": 4.345, "p95_ms": 5.888, "rss_delta_mb": 16.93}
+{"n": 10000, "dim": 384, "backend": "arm_p_numpy", "queries": 30, "p50_ms": 71.564, "p95_ms": 109.24, "rss_delta_mb": 182.21}
