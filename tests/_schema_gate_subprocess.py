@@ -18,9 +18,45 @@ diagnostic message, exit code is non-zero.
 """
 from __future__ import annotations
 
+import os
 import sys
 import time as _time
 from pathlib import Path
+
+
+def _check_identity(m) -> None:
+    """Fail unless this process runs the clone's moneta and, under
+    ``MONETA_NATIVE=require`` (classified here, independently of the parent),
+    the exact extension file the parent loaded. Off/auto never touch
+    moneta_native; this function never imports it itself.
+    """
+    import moneta
+    from moneta import _native
+
+    norm = lambda p: os.path.normcase(os.path.realpath(str(p)))  # noqa: E731
+    want = os.environ.get("MONETA_GATE_EXPECT_MONETA", "")
+    assert want, "MONETA_GATE_EXPECT_MONETA is missing or empty; the parent must name the clone path"
+    got = norm(moneta.__file__)
+    assert got == want, f"gate imported moneta from {got}, expected {want}"
+    if _native.classify_env(os.environ.get("MONETA_NATIVE")) != _native.REQUIRE:
+        return
+    want_pyd = os.environ.get("MONETA_GATE_EXPECT_PYD", "")
+    want_sha = os.environ.get("MONETA_GATE_EXPECT_PYD_SHA256", "")
+    assert want_pyd and want_sha, (
+        "MONETA_NATIVE=require but the parent did not supply both "
+        "MONETA_GATE_EXPECT_PYD and MONETA_GATE_EXPECT_PYD_SHA256"
+    )
+    st = m.native_status
+    w = st.wheel
+    assert w.state == _native.LOADED, f"extension not loaded: {w.state} {w.reason}"
+    mod = sys.modules.get("moneta_native")
+    loaded = _native._extension_path(mod) if mod is not None else None
+    assert loaded is not None and norm(loaded) == want_pyd, (
+        f"gate loaded extension {loaded}, expected {want_pyd}"
+    )
+    assert norm(w.path) == want_pyd, f"status reports {w.path}, expected {want_pyd}"
+    assert w.sha256 == want_sha, f"extension sha256 {w.sha256}, expected {want_sha}"
+    assert st.scan.active == st.decay.active == "native", (st.scan, st.decay)
 
 
 def main() -> None:
@@ -74,6 +110,7 @@ def main() -> None:
             half_life_seconds=60.0,
         )
     ) as m:
+        _check_identity(m)
         eid = m.deposit("gate test memory", [1.0, 0.0, 0.0])
         # Force the deposited memory to match staging criteria
         # (utility < 0.3 AND attended_count >= 3) so the next sleep

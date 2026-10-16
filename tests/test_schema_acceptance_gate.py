@@ -82,8 +82,25 @@ def test_schema_acceptance_gate(tmp_path: Path) -> None:
     env = os.environ.copy()
     env["PXR_PLUGINPATH_NAME"] = str(_SCHEMA_DIR)
     # PYTHONPATH so the subprocess can import moneta (the repo is not
-    # pip-installed in the gate's clean USD process).
-    env["PYTHONPATH"] = str(_REPO_ROOT / "src")
+    # pip-installed in the gate's clean USD process). The clone's src comes
+    # first; the parent's PYTHONPATH follows unchanged.
+    inherited = [p for p in os.environ.get("PYTHONPATH", "").split(os.pathsep) if p]
+    env["PYTHONPATH"] = os.pathsep.join([str(_REPO_ROOT / "src"), *inherited])
+    # Inheriting PYTHONPATH does not prove what the nested process loads, so it
+    # must report back: always the exact clone path of moneta; under
+    # MONETA_NATIVE=require also the exact path and sha256 of the extension the
+    # parent loaded. Off/auto runs never import moneta_native here.
+    _norm = lambda p: os.path.normcase(os.path.realpath(str(p)))  # noqa: E731
+    env["MONETA_GATE_EXPECT_MONETA"] = _norm(_REPO_ROOT / "src" / "moneta" / "__init__.py")
+    env.pop("MONETA_GATE_EXPECT_PYD", None)
+    env.pop("MONETA_GATE_EXPECT_PYD_SHA256", None)
+    from moneta import _native
+
+    if _native.classify_env(os.environ.get("MONETA_NATIVE")) == _native.REQUIRE:
+        wheel = _native.wheel_info()
+        assert wheel.state == _native.LOADED and wheel.path and wheel.sha256, wheel
+        env["MONETA_GATE_EXPECT_PYD"] = _norm(wheel.path)
+        env["MONETA_GATE_EXPECT_PYD_SHA256"] = wheel.sha256
 
     result = subprocess.run(
         [sys.executable, str(_SUBPROCESS_BODY), str(tmp_path)],

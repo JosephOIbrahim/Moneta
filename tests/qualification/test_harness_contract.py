@@ -30,7 +30,13 @@ def _run(tmp_path, args, **env_over):
         for k, v in os.environ.items()
         if k not in ("MONETA_NATIVE", "MONETA_QUAL_REPORT", "MONETA_QUAL_GUARD", "PYTHONPATH")
     }
-    env["PYTHONPATH"] = os.pathsep.join([str(SRC), str(shim)])
+    # The clone's src and the absent-shim come first, so moneta is the clone's
+    # and moneta_native resolves to the shim (it precedes any inherited wheel
+    # directory). The parent's own PYTHONPATH follows unchanged, so the nested
+    # sys.executable sees the same import roots the parent ran with (e.g. where
+    # pytest itself came from). The user site is not enabled.
+    inherited = [p for p in os.environ.get("PYTHONPATH", "").split(os.pathsep) if p]
+    env["PYTHONPATH"] = os.pathsep.join([str(SRC), str(shim), *inherited])
     env["PYTHONDONTWRITEBYTECODE"] = "1"
     env.update(env_over)
     return subprocess.run(
