@@ -39,6 +39,7 @@ _DEFECT_DOC = "docs/design/R1-attention-durability.md"
 def _unresolved(path: str) -> pytest.MarkDecorator:
     return pytest.mark.xfail(
         strict=True,
+        raises=AssertionError,
         reason=(
             "UNRESOLVED DEFECT: undrained attention lost across snapshot/restart "
             f"(path {path}); see {_DEFECT_DOC}"
