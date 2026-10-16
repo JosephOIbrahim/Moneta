@@ -209,9 +209,59 @@ def _sha256(path: Path) -> Optional[str]:
         return None
 
 
-def _record_identity(ext: Path, sha_hex: Optional[str]) -> Tuple[Optional[bool], Optional[str]]:
-    """``(record_match, direct_url)`` from a ``moneta_native-*.dist-info``
-    beside the package directory. None/None when there is none."""
+def _dist_version(dist: Path) -> Optional[str]:
+    try:
+        with open(dist / "METADATA", encoding="utf-8") as fp:
+            for line in fp:
+                if line.startswith("Version:"):
+                    return line.split(":", 1)[1].strip()
+                if not line.strip():
+                    break  # end of the header block
+    except (OSError, UnicodeDecodeError, ValueError):
+        return None
+    return None
+
+
+def _record_row_match(
+    dist: Path, site_dir: Path, ext_resolved: Path, sha_hex: Optional[str]
+) -> Tuple[bool, Optional[bool]]:
+    """``(has_row, match)`` for the RECORD row naming the extension."""
+    try:
+        with open(dist / "RECORD", newline="", encoding="utf-8") as fp:
+            rows = list(csv.reader(fp))
+    except (OSError, UnicodeDecodeError, csv.Error, ValueError):
+        # Unreadable or corrupt metadata is "no usable RECORD", never a
+        # reason to block classification of an extension that imported.
+        return False, None
+    for row in rows:
+        if not row or len(row) < 2:
+            continue
+        try:
+            entry = (site_dir / row[0]).resolve()
+        except OSError:
+            continue
+        if entry != ext_resolved:
+            continue
+        algo, _, digest = row[1].partition("=")
+        if sha_hex is None or algo != "sha256" or not digest:
+            return True, None
+        expected = base64.urlsafe_b64encode(bytes.fromhex(sha_hex)).rstrip(b"=")
+        return True, digest.encode("ascii", "replace") == expected
+    return False, None
+
+
+def _record_identity(
+    ext: Path, sha_hex: Optional[str], version: Optional[str] = None
+) -> Tuple[Optional[bool], Optional[str]]:
+    """``(record_match, direct_url)`` from the ``moneta_native-*.dist-info``
+    beside the package directory. None/None when there is none.
+
+    Unzipping a newer wheel over an older one leaves both dist-info folders,
+    so the dist-info whose METADATA ``Version`` equals the loaded module's
+    ``__version__`` decides. Without a version match: True if any RECORD row
+    for the extension matches, False only if rows exist and none match, None
+    if no dist-info names the extension.
+    """
     pkg_dir = ext.parent
     site_dir = pkg_dir.parent
     try:
@@ -222,30 +272,23 @@ def _record_identity(ext: Path, sha_hex: Optional[str]) -> Tuple[Optional[bool],
         ext_resolved = ext.resolve()
     except OSError:
         ext_resolved = ext
+    if version is not None:
+        for dist in dist_infos:
+            if _dist_version(dist) == version:
+                has_row, match = _record_row_match(dist, site_dir, ext_resolved, sha_hex)
+                if has_row:
+                    return match, _direct_url(dist)
+    seen_row: Optional[Path] = None
     for dist in dist_infos:
-        record = dist / "RECORD"
-        try:
-            with open(record, newline="", encoding="utf-8") as fp:
-                rows = list(csv.reader(fp))
-        except (OSError, UnicodeDecodeError, csv.Error, ValueError):
-            # Unreadable or corrupt metadata is "no usable RECORD", never a
-            # reason to block classification of an extension that imported.
+        has_row, match = _record_row_match(dist, site_dir, ext_resolved, sha_hex)
+        if not has_row:
             continue
-        for row in rows:
-            if not row or len(row) < 2:
-                continue
-            try:
-                entry = (site_dir / row[0]).resolve()
-            except OSError:
-                continue
-            if entry != ext_resolved:
-                continue
-            match: Optional[bool] = None
-            algo, _, digest = row[1].partition("=")
-            if sha_hex is not None and algo == "sha256" and digest:
-                expected = base64.urlsafe_b64encode(bytes.fromhex(sha_hex)).rstrip(b"=")
-                match = digest.encode("ascii", "replace") == expected
-            return match, _direct_url(dist)
+        if match:
+            return True, _direct_url(dist)
+        if seen_row is None and match is False:
+            seen_row = dist
+    if seen_row is not None:
+        return False, _direct_url(seen_row)
     return None, None
 
 
@@ -288,7 +331,7 @@ def _classify(mod: ModuleType) -> NativeWheel:
     direct_url: Optional[str] = None
     if ext is not None:
         try:
-            record_match, direct_url = _record_identity(ext, sha)
+            record_match, direct_url = _record_identity(ext, sha, version)
         except Exception:
             # Identity is observability only; damaged dist-info metadata must
             # not turn a successful import into a failed construction.

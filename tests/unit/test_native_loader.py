@@ -440,6 +440,38 @@ def test_identity_record_match_true_and_direct_url(isolated, tmp_path):
     assert w.direct_url == "file:///x/moneta_native.whl"
 
 
+def _stale_dist(tmp_path: Path, ext: Path, version: str = "0.0.9") -> None:
+    """An older wheel's dist-info left behind by unzipping over it; it sorts
+    before ``moneta_native-0.1.0.dist-info`` and its RECORD hash is wrong."""
+    suffix = importlib.machinery.EXTENSION_SUFFIXES[0]
+    dist = tmp_path / "site" / f"{MOD}-{version}.dist-info"
+    dist.mkdir()
+    (dist / "METADATA").write_text(f"Metadata-Version: 2.1\nName: {MOD}\nVersion: {version}\n\n", encoding="utf-8")
+    bad = "7G1_DDXFs0X5g_SqgM_qCG86ykVOnNdKWLYggiewKDM"
+    (dist / "RECORD").write_text(
+        f"{MOD}/{MOD}{suffix},sha256={bad},{ext.stat().st_size}\n{MOD}-{version}.dist-info/RECORD,,\n",
+        encoding="utf-8",
+    )
+
+
+def test_identity_stale_dist_info_does_not_mask_match(isolated, tmp_path):
+    ext, _sha = _fake_ext_layout(tmp_path, "correct", None)
+    _stale_dist(tmp_path, ext)
+    _install(isolated, _fake_with_ext(ext))
+    assert _native.wheel_info().record_match is True
+
+
+def test_identity_prefers_dist_info_matching_module_version(isolated, tmp_path):
+    ext, _sha = _fake_ext_layout(tmp_path, "correct", '{"url": "file:///new.whl"}')
+    (tmp_path / "site" / f"{MOD}-0.1.0.dist-info" / "METADATA").write_text(
+        f"Metadata-Version: 2.1\nName: {MOD}\nVersion: 0.1.0\n\n", encoding="utf-8"
+    )
+    _stale_dist(tmp_path, ext)
+    _install(isolated, _fake_with_ext(ext))
+    w = _native.wheel_info()
+    assert (w.record_match, w.direct_url) == (True, "file:///new.whl")
+
+
 def test_identity_record_mismatch(isolated, tmp_path):
     ext, _sha = _fake_ext_layout(tmp_path, "7G1_DDXFs0X5g_SqgM_qCG86ykVOnNdKWLYggiewKDM", None)
     _install(isolated, _fake_with_ext(ext))
