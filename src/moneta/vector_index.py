@@ -75,17 +75,12 @@ from __future__ import annotations
 
 import logging
 import math
-import os
 from pathlib import Path
 from typing import Iterable, Iterator, List, Optional, Tuple
 from uuid import UUID
 
+from . import _native as _loader
 from .types import EntityState
-
-try:  # Optional native seam (seam rule, O27). Moneta never requires it.
-    import moneta_native as _native
-except ImportError:  # pragma: no cover - exercised when the wheel is absent
-    _native = None
 
 _logger = logging.getLogger(__name__)
 
@@ -100,23 +95,30 @@ _ITER_FIRST_WINDOW = 256
 
 
 def native_available() -> bool:
-    """True when the optional ``moneta_native`` extension is importable."""
-    return _native is not None
+    """True when ``moneta_native`` is loaded and API-compatible.
+
+    Shim over :func:`moneta._native.native_available`; forces the probe
+    whatever ``MONETA_NATIVE`` says.
+    """
+    return _loader.native_available()
 
 
-def _resolve_backend(backend: str) -> str:
+def _resolve_backend(backend: str):
+    """``(backend, module)``. Only an auto or native request probes the wheel."""
     if backend not in _BACKENDS:
         raise ValueError(f"unknown vector index backend {backend!r}; expected one of {_BACKENDS}")
     if backend == "python":
-        return "python"
+        return "python", None
     if backend == "native":
-        if _native is None:
-            raise RuntimeError("backend='native' requested but moneta_native is not installed")
-        return "native"
-    # auto: native when installed, unless MONETA_NATIVE=0 forces the oracle.
-    if _native is not None and os.environ.get("MONETA_NATIVE", "1") != "0":
-        return "native"
-    return "python"
+        # Raises NativeUnavailableError (a RuntimeError) when not loaded.
+        return "native", _loader.select("require")[0]
+    # auto: native when loaded, unless MONETA_NATIVE is an OFF value. Env
+    # "require" keeps today's behaviour until the handle truth table lands.
+    mode, _cls, _raw = _loader.env_mode()
+    if mode == "off":
+        return "python", None
+    mod = _loader.select("auto")[0]
+    return ("native", mod) if mod is not None else ("python", None)
 
 
 def _oracle_scan(
@@ -198,7 +200,7 @@ class VectorIndex:
                 "backend (see module docstring for the LanceDB rationale)",
                 persist_path,
             )
-        self.backend = _resolve_backend(backend)
+        self.backend, self._native = _resolve_backend(backend)
         self._reset()
         _logger.info("vector_index initialized (%s backend)", self.backend)
 
@@ -272,7 +274,7 @@ class VectorIndex:
             # before mutating anything; on refusal, demote to the oracle.
             try:
                 if self._store is None:
-                    self._store = _native.ScanIndex(len(vec))
+                    self._store = self._native.ScanIndex(len(vec))
                 slot = self._slot.get(entity_id)
                 if slot is None:
                     self._slot[entity_id] = self._store.push(vec)
@@ -447,7 +449,7 @@ class VectorIndex:
                 self._records[eid] = (vec, state)
             else:
                 if self._store is None:
-                    self._store = _native.ScanIndex(self._dim)
+                    self._store = self._native.ScanIndex(self._dim)
                 slot = self._slot.get(eid)
                 if slot is None:  # a repeated id keeps its first position, like a dict
                     self._slot[eid] = self._store.push(vec)

@@ -26,20 +26,15 @@ from __future__ import annotations
 import heapq
 import logging
 import math
-import os
 from array import array
 from typing import Iterable, Optional, Sequence
 from uuid import UUID
 
+from . import _native as _loader
 from .decay import decay_value
 from .types import EntityState, Memory
 
 _logger = logging.getLogger(__name__)
-
-try:  # Optional native seam (seam rule, O27); the Python loop below is its oracle.
-    import moneta_native as _native
-except ImportError:  # pragma: no cover - exercised when the wheel is absent
-    _native = None
 
 
 def _compact_vector(values: "Iterable[float]") -> "Sequence[float]":
@@ -61,13 +56,22 @@ class ECS:
 
     def __init__(self, native: Optional[bool] = None) -> None:
         # Native decay kernel: on by default when moneta_native is installed
-        # (MONETA_NATIVE=0 forces the oracle). Bit-identical to decay_value
+        # (an OFF MONETA_NATIVE value, 0/false/off/no, forces the oracle).
+        # Bit-identical to decay_value
         # (tests/unit/test_native_decay_parity.py).
+        # The module comes from moneta._native and is captured per ECS;
+        # an off ECS never imports moneta_native.
         if native is None:
-            native = _native is not None and os.environ.get("MONETA_NATIVE", "1") != "0"
-        elif native and _native is None:
-            raise RuntimeError("native=True requested but moneta_native is not installed")
-        self.native_decay: bool = bool(native)
+            mode, _cls, _raw = _loader.env_mode()
+            # Env "require" keeps today's behaviour (native when loaded) until
+            # the handle-level truth table lands; only OFF skips the probe.
+            self._native = None if mode == "off" else _loader.select("auto")[0]
+        elif native:
+            # Raises NativeUnavailableError (a RuntimeError) when not loaded.
+            self._native = _loader.select("require")[0]
+        else:
+            self._native = None
+        self.native_decay: bool = self._native is not None
 
         # Parallel columns. Indices [0, n) are live; there are no holes.
         self._ids: list[UUID] = []
@@ -255,8 +259,8 @@ class ECS:
         attention reduce). Decayed values are clamped to `protected_floor`.
         """
         n = len(self._ids)
-        if self.native_decay and n:
-            self._utility[:] = _native.decay_batch(
+        if self.native_decay and self._native is not None and n:
+            self._utility[:] = self._native.decay_batch(
                 self._utility, self._last_evaluated, self._protected_floor, lam, now
             )
             self._last_evaluated[:] = [now] * n

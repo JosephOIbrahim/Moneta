@@ -14,6 +14,12 @@ from .api import (
     smoke_check,
 )
 from .types import EntityState, Memory
+from ._native import (
+    NativeConfigError,
+    NativeSeamError,
+    NativeUnavailableError,
+    NativeWheel,
+)
 
 __all__ = [
     # Substrate handle (DEEP_THINK_BRIEF §5.1, §5.3)
@@ -22,6 +28,11 @@ __all__ = [
     # Errors
     "MonetaResourceLockedError",
     "ProtectedQuotaExceededError",
+    "NativeConfigError",
+    "NativeUnavailableError",
+    "NativeSeamError",
+    # Native wheel identity (moneta._native)
+    "NativeWheel",
     # Free-function smoke check (constructs its own ephemeral handle)
     "smoke_check",
     # Types
