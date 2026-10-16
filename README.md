@@ -35,7 +35,13 @@ with moneta.Moneta(moneta.MonetaConfig.ephemeral()) as m:
 
 - **Optional Rust native seams.** The v1 cosine scan and decay loop, plus v5's dot products and decay, run in Rust when the `moneta_native` wheel is installed. Results are bit-identical to the Python oracles. `MONETA_NATIVE=0` turns them off.
 - **A v5 preview beside v1.** `moneta.v5` is a reference implementation where the journal is the database. The v1 API (`moneta.Moneta`) is unchanged. Nothing has flipped on `main`.
-- **Tests:** 405 passing in four configurations (Python 3.14 and hython 3.11, each with `MONETA_NATIVE=0` and `=1`).
+- **Tests at the `v1.3.0-rc1` tag:** 405 passing in four configurations (Python 3.14 and hython 3.11, each with `MONETA_NATIVE=0` and `=1`). Those runs could not show whether Rust actually ran.
+- **Tests on branch `harden/native-observability` at `e7325bb`, Python 3.14.2 only:**
+  - with the wheel: 779 passed and 2 xfailed;
+  - verdict `NATIVE QUALIFIED` under `MONETA_NATIVE=1` and `=require`;
+  - verdict `PYTHON-ONLY PASS` under `=0` and without the wheel.
+  - The 2 xfails are unresolved defects B and D.
+  - The hython rows are planned. See the [test matrix](#status).
 
 **What is NOT done:** v5 is gated on owner rulings with open conditions, and 5.0.0 is not released. The open items are listed in the [v1.3.0-rc1 verdict](#v130-rc1-verdict).
 
