@@ -76,7 +76,8 @@ def _rich_store(path: Path, clock: ManualClock) -> list[UUID]:
         m.run_sleep_pass()
         m.tombstone([ids[3], ids[4]], reason="operator")
         clock.advance(60)
-        m.signal_attention({ids[2]: 0.5})
+        fresh = m.deposit("fresh", [0.2, 0.4, 0.6])
+        m.signal_attention({ids[2]: 0.5, fresh: 0.5})  # attention since the last pass
     return ids
 
 
@@ -94,6 +95,7 @@ def test_checkpoint_plus_tail_equals_replay_from_genesis(tmp_path):
     clock = ManualClock(T0)
     ids = _rich_store(path, clock)
     with Substrate(_cfg(path, clock)) as m:
+        assert m._fold.attended_since_pass  # the snapshot must carry it
         seq = m.checkpoint()
         covers = m._fold.last_checkpoint["covers"]
         assert seq == m.seq and covers == seq - 1
