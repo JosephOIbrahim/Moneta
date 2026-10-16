@@ -345,6 +345,20 @@ def test_probe_incompatible_api(isolated):
     assert w.api == 99
 
 
+@pytest.mark.parametrize("api", [[1], True, 1.0, "1"], ids=["list", "bool", "float", "str"])
+def test_probe_incompatible_api_exact_int_only(isolated, api):
+    # Unhashable values must classify, not raise; bool/float alias 1 under
+    # hashing and must still be rejected.
+    _install(isolated, _fake_module(api=api))
+    w = _native.wheel_info()
+    assert w.state == _native.INCOMPATIBLE
+    assert "NATIVE_API" in w.reason
+    assert _native.native_available() is False
+    ecs = ECS()
+    vi = VectorIndex()
+    assert ecs.native_decay is False and vi.backend == "python"
+
+
 def test_probe_api_1_accepted(isolated):
     _install(isolated, _fake_module(version="0.2.0", api=1))
     w = _native.wheel_info()
@@ -440,6 +454,54 @@ def test_identity_no_record_row_is_none(isolated, tmp_path):
     w = _native.wheel_info()
     assert w.sha256 == sha
     assert w.record_match is None
+
+
+def _corrupt_record(ext: Path, payload: bytes) -> None:
+    (ext.parent.parent / f"{MOD}-0.1.0.dist-info" / "RECORD").write_bytes(payload)
+
+
+@pytest.mark.parametrize(
+    "payload",
+    [
+        b"\xff\xfe" + f"{MOD}/x,sha256=AAAA,1\n".encode(),
+        b'"' + b"x" * 200_000 + b'",sha256=AAAA,1\n',
+    ],
+    ids=["non-utf8", "over-long-field"],
+)
+def test_identity_corrupt_record_is_none_and_constructs(isolated, tmp_path, payload):
+    ext, sha = _fake_ext_layout(tmp_path, "correct", '{"url": "file:///x.whl"}')
+    _corrupt_record(ext, payload)
+    _install(isolated, _fake_with_ext(ext))
+    w = _native.wheel_info()
+    assert w.state == _native.LOADED
+    assert w.sha256 == sha
+    assert (w.record_match, w.direct_url) == (None, None)
+    assert ECS().native_decay is True
+    assert VectorIndex().backend == "native"
+
+
+def test_identity_non_utf8_direct_url_is_none(isolated, tmp_path):
+    ext, _sha = _fake_ext_layout(tmp_path, "correct", None)
+    (ext.parent.parent / f"{MOD}-0.1.0.dist-info" / "direct_url.json").write_bytes(b"\xff\xfe{}")
+    _install(isolated, _fake_with_ext(ext))
+    w = _native.wheel_info()
+    assert w.state == _native.LOADED
+    assert w.record_match is True
+    assert w.direct_url is None
+
+
+def test_identity_unexpected_error_does_not_block_classification(isolated, tmp_path):
+    ext, sha = _fake_ext_layout(tmp_path, "correct", None)
+
+    def boom(*_a, **_k):
+        raise RuntimeError("identity exploded")
+
+    isolated.setattr(_native, "_record_identity", boom)
+    _install(isolated, _fake_with_ext(ext))
+    w = _native.wheel_info()
+    assert w.state == _native.LOADED
+    assert w.sha256 == sha
+    assert (w.record_match, w.direct_url) == (None, None)
 
 
 # ---------------------------------------------------------------------------

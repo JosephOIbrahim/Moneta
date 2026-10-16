@@ -227,7 +227,9 @@ def _record_identity(ext: Path, sha_hex: Optional[str]) -> Tuple[Optional[bool],
         try:
             with open(record, newline="", encoding="utf-8") as fp:
                 rows = list(csv.reader(fp))
-        except OSError:
+        except (OSError, UnicodeDecodeError, csv.Error, ValueError):
+            # Unreadable or corrupt metadata is "no usable RECORD", never a
+            # reason to block classification of an extension that imported.
             continue
         for row in rows:
             if not row or len(row) < 2:
@@ -250,7 +252,7 @@ def _record_identity(ext: Path, sha_hex: Optional[str]) -> Tuple[Optional[bool],
 def _direct_url(dist: Path) -> Optional[str]:
     try:
         text = (dist / "direct_url.json").read_text(encoding="utf-8")
-    except OSError:
+    except (OSError, UnicodeDecodeError, ValueError):
         return None
     try:
         url = json.loads(text).get("url")
@@ -282,7 +284,15 @@ def _classify(mod: ModuleType) -> NativeWheel:
     api = getattr(mod, "NATIVE_API", None)
     ext = _extension_path(mod)
     sha = _sha256(ext) if ext is not None else None
-    record_match, direct_url = _record_identity(ext, sha) if ext is not None else (None, None)
+    record_match: Optional[bool] = None
+    direct_url: Optional[str] = None
+    if ext is not None:
+        try:
+            record_match, direct_url = _record_identity(ext, sha)
+        except Exception:
+            # Identity is observability only; damaged dist-info metadata must
+            # not turn a successful import into a failed construction.
+            record_match, direct_url = None, None
     ident = dict(
         version=version,
         api=api,
@@ -295,7 +305,9 @@ def _classify(mod: ModuleType) -> NativeWheel:
     if missing:
         return NativeWheel(state=INCOMPATIBLE, reason="missing: " + ", ".join(missing), **ident)
     if api is not None:
-        if api not in SUPPORTED_APIS:
+        # Exact int only: bool/float alias 1 under hashing, and an
+        # unhashable value would raise TypeError from the set lookup.
+        if not (type(api) is int and api in SUPPORTED_APIS):
             return NativeWheel(
                 state=INCOMPATIBLE,
                 reason=f"unsupported NATIVE_API {api!r}; v1 supports {sorted(SUPPORTED_APIS)}",
