@@ -272,7 +272,62 @@ def pytest_runtest_teardown(item, nextitem):
     return res
 
 
+# ---------------------------------------------------------------------------
+# Known unresolved defects (SPEC section 8)
+# ---------------------------------------------------------------------------
+
+# Tests that pin a known, UNRESOLVED defect with ``xfail(strict=True)``. The
+# terminal summary lists each one that xfailed under "Known unresolved
+# defects", so a green run never reads as if the defect were fixed. If one
+# starts passing, strict xfail fails the run and the block says so.
+KNOWN_DEFECTS = {
+    "tests/integration/test_attention_snapshot_regression.py::"
+    "test_B_undrained_attention_survives_snapshot_and_reopen": (
+        "B",
+        "undrained attention lost when a bare snapshot is followed by a restart",
+    ),
+    "tests/integration/test_attention_snapshot_regression.py::"
+    "test_D_attention_between_drain_and_pass_snapshot_survives": (
+        "D",
+        "attention landing between the sleep-pass drain and its snapshot is lost",
+    ),
+}
+KNOWN_DEFECTS_DOC = "docs/design/R1-attention-durability.md"
+_defect_outcomes: dict[str, str] = {}
+
+
+def _record_defect(report) -> None:
+    nid = report.nodeid
+    if nid not in KNOWN_DEFECTS:
+        return
+    if report.when == "call" or (report.when == "setup" and not report.passed):
+        if hasattr(report, "wasxfail"):
+            _defect_outcomes[nid] = "xfailed" if report.skipped else "XPASS(strict)"
+        elif report.skipped:
+            _defect_outcomes[nid] = "skipped"
+        elif report.failed:
+            _defect_outcomes[nid] = "failed"
+        else:
+            _defect_outcomes[nid] = "passed"
+
+
+def _write_known_defects(tr) -> None:
+    if not _defect_outcomes:
+        return
+    tr.section("Known unresolved defects")
+    for nid, (path, what) in KNOWN_DEFECTS.items():
+        outcome = _defect_outcomes.get(nid)
+        if outcome is None:
+            continue
+        line = f"UNRESOLVED DEFECT path {path}: {what} [{outcome}] ({nid})"
+        if outcome != "xfailed":
+            line += " -- not an xfail; review before changing the mark"
+        tr.write_line(line)
+    tr.write_line(f"see {KNOWN_DEFECTS_DOC}")
+
+
 def pytest_runtest_logreport(report) -> None:
+    _record_defect(report)
     nid = report.nodeid
     if nid not in _H.native_ids:
         return
@@ -353,6 +408,7 @@ def _verdict(acc: dict, exitstatus: int) -> tuple[str, list[str]]:
 
 
 def pytest_terminal_summary(terminalreporter, exitstatus, config) -> None:
+    _write_known_defects(terminalreporter)
     if not _H.enabled or _H.wheel is None or _H.build is None:
         return
     acc = _accounting()
