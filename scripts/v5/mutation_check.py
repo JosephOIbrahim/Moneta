@@ -162,6 +162,24 @@ MUTS = [
                 # Whether to migrate""",
         "tests/v5/test_compat.py::test_hard_kill_mid_migration_reopens_with_every_record[all-but-completion]",
     ),
+    (
+        "E1C1 writes after an interrupted migration hidden by a restart",
+        "src/moneta/v5/compat.py",
+        """    if progress["foreign_op"] is not None:
+        raise incomplete(""",
+        """    if False:
+        raise incomplete(""",
+        "tests/v5/test_compat.py::test_writes_after_an_interrupted_migration_are_refused_not_hidden",
+    ),
+    (
+        "E1C1 half-life change journaled before the migration check",
+        "src/moneta/v5/compat.py",
+        """                    self.v5 = open_substrate(fresh)
+                except HalfLifeMismatchError""",
+        """                    self.v5 = open_substrate(fresh, change=half_life_change)
+                except HalfLifeMismatchError""",
+        "tests/v5/test_compat.py::test_hard_kill_then_a_half_life_change_restarts_before_journaling_the_change",
+    ),
 ]
 failed_to_catch = []
 for name, path, old, new, test in MUTS:

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import subprocess
 import sys
 import textwrap
@@ -278,7 +279,10 @@ def _crash_migration(root: Path, after: int, *, legacy: bool = False) -> None:
         )
         os._exit(0)
     """)
-    out = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True)
+    # The child imports moneta from this checkout, not from whatever is installed.
+    src = str(Path(moneta.__file__).resolve().parents[1])
+    env = {**os.environ, "PYTHONPATH": os.pathsep.join([src, os.environ.get("PYTHONPATH", "")])}
+    out = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True, env=env)
     # hython's os._exit runs PySide teardown and can end in a segfault (139):
     # the kill point was reached either way, and no Moneta cleanup ran.
     assert "HARD-KILL" in out.stdout and out.returncode != 0, out.stderr[-2000:]
@@ -414,6 +418,87 @@ def test_a_v1_rewrite_after_an_interrupted_migration_is_not_overwritten(tmp_path
     with pytest.raises(MigrationIncompleteError, match="rewritten by a v1 writer"):
         Moneta(_cfg(store))
     assert (store / "snapshot.json").read_bytes() == rewritten
+
+
+def test_writes_after_an_interrupted_migration_are_refused_not_hidden(tmp_path):
+    from moneta.v5.compat import MigrationIncompleteError
+    from moneta.v5.substrate import Config, Substrate
+
+    store = tmp_path / "store"
+    store.mkdir()
+    _write_v1_store(store)
+    _crash_migration(store, 20)
+    journal = journal_path_for(_cfg(store))
+    # Something wrote to the torn journal directly before anyone reopened it.
+    with Substrate(Config(path=journal, clock=ManualClock(T0 + 1000.0))) as s:
+        s.deposit("written after the crash", [1.0, 0.0, 0.0, 0.0])
+    before = journal.read_bytes()
+    with pytest.raises(MigrationIncompleteError, match="'deposit' event") as err:
+        Moneta(_cfg(store))
+    message = str(err.value)
+    assert "a restart would hide it" in message and "Do not delete the journal" in message
+    assert "wrote, moved and deleted nothing" in message
+    assert journal.read_bytes() == before
+    assert not journal.with_name(journal.name + ".failed-migration").exists()
+
+
+def test_hard_kill_then_a_half_life_change_restarts_before_journaling_the_change(tmp_path):
+    from moneta.v5 import HalfLifeMismatchError
+
+    new = 2 * H
+    store = tmp_path / "store"
+    store.mkdir()
+    _write_v1_store(store)
+    _crash_migration(store, 20)
+    journal = journal_path_for(_cfg(store))
+    with Moneta(
+        _cfg(store, half_life_seconds=new),
+        clock=ManualClock(T0 + 1000.0),
+        half_life_change="forward",
+    ) as m:
+        assert m.migration["restarted"]["reason"] == "begun"
+        assert m.ecs.n == _ROWS
+        assert m.v5.half_life_seconds == new
+        assert m.v5.half_life_change_pending is not None
+    assert journal.with_name(journal.name + ".failed-migration").exists()
+    # The store now owns the new half-life: the old value is refused, the new one opens.
+    with pytest.raises(HalfLifeMismatchError):
+        Moneta(_cfg(store))
+    # Same result as migrating without a crash and then making the same change.
+    ref = tmp_path / "reference"
+    ref.mkdir()
+    _write_v1_store(ref)
+    ref_cfg = _cfg(ref, uri="moneta-file://reference")
+    Moneta(ref_cfg, clock=ManualClock(T0 + 1000.0)).close()
+    Moneta(
+        _cfg(ref, uri="moneta-file://reference", half_life_seconds=new),
+        clock=ManualClock(T0 + 1000.0),
+        half_life_change="forward",
+    ).close()
+    states = []
+    for root, uri in ((store, "moneta-file://store"), (ref, "moneta-file://reference")):
+        with Moneta(
+            _cfg(root, uri=uri, half_life_seconds=new), clock=ManualClock(T0 + 2000.0)
+        ) as m:
+            assert m.migration is None and m.ecs.n == _ROWS
+            states.append(_state(m))
+    assert states[0] == states[1]
+
+
+def test_a_refused_half_life_change_on_an_interrupted_migration_writes_nothing(tmp_path):
+    from moneta.v5.compat import MigrationIncompleteError
+
+    store = tmp_path / "store"
+    store.mkdir()
+    _write_v1_store(store)
+    _crash_migration(store, 20)
+    (store / "snapshot.json.v1-original").unlink()
+    (store / "snapshot.json").unlink()
+    journal = journal_path_for(_cfg(store))
+    before = journal.read_bytes()
+    with pytest.raises(MigrationIncompleteError, match="wrote, moved and deleted nothing"):
+        Moneta(_cfg(store, half_life_seconds=2 * H), half_life_change="forward")
+    assert journal.read_bytes() == before
 
 
 def test_divergence_guidance_never_suggests_removing_the_journal(tmp_path):

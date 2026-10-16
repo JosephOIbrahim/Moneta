@@ -63,6 +63,7 @@ from .policy import PolicyResolver
 from .substrate import (
     Clock,
     Config,
+    HalfLifeMismatchError,
     MemoryProjector,
     SleepPassResult,
     Substrate,
@@ -116,9 +117,12 @@ class SnapshotDivergedError(RuntimeError):
 class MigrationIncompleteError(RuntimeError):
     """An interrupted v1 migration cannot be restarted automatically.
 
-    Raised only when the source the migration began from can no longer be
+    Raised when the source the migration began from can no longer be
     verified (``.v1-original`` missing or changed, or ``snapshot.json``
-    rewritten by a v1 writer in between). Nothing is moved or modified.
+    rewritten by a v1 writer in between), or when the interrupted journal
+    holds writes made after the crash, which a restart would hide. The
+    refused open moves and modifies nothing: the check runs before any
+    requested half-life change is journaled.
     """
 
 
@@ -328,19 +332,29 @@ def _unfinished_migration(substrate: Substrate, snapshot_path: Path) -> dict[str
     expected = begin.get("source_sha256")
     rows_expected = begin.get("rows_expected")
 
-    def incomplete(why: str) -> MigrationIncompleteError:
+    def incomplete(why: str, fix: str | None = None) -> MigrationIncompleteError:
         total = "?" if rows_expected is None else rows_expected
         return MigrationIncompleteError(
             f"{journal} holds an interrupted v1 migration ({progress['imports']} of {total} "
-            f"rows imported) and it cannot be restarted automatically: {why}. Nothing was "
-            f"changed. Restore the original v1 snapshot to {original} (or to {snapshot_path} "
-            f"when there is no {original.name}), then reopen; the interrupted journal is set "
-            f"aside, not deleted."
+            f"rows imported) and it cannot be restarted automatically: {why}. This open "
+            f"wrote, moved and deleted nothing. "
+            + (
+                fix
+                or f"Restore the original v1 snapshot to {original} (or to {snapshot_path} "
+                f"when there is no {original.name}), then reopen; the interrupted journal is "
+                f"set aside, not deleted."
+            )
         )
 
     if progress["foreign_op"] is not None:
         raise incomplete(
-            f"a {progress['foreign_op']!r} event was written after the interrupted migration"
+            f"a {progress['foreign_op']!r} event was written after the interrupted migration, "
+            f"and a restart would hide it",
+            f"Do not delete the journal: it holds those writes. Recover by hand: open it with "
+            f"moneta.v5.Substrate (no snapshot) and export what was written after the "
+            f"migration rows, move the journal aside, reopen to migrate again from "
+            f"{original if original.exists() else snapshot_path}, then re-deposit the exported "
+            f"writes.",
         )
     candidates = [original, snapshot_path] if original.exists() else [snapshot_path]
     source = source_sha = None
@@ -599,13 +613,17 @@ class Moneta:
         snapshot = None if config.snapshot_path is None else Path(config.snapshot_path)
         clock = clock or SystemClock()
 
-        def open_substrate(fresh: bool) -> Substrate:
+        def open_substrate(
+            fresh: bool, *, half_life: float | None = None, change: str | None = None
+        ) -> Substrate:
             projector = self._make_projector(config)
             try:
                 return Substrate(
                     Config(
                         path=path,
-                        half_life_seconds=config.half_life_seconds,
+                        half_life_seconds=(
+                            config.half_life_seconds if half_life is None else half_life
+                        ),
                         # An existing journal owns its dimension; the configured
                         # one is checked after the snapshot guard below.
                         embedding_dim=config.embedding_dim if fresh else None,
@@ -617,7 +635,7 @@ class Moneta:
                     ),
                     # The journal owns the half-life; a different configured
                     # value is refused unless the caller names a change mode.
-                    half_life_change=half_life_change,
+                    half_life_change=change,
                 )
             except BaseException:
                 projector.close()
@@ -626,7 +644,21 @@ class Moneta:
         try:
             path = journal_path_for(config)
             fresh = path is None or not path.exists()
-            self.v5 = open_substrate(fresh)
+            # A requested half-life change is journaled only after the
+            # migration check: appended first, it would sit after an
+            # interrupted migration's rows and block the restart. Until then
+            # the store is opened at the journal's own half-life.
+            journal_half_life: float | None = None
+            if fresh or snapshot is None:
+                self.v5 = open_substrate(fresh, change=half_life_change)
+            else:
+                try:
+                    self.v5 = open_substrate(fresh)
+                except HalfLifeMismatchError as exc:
+                    if half_life_change is None or exc.journal_half_life_seconds is None:
+                        raise
+                    journal_half_life = exc.journal_half_life_seconds
+                    self.v5 = open_substrate(fresh, half_life=journal_half_life)
             restart: dict[str, Any] | None = None
             if not fresh and snapshot is not None:
                 # Whether to migrate is decided from the journal's markers,
@@ -648,7 +680,9 @@ class Moneta:
                         restart["source"],
                     )
                     fresh = True
-                    self.v5 = open_substrate(fresh)
+                    # The restart reproduces the interrupted first open, at
+                    # the half-life it journaled; a requested change follows.
+                    self.v5 = open_substrate(fresh, half_life=journal_half_life)
             try:
                 if fresh and snapshot is not None and (restart is not None or snapshot.exists()):
                     self.migration = migrate_v1(
@@ -667,6 +701,11 @@ class Moneta:
                     # A half-migrated journal must not be mistaken for a migrated one.
                     _set_aside(path)
                 raise
+            if journal_half_life is not None:
+                # The migration check passed (or the restart finished): now
+                # journal the half-life change the caller asked for.
+                self.v5.close()
+                self.v5 = open_substrate(False, change=half_life_change)
             try:
                 if not fresh and snapshot is not None:
                     self.revector = _reconcile_snapshot(self.v5, snapshot, config.embedding_dim)
