@@ -30,7 +30,12 @@ before/after snapshot of ``_native.counters()`` would miss fallbacks. The
 harness therefore tees ``_native.count_native_call`` and
 ``_native.count_fallback`` (src calls them by attribute on the module, so
 the tee survives resets) into its own buckets, attributed to the running
-test (setup, call and teardown are each checked). A native call counts as
+test (setup, call and teardown are each checked). A fallback raised while no
+test is running (for example at module import during collection) is kept in
+a separate "outside any test" list and fails the native verdict. The verdict
+also reads the suite exit status: a red run is never reported as
+``NATIVE QUALIFIED`` or ``PYTHON-ONLY PASS`` (it reads ``PYTHON-ONLY FAIL``).
+A native call counts as
 *real* only when the calling component's captured module is the wheel module
 this process probed at configure time; calls into the fakes in
 ``tests/unit/native_fakes.py`` are counted separately and never satisfy the
@@ -100,6 +105,10 @@ class _Harness:
         self.per_item: dict[str, list[str]] = {}
         self.checked: dict[str, int] = {}
         self.unexpected: dict[str, list[str]] = {}
+        # Fallbacks raised while no test is running (collection, module
+        # import, between items). No test owns them, so the guard cannot
+        # fail one; the verdict counts them instead.
+        self.outside: list[str] = []
         # Collection and outcomes.
         self.native_ids: set[str] = set()
         self.fallback_ids: set[str] = set()
@@ -137,6 +146,8 @@ def _install_tee() -> None:
         fb[reason] = fb.get(reason, 0) + 1
         if _H.current is not None:
             _H.per_item.setdefault(_H.current, []).append(f"{seam}:{reason}")
+        else:
+            _H.outside.append(f"{seam}:{reason}")
 
     count_native_call._qual_tee = True  # type: ignore[attr-defined]
     count_fallback._qual_tee = True  # type: ignore[attr-defined]
@@ -299,11 +310,18 @@ def _accounting() -> dict:
     }
 
 
-def _verdict(acc: dict) -> tuple[str, list[str]]:
+def _verdict(acc: dict, exitstatus: int) -> tuple[str, list[str]]:
     w = _H.wheel
     if w.state != _native.LOADED or _H.mode == "off":
+        if exitstatus != 0:
+            return (
+                f"PYTHON-ONLY FAIL (not native qualified): suite exit status {exitstatus}",
+                [f"suite exit status {exitstatus}"],
+            )
         return "PYTHON-ONLY PASS (not native qualified)", []
     reasons: list[str] = []
+    if exitstatus != 0:
+        reasons.append(f"suite exit status {exitstatus}")
     if w.record_match is not True:
         reasons.append(f"wheel record_match={w.record_match}")
     if acc["native_skipped"]:
@@ -327,6 +345,8 @@ def _verdict(acc: dict) -> tuple[str, list[str]]:
     n_unexp = sum(len(v) for v in _H.unexpected.values())
     if n_unexp:
         reasons.append(f"{n_unexp} unexpected fallbacks in {len(_H.unexpected)} tests")
+    if _H.outside:
+        reasons.append(f"{len(_H.outside)} fallbacks outside any test")
     if reasons:
         return "NATIVE NOT QUALIFIED: " + "; ".join(reasons), reasons
     return "NATIVE QUALIFIED", []
@@ -336,7 +356,7 @@ def pytest_terminal_summary(terminalreporter, exitstatus, config) -> None:
     if not _H.enabled or _H.wheel is None or _H.build is None:
         return
     acc = _accounting()
-    verdict, reasons = _verdict(acc)
+    verdict, reasons = _verdict(acc, int(exitstatus))
     tr = terminalreporter
     tr.section("moneta native qualification")
     for line in _header_lines():
@@ -359,6 +379,11 @@ def pytest_terminal_summary(terminalreporter, exitstatus, config) -> None:
     )
     for nid, rs in sorted(_H.unexpected.items()):
         tr.write_line(f"unexpected native fallback: {nid}: {', '.join(sorted(set(rs)))}")
+    if _H.outside:
+        tr.write_line(
+            f"native fallbacks outside any test: {len(_H.outside)}: "
+            + ", ".join(sorted(set(_H.outside)))
+        )
     tr.write_line(verdict, bold=True)
 
     path = os.environ.get("MONETA_QUAL_REPORT")
@@ -398,6 +423,7 @@ def pytest_terminal_summary(terminalreporter, exitstatus, config) -> None:
         "native_calls_fakes": dict(_H.other_calls),
         "fallbacks": {s: dict(_H.fallbacks[s]) for s in _native.SEAMS},
         "unexpected_fallbacks": {k: sorted(set(v)) for k, v in _H.unexpected.items()},
+        "fallbacks_outside_tests": list(_H.outside),
     }
     try:
         Path(path).parent.mkdir(parents=True, exist_ok=True)

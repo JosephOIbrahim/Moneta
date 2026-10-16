@@ -146,3 +146,93 @@ def test_unexpected_fallback_fails_unmarked_test_only(tmp_path):
     assert "1 failed, 1 passed" in out, out
     assert "unexpected native fallback: decay:decay_error:TypeError" in out
     assert "test_guard.py::test_unmarked" in out
+
+
+FAILING_TESTS = """\
+def test_ok():
+    pass
+
+
+def test_red():
+    assert False, "deliberate"
+"""
+
+OUTSIDE_TESTS = """\
+import uuid
+
+import native_fakes as nf
+import pytest
+
+from moneta.ecs import ECS
+from moneta.types import EntityState
+
+# A fallback at module import (collection time): no test is running.
+_mp = pytest.MonkeyPatch()
+nf.isolate(_mp)
+_ctl = nf.DecayControl()
+nf.install(_mp, nf.make_module(_ctl))
+_ecs = ECS(native="auto")
+_ecs.add(uuid.uuid4(), "p", [1.0, 0.0], 0.5, 0.0, EntityState.VOLATILE, 0.0)
+_ctl.fail = TypeError("boom")
+_ecs.decay_all(0.01, 10.0)
+_mp.undo()
+
+
+def test_ok():
+    pass
+"""
+
+
+def _guard_proj(tmp_path, tests_src):
+    proj = tmp_path / "proj"
+    proj.mkdir()
+    (proj / "pytest.ini").write_text(
+        "[pytest]\naddopts = --strict-markers\nmarkers =\n"
+        "    native: needs the wheel\n    native_fallback: intentional fallback\n",
+        encoding="utf-8",
+    )
+    (proj / "conftest.py").write_text(
+        GUARD_CONFTEST.format(
+            unit=str(ROOT / "tests" / "unit"), conftest=str(ROOT / "tests" / "conftest.py")
+        ),
+        encoding="utf-8",
+    )
+    (proj / "test_proj.py").write_text(tests_src, encoding="utf-8")
+    return proj
+
+
+def test_red_suite_is_never_reported_as_pass(tmp_path):
+    proj = _guard_proj(tmp_path, FAILING_TESTS)
+    report = tmp_path / "qual.json"
+    r = _run(
+        tmp_path,
+        [str(proj), "--rootdir", str(proj), "-c", str(proj / "pytest.ini")],
+        MONETA_QUAL_REPORT=str(report),
+    )
+    out = r.stdout + r.stderr
+    assert r.returncode == 1, out
+    assert "1 failed, 1 passed" in out, out
+    data = json.loads(report.read_text(encoding="utf-8"))
+    assert data["exitstatus"] == 1
+    assert "PASS" not in data["verdict"]
+    assert data["verdict"].startswith("PYTHON-ONLY FAIL (not native qualified)")
+    assert "suite exit status 1" in data["reasons"]
+    assert "PYTHON-ONLY FAIL (not native qualified)" in out
+    assert "PYTHON-ONLY PASS" not in out
+
+
+def test_fallback_outside_any_test_is_reported(tmp_path):
+    proj = _guard_proj(tmp_path, OUTSIDE_TESTS)
+    report = tmp_path / "qual.json"
+    r = _run(
+        tmp_path,
+        [str(proj), "--rootdir", str(proj), "-c", str(proj / "pytest.ini")],
+        MONETA_QUAL_REPORT=str(report),
+    )
+    out = r.stdout + r.stderr
+    # No test owns the fallback, so no test fails; it is reported instead.
+    assert r.returncode == 0, out
+    assert "native fallbacks outside any test: 1: decay:decay_error:TypeError" in out
+    data = json.loads(report.read_text(encoding="utf-8"))
+    assert data["fallbacks_outside_tests"] == ["decay:decay_error:TypeError"]
+    assert data["unexpected_fallbacks"] == {}
