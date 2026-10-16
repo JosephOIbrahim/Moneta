@@ -33,7 +33,14 @@ PYTHONPATH="src;<unzipped-wheel>" "C:/Program Files/Side Effects Software/Houdin
 
 Run the hython command twice, once with `MONETA_NATIVE=0` and once with `MONETA_NATIVE=1`.
 
-**Expected:** `215 passed` in every configuration. Without the wheel: `167 passed, 33 skipped`.
+**Expected:** `405 passed` in every configuration (v1 and v5 together). Without the wheel: `347 passed, 35 skipped`. Always run from the repo root with `PYTHONPATH=src`: a stale `site-packages/moneta` otherwise hides `moneta.v5` from the subprocess tests.
+
+**v5 mutation check** (every mutation must be caught):
+
+```
+mkdir <scratch> && git archive HEAD | tar -x -C <scratch>
+cd <scratch> && PYTHONPATH=src python scripts/v5/mutation_check.py   # last line: missed: []
+```
 
 ---
 
@@ -73,3 +80,17 @@ PYTHONPATH=src python scripts/bench_query.py --n 10000 --spread
 - `src/moneta/ecs.py`: `decay_all` and `rank_hits`.
 - `tests/unit/test_native_*`, `test_rank_early_stop.py`: the contract.
 - `results/bench_query_*.jsonl`: measured numbers.
+
+- `src/moneta/v5/index.py`, `model.py` (`utilities_at`): v5's dot and decay seams. `tests/v5/test_native_index_parity.py` and `test_native_decay_parity.py` are their contract.
+
+---
+
+### v5 operations
+
+| Want | Do |
+|---|---|
+| Change the half-life | `Substrate(config, half_life_change="forward")` (old decay keeps the old rate) or `"reinterpret"` (history recomputed). A plain open with a different half-life refuses. The next sleep pass is a dry run until you confirm it. |
+| Fast reopen of a big journal | `Config(checkpoint_every=N)`, or call `checkpoint()`. Open then replays only the tail. |
+| Full integrity check | `verify()`. Open no longer CRC-checks the lines a checkpoint covers. |
+| Which seams are on | `m._index.native`, `m.native_decay`. |
+| v5 latency | `PYTHONPATH=src python scripts/v5/bench_recall_native.py --n 10000` |
