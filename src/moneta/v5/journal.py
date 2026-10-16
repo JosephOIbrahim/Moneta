@@ -22,6 +22,16 @@ Recovery rules on open
   explicit operator tool: it keeps the valid prefix and moves everything
   from the first bad line onward into a quarantine file beside it.
 
+Checkpoints (Round 4 E3 condition 3)
+------------------------------------
+Opened with a ``checkpoint_loader``, a journal walks backward from its end
+to the newest ``checkpoint`` event the loader accepts and validates only
+the events after the snapshot it names (see :mod:`moneta.v5.checkpoint`).
+Those tail events get every check above; the prefix the snapshot covers
+is vouched for by the snapshot's sha256 and is not re-read. Any anomaly
+met on the walk (a bad line, a seq break, no usable checkpoint) falls
+back to the full forward scan, which raises exactly as before.
+
 Exclusivity
 -----------
 A :class:`FileJournal` takes an OS-level exclusive lock on a sidecar
@@ -135,6 +145,75 @@ def scan(data: bytes, path: Path) -> tuple[list[dict[str, Any]], int, int]:
     return events, offset, 0
 
 
+_WALK_CHUNK = 1 << 20
+
+CheckpointLoader = Callable[[dict[str, Any]], Any]
+
+
+def _good_length(fp: Any, size: int) -> int:
+    """Offset just past the last newline: everything after it is a torn append."""
+    pos = size
+    while pos > 0:
+        step = min(_WALK_CHUNK, pos)
+        pos -= step
+        fp.seek(pos)
+        i = fp.read(step).rfind(b"\n")
+        if i != -1:
+            return pos + i + 1
+    return 0
+
+
+def _lines_backward(fp: Any, good: int) -> Iterator[bytes]:
+    """Complete lines (without newlines) of ``fp[:good]``, last line first."""
+    pos = good - 1 if good else 0  # drop the final newline
+    carry = b""
+    while pos > 0:
+        step = min(_WALK_CHUNK, pos)
+        pos -= step
+        fp.seek(pos)
+        lines = (fp.read(step) + carry).split(b"\n")
+        if pos > 0:
+            carry = lines[0]
+            lines = lines[1:]
+        yield from reversed(lines)
+
+
+def _walk_to_checkpoint(
+    fp: Any, good: int, loader: CheckpointLoader
+) -> tuple[Any, list[dict[str, Any]]] | None:
+    """Walk back to the newest checkpoint ``loader`` accepts.
+
+    Returns ``(state, events after state's covers)``, or ``(None, every
+    event)`` when there is no usable checkpoint. Returns None on any
+    anomaly; the caller then runs the full forward scan, which names it.
+    """
+    tail: list[dict[str, Any]] = []
+    state = None
+    covers: int | None = None
+    expected: int | None = None
+    for line in _lines_backward(fp, good):
+        try:
+            event = decode_frame(line)
+        except (ValueError, UnicodeDecodeError):
+            return None
+        if expected is not None and event["seq"] != expected:
+            return None
+        if covers is not None and event["seq"] <= covers:
+            break
+        expected = event["seq"] - 1
+        tail.append(event)
+        if state is None and event.get("op") == "checkpoint":
+            state = loader(event)
+            if state is not None:
+                covers = int(event["covers"])
+    else:
+        # Reached the start of the file without stopping at a checkpoint.
+        if state is not None or (tail and tail[-1]["seq"] != 1):
+            return None
+    tail.reverse()
+    return state, tail
+
+
 # ----------------------------------------------------------------------
 # OS lock helpers
 # ----------------------------------------------------------------------
@@ -204,6 +283,10 @@ class MemoryJournal:
     def events(self) -> Iterator[dict[str, Any]]:
         return iter(list(self._events))
 
+    def take_open_replay(self) -> tuple[Any, Iterator[dict[str, Any]]]:
+        """(checkpoint state, events to replay on it). A memory journal has no checkpoints."""
+        return None, self.events()
+
     def append(self, event: dict[str, Any]) -> int:
         with self._lock:
             seq = len(self._events) + 1
@@ -232,7 +315,13 @@ class MemoryJournal:
 class FileJournal:
     """Append-only, checksummed, fsync'd journal file with exclusive ownership."""
 
-    def __init__(self, path: Path, *, fsync: bool = True) -> None:
+    def __init__(
+        self,
+        path: Path,
+        *,
+        fsync: bool = True,
+        checkpoint_loader: CheckpointLoader | None = None,
+    ) -> None:
         self.path = Path(path).resolve()
         self._fsync = fsync
         self._lock = threading.Lock()
@@ -259,11 +348,24 @@ class FileJournal:
                     f"journal {self.path} is locked by another process ({exc})"
                 ) from None
 
-            data = self.path.read_bytes() if self.path.exists() else b""
-            initial, good, torn = scan(data, self.path)
-            self._last_seq = len(initial)
-            # Handed to the first events() call (the fold at open), then
-            # dropped: the journal never holds a second copy of the store.
+            self._open_state: Any = None
+            walked = None
+            if checkpoint_loader is not None and self.path.exists():
+                with open(self.path, "rb") as fp:
+                    size = os.fstat(fp.fileno()).st_size
+                    good = _good_length(fp, size)
+                    torn = size - good
+                    walked = _walk_to_checkpoint(fp, good, checkpoint_loader)
+            if walked is not None:
+                self._open_state, initial = walked
+                self._last_seq = initial[-1]["seq"] if initial else 0
+            else:
+                data = self.path.read_bytes() if self.path.exists() else b""
+                initial, good, torn = scan(data, self.path)
+                self._last_seq = len(initial)
+            # Handed to take_open_replay() or the first events() call (the
+            # fold at open), then dropped: the journal never holds a second
+            # copy of the store. After a checkpoint it is only the tail.
             self._initial: list[dict[str, Any]] | None = initial
             self._fd = os.open(
                 str(self.path), os.O_RDWR | os.O_CREAT | getattr(os, "O_BINARY", 0), 0o644
@@ -277,7 +379,7 @@ class FileJournal:
                 )
             os.lseek(self._fd, 0, os.SEEK_END)
             self._size = good
-            if data == b"" and fsync:
+            if good == 0 and torn == 0 and fsync:
                 _fsync_dir(self.path.parent)
         except BaseException:
             self._release()
@@ -289,9 +391,23 @@ class FileJournal:
     def last_seq(self) -> int:
         return self._last_seq
 
+    def take_open_replay(self) -> tuple[Any, Iterator[dict[str, Any]]]:
+        """``(checkpoint state or None, events to replay on top of it)``.
+
+        Called once, by the substrate's open. Without a usable checkpoint
+        the state is None and the events are every event.
+        """
+        with self._lock:
+            state, self._open_state = self._open_state, None
+            if self._initial is not None:
+                events, self._initial = self._initial, None
+                return state, iter(events)
+        return None, self.events()
+
     def events(self) -> Iterator[dict[str, Any]]:
         """Every event in order, validated. Re-reads the file after open."""
         with self._lock:
+            self._open_state = None
             if self._initial is not None and len(self._initial) == self._last_seq:
                 events, self._initial = self._initial, None
                 return iter(events)

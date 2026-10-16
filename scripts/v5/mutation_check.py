@@ -253,6 +253,44 @@ MUTS = [
         snap = _export_rows(substrate)""",
         "tests/v5/test_lockscope.py::test_export_writes_with_the_writer_lock_released",
     ),
+    (
+        "E3C3 checkpoint snapshot loaded without its sha256",
+        "src/moneta/v5/checkpoint.py",
+        """        if hashlib.sha256(data).hexdigest() != sha:""",
+        """        if False:""",
+        "tests/v5/test_checkpoint.py::test_newest_valid_checkpoint_wins_and_damage_falls_back",
+    ),
+    (
+        "E3C3 tail walk replays events the snapshot already covers",
+        "src/moneta/v5/journal.py",
+        """        if covers is not None and event["seq"] <= covers:
+            break""",
+        """        if False:
+            break""",
+        "tests/v5/test_checkpoint.py::test_checkpoint_plus_tail_equals_replay_from_genesis",
+    ),
+    (
+        "E3C3 snapshot drops attended_since_pass",
+        "src/moneta/v5/checkpoint.py",
+        """        "attended_since_pass": sorted(str(e) for e in fold.attended_since_pass),""",
+        """        "attended_since_pass": [],""",
+        "tests/v5/test_checkpoint.py::test_checkpoint_plus_tail_equals_replay_from_genesis",
+    ),
+    (
+        "E3C3 erase leaves snapshots holding the erased payload",
+        "src/moneta/v5/substrate.py",
+        """            self._invalidate_snapshots(seq)
+            return seq""",
+        """            return seq""",
+        "tests/v5/test_checkpoint.py::test_erase_and_compact_remove_every_snapshot",
+    ),
+    (
+        "E3C3 in-flight checkpoint journaled after an erase",
+        "src/moneta/v5/substrate.py",
+        """                if self._closed or image.covers < self._snapshots_invalid_before:""",
+        """                if self._closed:""",
+        "tests/v5/test_checkpoint.py::test_an_erase_during_a_checkpoint_discards_it",
+    ),
 ]
 failed_to_catch = []
 for name, path, old, new, test in MUTS:

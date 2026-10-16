@@ -267,7 +267,7 @@ oxideav-usdz stays parked. It is an adapter question, and the USD adapters now p
 
 ## 12. Not done, and open
 
-- **Checkpoints.** Open time is a full replay. It is linear, estimated at about 10 s at 100k `[U]`. A fold checkpoint would bound it.
+- **Checkpoints.** Done (Round 4 E3 condition 3): `Substrate.checkpoint()` (and `Config.checkpoint_every` on the sleep pass) writes a content-addressed fold snapshot and journals a `checkpoint` event; open verifies its sha256 and replays only the tail, falling back to an older checkpoint or a full replay. Measured on Windows, 1,000 x 768 records plus attends, 1,000-event tail (`results/bench_v5_checkpoint.jsonl`): 1M events open in 0.06 s from a checkpoint vs 5.6 s full replay (Python 3.14) and 0.07 s vs 8.7 s (hython 3.11). Snapshot load scales with records, not events: 99k x 64 records open in 1.1 s (vs 3.1 s), and the state copy holds the writer lock ~0.1 s at that size. The prefix behind a checkpoint is vouched for by the snapshot, not re-read at open; `Substrate.verify()` re-reads it and checks replay == live. `erase()` and `compact()` delete every snapshot.
 - **Compaction beyond erase.** The journal grows forever.
 - **Embeddings in blobs.** Each record costs about 4 KB in the journal at 384 dims.
 - **Group commit.** Every deposit fsyncs on its own.

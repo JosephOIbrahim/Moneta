@@ -338,12 +338,12 @@ def _journal_known_shas(substrate: Substrate) -> set[str]:
 
     Covers a crash between journaling a migration or revector and writing the
     sidecar, so v5 never refuses a snapshot it produced or consumed itself.
+    The fold keeps these hashes as journal state, so this reads no file:
+    it used to re-read and re-validate the whole journal on every facade
+    open (Round 4 E3 condition 3).
     """
-    shas = set()
-    for event in substrate._journal.events():
-        if event.get("op") == "note" and event.get("snapshot_sha256"):
-            shas.add(event["snapshot_sha256"])
-    return shas
+    with substrate._lock:
+        return set(substrate._fold.snapshot_shas)
 
 
 def _is_v1_snapshot(raw: bytes) -> bool:

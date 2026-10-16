@@ -225,11 +225,21 @@ class Fold:
         self.repacks = 0
         self.by_key: dict[str, UUID] = {}
         self.dim: int | None = None
+        # True once a journal event fixed ``dim``. The substrate may lock a
+        # configured dim on an open whose journal has none yet; that value is
+        # not journal state, so a checkpoint must not record it as such.
+        self.dim_journaled = False
         self.last_seq = 0
         self.attended_since_pass: set = set()
         # The latest half-life change not yet followed by a retain event:
         # ``{"seq", "t", "from", "half_life_seconds", "mode"}`` or None.
         self.half_life_change_pending: dict[str, Any] | None = None
+        # v1 snapshot hashes the journal vouches for (``note`` events that
+        # carry ``snapshot_sha256``). Fold state, so the facade's divergence
+        # guard never has to scan the journal (Round 4 E3 condition 3).
+        self.snapshot_shas: set[str] = set()
+        # The newest ``checkpoint`` event: ``{"seq", "covers", "sha256"}`` or None.
+        self.last_checkpoint: dict[str, Any] | None = None
 
     # -- replay --------------------------------------------------------
 
@@ -297,6 +307,7 @@ class Fold:
     def _op_genesis(self, e: dict[str, Any]) -> None:
         if e.get("dim") is not None:
             self.dim = int(e["dim"])
+            self.dim_journaled = True
         if e.get("half_life_seconds") is not None:
             self._set_half_life(float(e["half_life_seconds"]))
 
@@ -339,11 +350,15 @@ class Fold:
     ) -> Record:
         eid = UUID(e["id"])
         vec = decode_vector(e["emb"]) if e.get("emb") is not None else None
-        if self.dim is None:
+        if not self.dim_journaled:
+            # Equivalent to ``self.dim is None`` on replay; under a configured
+            # dim it re-sets the same value (deposits are validated against it).
             if vec is not None:
                 self.dim = len(vec)
+                self.dim_journaled = True
             elif e.get("dim") is not None:  # a compacted (erased) deposit keeps its dim
                 self.dim = int(e["dim"])
+                self.dim_journaled = True
         rec = Record(
             entity_id=eid,
             seq=e["seq"],
@@ -457,6 +472,7 @@ class Fold:
         """
         vectors = {UUID(k): decode_vector(v) for k, v in e["vectors"].items()}
         self.dim = int(e["dim"])
+        self.dim_journaled = True
         for eid, rec in self.records.items():
             vec = vectors.get(eid)
             rec.vector = vec
@@ -472,8 +488,18 @@ class Fold:
         note's seq: the only reading that is a function of the journal. It
         matches the old behavior exactly for records never attended.
         """
+        if e.get("snapshot_sha256"):
+            self.snapshot_shas.add(e["snapshot_sha256"])
         if e.get("kind") == "half_life_change":
             self._change_half_life(e, "reinterpret")
+
+    def _op_checkpoint(self, e: dict[str, Any]) -> None:
+        """A fold snapshot covering seq 1..``covers`` was written. No record changes.
+
+        The snapshot is derived state (see :mod:`moneta.v5.checkpoint`): open
+        may start from it and replay only the events after ``covers``.
+        """
+        self.last_checkpoint = {"seq": e["seq"], "covers": e["covers"], "sha256": e["sha256"]}
 
     # -- queries -------------------------------------------------------
 

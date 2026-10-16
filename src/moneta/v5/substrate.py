@@ -61,8 +61,9 @@ from ..consolidation import (
 )
 from ..decay import DEFAULT_HALF_LIFE_SECONDS, DecayConfig
 from ..types import Memory
+from . import checkpoint as _checkpoint
 from .index import ExactIndex
-from .journal import FORMAT, FileJournal, MemoryJournal
+from .journal import FORMAT, FileJournal, MemoryJournal, scan
 from .model import (
     RECALLABLE,
     DimensionMismatchError,
@@ -208,6 +209,10 @@ class Config:
     clock: Clock = field(default_factory=SystemClock)
     policy: PolicyResolver | None = None
     projector: Projector | None = None
+    # Round 4 E3 condition 3: when set, a sleep pass that finds at least
+    # this many events since the last checkpoint takes one (see
+    # :meth:`Substrate.checkpoint`). None (the default) leaves it to the operator.
+    checkpoint_every: int | None = None
 
     @classmethod
     def ephemeral(cls, **overrides: Any) -> Config:
@@ -274,6 +279,8 @@ class SleepPassResult(NamedTuple):
     # The seq of the half-life change that held this pass as a dry run, or
     # that this confirmed pass is the first to apply. None otherwise.
     half_life_change_seq: int | None = None
+    # The seq of the checkpoint event this pass wrote (Config.checkpoint_every).
+    checkpoint_seq: int | None = None
 
 
 class Verdict:
@@ -359,26 +366,47 @@ class Substrate:
         quota = config.protected_quota
         if isinstance(quota, bool) or not isinstance(quota, int) or quota < 0:
             raise ValueError(f"protected_quota must be an int >= 0, got {quota!r}")
+        every = config.checkpoint_every
+        if every is not None and (isinstance(every, bool) or not isinstance(every, int) or every < 1):
+            raise ValueError(f"checkpoint_every must be a positive int or None, got {every!r}")
         self._lock = threading.RLock()
         # Serializes sleep passes (and close) without blocking readers: the
         # pass releases ``_lock`` while the projector writes (Round 4 E3
         # condition 1), so this is what keeps two passes from projecting the
         # same staged batch. Order: ``_pass_lock`` before ``_lock``, never after.
         self._pass_lock = threading.RLock()
+        # One checkpoint at a time; never held together with ``_pass_lock``
+        # in the other order (a sleep pass takes it after ``_pass_lock``).
+        self._checkpoint_lock = threading.Lock()
+        # Seq of the last erase or compaction: a snapshot covering less than
+        # this may hold erased bytes and must not be journaled.
+        self._snapshots_invalid_before: float = 0
         self._closed = False
         self._poisoned: str | None = None
         self._clock = config.clock
         self._policy: PolicyResolver = config.policy or PlainPolicyResolver()
         self._projector: Projector | None = config.projector
 
-        self._journal = (
-            FileJournal(Path(config.path), fsync=config.fsync)
-            if config.path is not None
-            else MemoryJournal()
-        )
+        if config.path is not None:
+            journal_path = Path(config.path).resolve()
+
+            def loader(event: dict[str, Any]) -> Fold | None:
+                return _checkpoint.load(journal_path, event)
+
+            self._journal = FileJournal(
+                Path(config.path), fsync=config.fsync, checkpoint_loader=loader
+            )
+        else:
+            self._journal = MemoryJournal()
         try:
-            self._fold = Fold()
-            replayed = self._fold.replay(self._journal.events())
+            # Round 4 E3 condition 3: start from the newest verified fold
+            # snapshot, if any, and replay only the events after it.
+            state, tail = self._journal.take_open_replay()
+            self._fold = state if state is not None else Fold()
+            self.opened_from_checkpoint = None if state is None else state.last_seq
+            replayed = self._fold.replay(tail)
+            # Events folded at open: the tail after the checkpoint, or all of them.
+            self.replayed_at_open = replayed
             if config.embedding_dim is not None:
                 if self._fold.dim is not None and self._fold.dim != config.embedding_dim:
                     raise DimensionMismatchError(self._fold.dim, config.embedding_dim)
@@ -414,11 +442,12 @@ class Substrate:
             self._journal.close()
             raise
         _logger.info(
-            "moneta.v5 open path=%s events=%d records=%d tail_recovered=%d",
+            "moneta.v5 open path=%s events=%d records=%d tail_recovered=%d checkpoint=%s",
             config.path,
             replayed,
             len(self._fold.records),
             self._journal.recovered_tail_bytes,
+            self.opened_from_checkpoint,
         )
 
     # -- lifecycle -----------------------------------------------------
@@ -897,6 +926,7 @@ class Substrate:
             ]
             lam = self.lam
         consolidated, error, authored_at, last = self._project_staged(staged, lam, when)
+        checkpoint_seq = self._checkpoint_if_due()
         return SleepPassResult(
             attention_updated=attention_updated,
             pruned=len(prune),
@@ -908,6 +938,7 @@ class Substrate:
             projection_error=error,
             seq=seq if last is None else last,
             half_life_change_seq=change_seq,
+            checkpoint_seq=checkpoint_seq,
         )
 
     def _project_staged(
@@ -1138,7 +1169,13 @@ class Substrate:
             if not keys:
                 return None
             event = {"op": "erase", "t": self._t(t), "ids": keys, "reason": reason}
-            return self._append_removal(event, [UUID(k) for k in keys])
+            seq = self._append_removal(event, [UUID(k) for k in keys])
+            # Fold snapshots taken before this hold the erased payloads and
+            # vectors: they are derived copies the erase must reach (Round 4
+            # E4 condition 2). Open falls back to an older checkpoint or a
+            # full replay until the next checkpoint.
+            self._invalidate_snapshots(seq)
+            return seq
 
     def compact(self) -> dict[str, Any]:
         """Physically remove erased payloads and vectors from the journal."""
@@ -1171,7 +1208,139 @@ class Substrate:
                 return event
 
             self._journal.rewrite(transform)
+            # The prefix every snapshot summarizes was just rewritten, and a
+            # replay of it differs from live state for erased records (their
+            # deposits now replay as erased from the start). Drop them all;
+            # this handle's fold can no longer be snapshotted (reopen first).
+            self._invalidate_snapshots(math.inf)
             return {"erased_records": len(erased), "events_scrubbed": scrubbed, "seq": self.seq}
+
+    def _invalidate_snapshots(self, before_seq: float) -> None:
+        """Delete every fold snapshot; refuse in-flight ones covering less than ``before_seq``."""
+        self._snapshots_invalid_before = max(self._snapshots_invalid_before, before_seq)
+        path = self._journal.path
+        if path is not None:
+            removed = _checkpoint.remove_all(path)
+            if removed:
+                _logger.info("moneta.v5 removed %d fold snapshots (erase/compact)", removed)
+
+    def checkpoint(self) -> int | None:
+        """Write a fold snapshot and journal a ``checkpoint`` event naming it.
+
+        Round 4 E3 condition 3: the next open loads the snapshot (after
+        verifying its sha256) and replays only the events after it. Returns
+        the checkpoint event's seq, the existing one's when nothing was
+        written since, or None for an in-memory store (nothing to reopen),
+        when an erase overtook the snapshot while it was being written (it
+        would hold erased bytes; it is discarded), or after :meth:`compact`
+        on this handle (live state then differs from a replay of the
+        rewritten journal for erased records; reopen to checkpoint again).
+
+        Only the copy of fold state takes the writer lock; serializing,
+        hashing and fsync run with it released, as the v1 export does.
+        """
+        path = self._journal.path
+        with self._checkpoint_lock:
+            with self._lock:
+                self._check_open()
+                if path is None:
+                    return None
+                if self._snapshots_invalid_before == math.inf:
+                    _logger.warning("moneta.v5 checkpoint refused after compact(); reopen first")
+                    return None
+                last = self._fold.last_checkpoint
+                if (
+                    last is not None
+                    and last["seq"] == self._fold.last_seq
+                    and self._kept_snapshots()
+                    and (
+                        _checkpoint.checkpoint_dir(path)
+                        / _checkpoint.snapshot_name(last["covers"], last["sha256"])
+                    ).exists()
+                ):
+                    return last["seq"]  # nothing written since, and its snapshot is intact
+                image = _checkpoint.capture(self._fold)
+            name, sha = _checkpoint.write(path, image, fsync=self.config.fsync)
+            with self._lock:
+                if self._closed or image.covers < self._snapshots_invalid_before:
+                    _checkpoint.remove_all(path, keep=self._kept_snapshots())
+                    self._check_open()
+                    return None
+                previous = self._fold.last_checkpoint
+                seq = self._append(
+                    {
+                        "op": "checkpoint",
+                        "t": _finite("clock.now()", self._clock.now()),
+                        "covers": image.covers,
+                        "sha256": sha,
+                        "file": name,
+                        "records": len(image.records),
+                    }
+                )
+                keep = {name}
+                if previous is not None:
+                    keep.add(_checkpoint.snapshot_name(previous["covers"], previous["sha256"]))
+            # Keep this snapshot and the one before it (a fallback if this
+            # file is lost); everything older is only open-time cost.
+            _checkpoint.remove_all(path, keep=frozenset(keep))
+            _logger.info(
+                "moneta.v5 checkpoint seq=%d covers=%d records=%d file=%s",
+                seq,
+                image.covers,
+                len(image.records),
+                name,
+            )
+            return seq
+
+    def _kept_snapshots(self) -> frozenset[str]:
+        last = self._fold.last_checkpoint
+        if last is None or last["covers"] < self._snapshots_invalid_before:
+            return frozenset()
+        return frozenset({_checkpoint.snapshot_name(last["covers"], last["sha256"])})
+
+    def _checkpoint_if_due(self) -> int | None:
+        """Sleep-pass checkpoint (Config.checkpoint_every). Never fails the pass."""
+        every = self.config.checkpoint_every
+        if every is None or self._journal.path is None:
+            return None
+        with self._lock:
+            last = self._fold.last_checkpoint
+            if self._fold.last_seq - (0 if last is None else last["seq"]) < every:
+                return None
+        try:
+            return self.checkpoint()
+        except SubstrateClosedError:
+            raise
+        except Exception:  # noqa: BLE001 - a checkpoint is derived; the pass already succeeded
+            _logger.exception("moneta.v5 sleep-pass checkpoint failed; open replays further")
+            return None
+
+    def verify(self) -> dict[str, Any]:
+        """Operator check: re-read the whole journal and replay it from genesis.
+
+        Validates every line, including the prefix a checkpoint let open
+        skip, and compares the replayed fold with live state field by field
+        (``matches``). Holds the writer lock throughout. After
+        :meth:`compact`, reopen before verifying: live state still holds the
+        pre-compaction anchors of erased records, which a replay of the
+        rewritten journal no longer reproduces.
+        """
+        with self._lock:
+            self._check_open()
+            fresh = Fold()
+            if self._journal.path is None:
+                events = list(self._journal.events())
+            else:
+                data = self._journal.path.read_bytes()[: self._journal._size]
+                events, _, _ = scan(data, self._journal.path)
+            fresh.replay(iter(events))
+            matches = _checkpoint.snapshot_bytes(fresh) == _checkpoint.snapshot_bytes(self._fold)
+            return {
+                "events": len(events),
+                "seq": self.seq,
+                "matches": matches,
+                "opened_from_checkpoint": self.opened_from_checkpoint,
+            }
 
     def _known(self, ids: Iterable[UUID]) -> list[str]:
         # Ordered dedup in O(n): a dict keeps first-seen order with O(1)
@@ -1235,4 +1404,7 @@ class Substrate:
                 "journal": None if self.journal_path is None else str(self.journal_path),
                 "half_life_seconds": self._fold.half_life_seconds,
                 "projector": None if self._projector is None else self._projector.name,
+                "checkpoint": None
+                if self._fold.last_checkpoint is None
+                else dict(self._fold.last_checkpoint),
             }
