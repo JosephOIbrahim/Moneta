@@ -786,6 +786,32 @@ def test_cleanup_hydrate_native_seam_error(iso, tmp_path):
     assert _files(snap, wal) == before
 
 
+def test_cleanup_hydrate_mixed_dim_native_seam_error(iso, tmp_path):
+    # A stored row whose dim differs from the index dim is outside the
+    # envelope (SPEC section 3), so hydrate under require raises
+    # NativeSeamError, not upsert's ValueError.
+    cfg, snap, wal = _seed_store(iso, tmp_path, "moneta-test://cleanup-mixed-dim")
+    with Moneta(MonetaConfig(native="off", **cfg)) as m:
+        b = m.deposit("b", [0.0, 1.0, 0.0])
+        m.run_sleep_pass()
+        snap_ts = json.loads(snap.read_text(encoding="utf-8"))["snapshot_created_at"]
+        while time.time() <= snap_ts:
+            time.sleep(0.001)
+        m.signal_attention({b: 0.25})  # keep a WAL line on disk
+    assert wal.exists()
+    doc = json.loads(snap.read_text(encoding="utf-8"))
+    assert len(doc["rows"]) == 2
+    doc["rows"][1]["semantic_vector"] = [1.0, 2.0]
+    snap.write_text(json.dumps(doc), encoding="utf-8")
+    before, mt = _files(snap, wal), _mtimes(snap, wal)
+    _state(iso, "loaded")
+    for _ in range(2):  # the second attempt proves the lock was released
+        with pytest.raises(NativeSeamError, match="dim 2, index dim 3"):
+            Moneta(MonetaConfig(native="require", **cfg))
+        assert cfg["storage_uri"] not in api_mod._ACTIVE_URIS
+    assert _files(snap, wal) == before and _mtimes(snap, wal) == mt
+
+
 # ---------------------------------------------------------------------------
 # Exactly-once attention (SPEC section 7), with the mode from config
 # ---------------------------------------------------------------------------

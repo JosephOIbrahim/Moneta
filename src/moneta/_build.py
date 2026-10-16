@@ -207,7 +207,8 @@ def _dist_matches(dist, pkg: Path, du: dict) -> bool:
             return True
     except Exception:
         pass
-    if du.get("dir_info", {}).get("editable"):
+    dir_info = du.get("dir_info")
+    if isinstance(dir_info, dict) and dir_info.get("editable"):
         url = du.get("url", "")
         if isinstance(url, str) and url.startswith("file:"):
             p = unquote(urlparse(url).path)

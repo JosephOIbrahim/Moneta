@@ -282,7 +282,13 @@ class Moneta:
                     native=native_mode, _source=native_source
                 )
                 # Rebuild vector index from hydrated ECS (shadow rebuild).
+                # Under require, a stored vector outside the native envelope
+                # (including a wrong dim) raises NativeSeamError, as deposit
+                # does; a no-op in auto and off.
                 for memory in self.ecs.iter_rows():
+                    self.vector_index.check_native_envelope(
+                        memory.semantic_vector
+                    )
                     self.vector_index.upsert(
                         memory.entity_id,
                         memory.semantic_vector,

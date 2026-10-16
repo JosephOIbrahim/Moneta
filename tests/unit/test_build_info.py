@@ -232,6 +232,16 @@ def test_stale_dist_elsewhere_without_git(tmp_path):
     assert (bi.mode, bi.version, bi.version_mismatch) == ("unknown", None, True)
 
 
+@pytest.mark.parametrize("dir_info", ["[]", '"x"', "null", "3"])
+def test_malformed_dir_info_does_not_crash(tmp_path, dir_info):
+    # A damaged direct_url.json in an unrelated dist is observability only.
+    pkg = _tree(tmp_path / "loose")
+    stale = FakeDist("1.2.0rc1", tmp_path / "site-packages",
+                     '{"dir_info": %s, "url": "file:///x"}' % dir_info)
+    bi = _build.compute_build_info(pkg, lambda: stale)
+    assert (bi.mode, bi.version, bi.version_mismatch) == ("unknown", None, True)
+
+
 def test_matching_wheel_dist(tmp_path):
     site = tmp_path / "site-packages"
     pkg = site / "moneta"
