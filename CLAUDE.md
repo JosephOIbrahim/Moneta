@@ -156,7 +156,7 @@ PYTHONPATH=src python scripts/bench_query.py --n 1000 10000            # add --s
 
 - `MONETA_NATIVE=1` and `=require` with the wheel: 779 passed, 2 xfailed, verdict `NATIVE QUALIFIED`.
 - `MONETA_NATIVE=0` with the wheel: 779 passed, 2 xfailed, `PYTHON-ONLY PASS`.
-- Without the wheel, or with a broken wheel: 708 passed, 71 native-only tests skipped visibly, 2 xfailed, `PYTHON-ONLY PASS`. `MONETA_NATIVE=require` without the wheel exits 4.
+- Without the wheel, or with a broken wheel: 708 passed, 71 native-only tests skipped visibly, 2 xfailed, `PYTHON-ONLY PASS`. `MONETA_NATIVE=require` without the wheel (absent) exits 4. With a broken wheel, `=require` also exits 4 (probe at commit `3ca6447e9ac6`, same `src_digest` `f5c721630ac3`, not at `98a998f084eb`).
 - hython 3.11, all rows: PLANNED: awaiting owner coordination.
 - The 2 xfailed are known unresolved defects B and D (undrained attention lost across snapshot and restart), not passes.
 

@@ -63,7 +63,8 @@ with moneta.Moneta(moneta.MonetaConfig.ephemeral()) as m:
 | Interpreter | `MONETA_NATIVE` unset | `MONETA_NATIVE=0` | `MONETA_NATIVE=1` | `MONETA_NATIVE=require` |
 |---|---|---|---|---|
 | Python 3.14.2, wheel | not run | 779 passed, 2 xfailed · `PYTHON-ONLY PASS` | 779 passed, 2 xfailed · `NATIVE QUALIFIED` | 779 passed, 2 xfailed · `NATIVE QUALIFIED` |
-| Python 3.14.2, **no wheel** (absent or broken) | 708 passed, 71 skipped, 2 xfailed · `PYTHON-ONLY PASS` | not run | not run | exit 4: refused, wheel not loaded |
+| Python 3.14.2, **no wheel** (absent) | 708 passed, 71 skipped, 2 xfailed · `PYTHON-ONLY PASS` | not run | not run | exit 4: refused, wheel not loaded |
+| Python 3.14.2, **broken wheel** | 708 passed, 71 skipped, 2 xfailed · `PYTHON-ONLY PASS` | not run | not run | exit 4: refused, wheel broken (probe at commit `3ca6447e9ac6`, same `src_digest` `f5c721630ac3`, not at `98a998f084eb`) |
 | hython 3.11 | PLANNED: awaiting owner coordination | PLANNED: awaiting owner coordination | PLANNED: awaiting owner coordination | PLANNED: awaiting owner coordination |
 
 **The 2 xfailed are known unresolved defects B and D** (undrained attention lost across snapshot and restart), not passes. See [Known unresolved defects](#known-unresolved-defects-b-and-d).
