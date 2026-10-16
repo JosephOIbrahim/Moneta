@@ -699,7 +699,8 @@ flowchart TD
     wheel -->|"no, auto"| oracle
     wheel -->|"no, require"| unavail["NativeUnavailableError"]
     wheel -->|"yes"| envelope{"vector inside the<br/>native envelope?<br/>finite · numeric · non-empty · dim"}
-    envelope -->|"no, auto: demote that index"| oracle
+    envelope -->|"no, auto, wrong dim"| dimerr["ValueError<br/>embedding dim mismatch<br/>unchanged from v1"]
+    envelope -->|"no, auto, non-finite · non-numeric · empty: demote that index"| oracle
     envelope -->|"no, require"| seamerr["NativeSeamError<br/>nothing mutated"]
     envelope -->|"yes"| rust["Rust seam<br/>ScanIndex.scan · decay_batch"]
     rust --> result["Same bits as the oracle<br/>ties included"]
@@ -715,7 +716,7 @@ flowchart TD
 
     class rust,oracle,oracle_q,result green
     class init,mode,wheel,envelope,suite,status blue
-    class cfgerr,unavail,seamerr red
+    class cfgerr,unavail,seamerr,dimerr red
 ```
 
 ### Build, test, measure
