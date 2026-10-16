@@ -94,3 +94,49 @@ PYTHONPATH=src python scripts/bench_query.py --n 10000 --spread
 | Full integrity check | `verify()`. Open no longer CRC-checks the lines a checkpoint covers. |
 | Which seams are on | `m._index.native`, `m.native_decay`. |
 | v5 latency | `PYTHONPATH=src python scripts/v5/bench_recall_native.py --n 10000` |
+
+---
+
+### Cut a release
+
+**Prerelease from a feature branch; `main` and "Latest" stay put.** `X.Y.Z-rcN` is the tag; `pyproject.toml` takes `X.Y.ZrcN`.
+
+**1 · Green first.** All four test configurations above, plus the v5 mutation check (`missed: []`).
+
+**2 · Bump the version** in `pyproject.toml` so it matches the tag.
+
+**3 · Public-safety scan.** The repo is public. Nothing should print:
+
+```bash
+git diff main..HEAD | grep -niE "uspto|claim [0-9]"
+grep -niE "users[/\]|houdini 21" README.md RELEASE_NOTES.md
+```
+
+**4 · Commit by name.** Never `git add -A`; stray root files exist.
+
+```bash
+git add README.md pyproject.toml <changed paths>
+git commit
+```
+
+**5 · Tag and push** the branch and the tag only. No `main`, no `--force`.
+
+```bash
+git tag -a vX.Y.Z-rcN -m "vX.Y.Z-rcN: <one line>"
+git push origin <branch> vX.Y.Z-rcN
+```
+
+**6 · Publish** as a prerelease from the branch:
+
+```bash
+gh release create vX.Y.Z-rcN --target <branch> --prerelease \
+    --title "vX.Y.Z-rcN — <one line>" --notes-file RELEASE_NOTES.md
+```
+
+**7 · Check** that all mermaid blocks render on the branch's README page on GitHub, then `gh release list` (the rc shows **Pre-release**; "Latest" unchanged).
+
+| You see | Do |
+|---|---|
+| `A repository cannot have more than 20 topics` | Topics cap at 20. Drop one before `gh repo edit --add-topic`. |
+| "Unable to render rich display" on GitHub | A mermaid block GitHub rejects. Quote labels, no `λ` or bare parentheses in nodes, fix, push again. |
+| The rc became "Latest" | `gh release edit vX.Y.Z-rcN --prerelease`. |
