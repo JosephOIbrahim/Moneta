@@ -270,6 +270,22 @@ PYTHONPATH=src python scripts/bench_query.py --n 10000 --spread
 
 ---
 
+### USD mirror (cold tier)
+
+**LOP networks must not edit or reload `.moneta/usd` layers in a live session.** Sdf keeps one layer registry per process. A LOP network that loads a store layer holds the same layer object Moneta authors into, and Moneta's `flush()` saves every opinion that layer holds.
+
+| You see | Means | Do |
+|---|---|---|
+| ERROR `usd_target: Sdf registry sharing: layer <identifier> is already loaded in this process` | When the target opened, something else in this process (a LOP network, another stage or another `UsdTarget`) already held that store layer. The line names the shared layer and its dirty state. Moneta authors into it; nothing is refused. | Stop editing or reloading that layer from the LOP network while Moneta runs, and drop the network's reference to it before the next session. Detection runs once, when the target is built (in a seat, when the store opens), so a holder that loads a layer later is not detected. |
+| `UsdSaveError` raised from `run_sleep_pass` (v1 `moneta.Moneta`), or returned as `SleepPassResult.projection_error` with the ERROR line `moneta.v5 projection failed` (v5 compat `Moneta`) | A layer's `Save()` returned `False` or raised. Every other layer was still saved, and that batch's vector commit did not happen. The failed layer stays dirty, and the next flush retries it. v1 leaves every entity that pass staged in `STAGED_FOR_SYNC` (listed by `get_consolidation_manifest()`), and no later pass commits them again. v5 projects the failed batch, and every later one, again on the next pass, and re-authors their prims in place. | Read `.failures` (layer identifier to cause), or the v5 error string, and fix the file or its permissions. |
+| `ValueError: rotation_cap must be positive` | `rotation_cap < 1`. | Pass a positive cap (default 50,000). |
+
+**Reopen keeps the authored stack.** Existing layers open first and are created only when absent; an existing layer that cannot be opened raises instead of being replaced.
+
+**Owed before any Houdini seat moves to this code** (gate 2): a hython row on H22.0.400 with a LOP network sublayering `cortex_root.usda`. Not run.
+
+---
+
 ### Cut a release
 
 **Prerelease from a feature branch; `main` and "Latest" stay put.** `X.Y.Z-rcN` is the tag; `pyproject.toml` takes `X.Y.ZrcN`.

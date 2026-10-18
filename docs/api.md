@@ -508,6 +508,24 @@ unsupported.
   `MonetaConfig.use_real_usd=True`. Without `pxr`, the `MockUsdTarget`
   fallback is selected and 7 pxr-gated tests skip rather than fail.
   Run pxr-gated tests under `hython` (or any pxr-capable interpreter).
+  With the real target, reopening an existing `usd_target_path` keeps
+  its authored sublayer stack, prim counts and opinions: an existing
+  layer is opened, never re-created, and one that cannot be opened
+  raises (ce45, Codex's candidate, prepared outside this repository). A
+  layer whose save fails (a `False` result or a raise) stops that batch
+  before its vector commit; the layer stays dirty and the next flush
+  retries it. On the v1 handle, `run_sleep_pass` raises
+  `moneta.usd_target.UsdSaveError` (a `RuntimeError`), and every entity
+  that pass staged stays `STAGED_FOR_SYNC`: no later pass commits them
+  again. On the v5 compat handle, the pass returns the error as
+  `SleepPassResult.projection_error` with an ERROR log line, and the next
+  pass projects the failed batch, and every later one, again; a prim that
+  already exists is re-authored in place. A store layer that something else
+  in the process already loaded (a Houdini LOP network shares Sdf's
+  layer registry) is logged at ERROR as `Sdf registry sharing`, naming
+  the layer, and
+  Moneta then authors into that shared layer; nothing is refused, and a
+  holder that loads the layer later is not detected.
 - **`moneta_native` (optional)**: an abi3 wheel built from
   `rust/moneta_native` that serves Python 3.11+, hython included. It is
   required only when a handle resolves to native mode `require`. See

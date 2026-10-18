@@ -48,6 +48,35 @@ New continuation sublayers are inserted at position 1 in the root
 sublayer stack (right after ``cortex_protected.usda``) so newer data has
 stronger opinion at composition time.
 
+Reopen (ce45, adopted at gate 2)
+--------------------------------
+An existing store is reopened, never re-created: each existing layer is
+opened with ``FindOrOpen``, and a layer is created only when its file is
+absent, so a fresh process keeps the authored stack (paths, order,
+offsets, metadata and opinions). Each layer's prim count starts from its
+top-level prims on disk, and rolling routing resumes the highest existing
+continuation. An existing layer or a stage that cannot be opened raises;
+nothing falls back to creating a new layer. ``rotation_cap`` must be
+positive. Gate 2's two conditions: a layer already loaded in this process
+(Sdf's registry is shared with LOP networks) is used as is and logged at
+ERROR, naming the layer, and ``flush()`` reports every failed ``Save()``
+as ``UsdSaveError``. ce45 (``ce45f133``) is Codex's isolated candidate,
+prepared outside this repository; it is not in this repository's history.
+A prim that already exists is re-authored in place, so a batch authored
+again after a failed ``flush()`` updates its prims instead of raising.
+
+Process and thread assumptions
+------------------------------
+One writer per store directory. A layer is created only after ``lstat``
+reports its file absent, and ``CreateNew`` writes the file at once, so a
+second process opening the same fresh store can overwrite a layer the
+first one just created: nothing locks the directory. ``UsdTarget`` takes
+no lock either. The v1 ``Moneta`` builds it on the constructing thread;
+the v5 compat projector builds it on the thread that runs the first sleep
+pass. In a Houdini session, a layer shared with a LOP network is mutated
+by Moneta with no synchronization against that network; gate 2 logs the
+sharing at ERROR rather than refusing it.
+
 In-memory mode
 --------------
 When ``log_path=None``, all layers are anonymous in-memory layers. No
@@ -85,6 +114,7 @@ USD stores the cognitive state metadata.
 from __future__ import annotations
 
 import logging
+import os
 import time
 import uuid as _uuid
 from datetime import datetime, timezone
@@ -171,9 +201,103 @@ def _set_attr(
     type_name: Sdf.ValueTypeName,
     value: object,
 ) -> None:
-    """Author an attribute with default value on a prim spec."""
-    attr = Sdf.AttributeSpec(prim_spec, name, type_name)
+    """Author an attribute's default value on a prim spec, in place if it exists.
+
+    ``Sdf.AttributeSpec`` refuses to create a spec that already exists
+    ("Cannot create spec ... because it already exists"), so an existing
+    attribute is reused. A batch authored again after its ``flush()``
+    failed (the v5 compat projector projects a staged batch again on the
+    next pass, on the same target) then updates its prims instead of
+    raising before ``flush()`` can save the dirty layer.
+    """
+    attr = prim_spec.attributes.get(name)
+    if attr is None:
+        attr = Sdf.AttributeSpec(prim_spec, name, type_name)
     attr.default = value
+
+
+class UsdSaveError(RuntimeError):
+    """``UsdTarget.flush()`` could not save one or more layers.
+
+    ``failures`` maps each failed layer's identifier to what its ``Save()``
+    did: returned ``False``, or raised (the first raise is chained as
+    ``__cause__``). A failed layer stays dirty, so the next ``flush()``
+    retries it.
+    """
+
+    def __init__(self, failures: dict[str, str]) -> None:
+        self.failures: dict[str, str] = dict(failures)
+        detail = "; ".join(f"{ident}: {why}" for ident, why in self.failures.items())
+        super().__init__(
+            f"USD flush failed for {len(self.failures)} layer(s): {detail}"
+        )
+
+
+def _warn_registry_sharing(directory: Path) -> int:
+    """Log every layer another holder already loaded from ``directory``.
+
+    Sdf keeps one layer registry per process, and in a Houdini session LOP
+    networks share it. A layer from this store that is loaded before this
+    target loads anything is held by someone else: a LOP network, another
+    stage or another ``UsdTarget``. Moneta will author into that same layer
+    object, and its ``flush()`` saves every opinion the layer holds, while
+    the other holder sees, edits or reloads it. Gate 2's condition on
+    adopting ce45 is that this sharing is detected and logged: one ERROR
+    per layer, naming it; nothing is refused. The scan runs once, when the
+    target is built, so a holder that loads a store layer later is not
+    detected (the rolling layer itself opens lazily, at its first write).
+    The v1 ``Moneta`` builds the target when the store opens, so in a live
+    seat detection covers holders loaded before Moneta started. Returns
+    the number of layers logged.
+    """
+    want = os.path.normcase(os.path.realpath(directory))
+    n = 0
+    for layer in Sdf.Layer.GetLoadedLayers():
+        real = layer.realPath
+        if not real:  # anonymous layers have no file
+            continue
+        if os.path.normcase(os.path.dirname(os.path.realpath(real))) != want:
+            continue
+        n += 1
+        _logger.error(
+            "usd_target: Sdf registry sharing: layer %s is already loaded in "
+            "this process (a LOP network, another stage or another UsdTarget "
+            "holds it; dirty=%s). Moneta authors into that shared layer, and "
+            "its flush() saves every opinion the layer holds.",
+            layer.identifier,
+            layer.dirty,
+        )
+    return n
+
+
+def _open_or_create_disk_layer(path: Path) -> Sdf.Layer:
+    """Open an existing layer; never replace an unreadable file with a new one.
+
+    Reopen-first (ce45, the external candidate named in the module
+    docstring): an existing file is opened, never re-created; a new
+    layer is created only after ``lstat`` reports the file absent.
+
+    A layer already in this process's Sdf registry under this identifier is
+    used as is: ``CreateNew`` would collide with it ("A layer already
+    exists"), and ``FindOrOpen`` would return it anyway. This target's own
+    stage puts its sublayers there when it composes the root, so finding
+    one here is not sharing by itself; ``_warn_registry_sharing`` detects
+    foreign holders before the target loads anything.
+    """
+    loaded = Sdf.Layer.Find(str(path))
+    if loaded is not None:
+        return loaded
+    try:
+        path.lstat()
+    except FileNotFoundError:
+        layer = Sdf.Layer.CreateNew(str(path))
+        action = "create"
+    else:
+        layer = Sdf.Layer.FindOrOpen(str(path))
+        action = "open existing"
+    if layer is None:
+        raise RuntimeError(f"Unable to {action} USD layer: {path}")
+    return layer
 
 
 class UsdTarget:
@@ -201,6 +325,8 @@ class UsdTarget:
         *,
         rotation_cap: int = DEFAULT_ROTATION_CAP,
     ) -> None:
+        if rotation_cap < 1:
+            raise ValueError("rotation_cap must be positive")
         self._log_path = Path(log_path) if log_path is not None else None
         self._in_memory = log_path is None
         self._rotation_cap = rotation_cap
@@ -215,12 +341,14 @@ class UsdTarget:
             self._root_layer = Sdf.Layer.CreateAnonymous("cortex_root")
         else:
             self._log_path.mkdir(parents=True, exist_ok=True)
-            root_path = str(self._log_path / "cortex_root.usda")
-            self._root_layer = Sdf.Layer.CreateNew(root_path)
-            if self._root_layer is None:
-                self._root_layer = Sdf.Layer.FindOrOpen(root_path)
+            # Before this target loads anything, so its own stage's layers
+            # are never mistaken for another holder's (gate 2).
+            _warn_registry_sharing(self._log_path)
+            self._root_layer = _open_or_create_disk_layer(self._log_path / "cortex_root.usda")
 
         self._stage = Usd.Stage.Open(self._root_layer)
+        if self._stage is None:
+            raise RuntimeError(f"Unable to open USD stage: {self._root_layer.identifier}")
 
         # Protected sublayer at strongest Root position
         self._get_or_create_layer(PROTECTED_SUBLAYER_NAME, protected=True)
@@ -239,25 +367,21 @@ class UsdTarget:
         if self._in_memory:
             layer = Sdf.Layer.CreateAnonymous(name)
         else:
-            layer_path = str(self._log_path / name)
-            layer = Sdf.Layer.CreateNew(layer_path)
-            if layer is None:
-                layer = Sdf.Layer.FindOrOpen(layer_path)
+            layer = _open_or_create_disk_layer(self._log_path / name)
 
         self._layers[name] = layer
-        self._prim_counts[name] = 0
+        self._prim_counts[name] = len(layer.rootPrims)
 
-        # Insert into root sublayer stack
+        # Keep authored paths, ordering and offsets when the layer is already
+        # referenced, including relative references to its absolute identifier.
         paths = list(self._root_layer.subLayerPaths)
-        if protected:
-            # Strongest position (index 0)
-            paths.insert(0, layer.identifier)
-        else:
-            # Right after protected sublayer: newer rolling sublayers are
-            # stronger than older ones at composition time.
-            insert_at = 1 if paths else 0
-            paths.insert(insert_at, layer.identifier)
-        self._root_layer.subLayerPaths[:] = paths
+        if not any(
+            path == layer.identifier
+            or Sdf.ComputeAssetPathRelativeToLayer(self._root_layer, path) == layer.identifier
+            for path in paths
+        ):
+            insert_at = 0 if protected else (1 if paths else 0)
+            self._root_layer.subLayerPaths.insert(insert_at, layer.identifier)
 
         return layer
 
@@ -269,18 +393,25 @@ class UsdTarget:
             return PROTECTED_SUBLAYER_NAME, self._layers[PROTECTED_SUBLAYER_NAME]
 
         base = _rolling_sublayer_base(authored_at)
-        seq = self._rotation_seq.get(base, 0)
-        name = f"{base}.usda" if seq == 0 else f"{base}_{seq:03d}.usda"
+        seq = self._rotation_seq.get(base)
+        if seq is None:
+            seq = 0
+            for path in self._root_layer.subLayerPaths:
+                stem = Path(path).stem
+                suffix = stem[len(base) + 1 :] if stem.startswith(f"{base}_") else ""
+                if suffix.isdecimal():
+                    seq = max(seq, int(suffix))
+            self._rotation_seq[base] = seq
 
-        # Check rotation cap
-        count = self._prim_counts.get(name, 0)
-        if count >= self._rotation_cap:
+        # Open before checking the cap so persisted counts participate in
+        # rotation. Existing full continuations must not receive another write.
+        while True:
+            name = f"{base}.usda" if seq == 0 else f"{base}_{seq:03d}.usda"
+            layer = self._get_or_create_layer(name)
+            if self._prim_counts[name] < self._rotation_cap:
+                return name, layer
             seq += 1
             self._rotation_seq[base] = seq
-            name = f"{base}_{seq:03d}.usda"
-
-        layer = self._get_or_create_layer(name)
-        return name, layer
 
     # ------------------------------------------------------------------
     # AuthoringTarget Protocol
@@ -295,6 +426,10 @@ class UsdTarget:
         method returns. This narrow-lock scope allows concurrent readers
         to traverse the stage during the Save window. Empirical basis:
         Pass 5 Q6 investigation (commit 500b1dd, OpenUSD 0.25.5).
+
+        A prim that already exists is re-authored in place (``_set_attr``),
+        so a batch authored again after a failed ``flush()`` updates its
+        prims, and each layer's prim count is its real root-prim count.
         """
         authored_at = time.time()
         batch_id = str(_uuid.uuid4())
@@ -332,7 +467,10 @@ class UsdTarget:
                         prim_spec, "priorState", Sdf.ValueTypeNames.Token, _state_to_token(m.state)
                     )
 
-            self._prim_counts[name] = self._prim_counts.get(name, 0) + len(batch)
+            # The layer's own count, not ``+= len(batch)``: a batch authored
+            # again after a failed flush() reuses its prims, and adding would
+            # count them twice and rotate the layer early.
+            self._prim_counts[name] = len(layer.rootPrims)
 
         _logger.info(
             "usd_target.author batch=%s count=%d mode=%s",
@@ -359,11 +497,49 @@ class UsdTarget:
         Since Pass 6, ``author_stage_batch`` no longer calls Save()
         itself — this method is the sole Save call site, enabling the
         narrow-lock pattern verified in Pass 5.
+
+        Every ``Save()`` is checked (gate 2's condition on adopting ce45, the
+        external candidate named in the module docstring):
+        a ``False`` result and a raise (usd-core raises
+        ``Tf.ErrorException`` for an unwritable file) are both failures.
+        The remaining layers are still saved, sublayers first and the root
+        last; then ``UsdSaveError`` names every failed layer. The
+        ``SequentialWriter`` does not catch it, so the batch's vector
+        commit does not happen (ARCHITECTURE.md §7: USD first). A failed
+        layer stays dirty, and the next ``flush()`` retries it.
+
+        What happens to the batch depends on the handle. The v1 ``Moneta``
+        lets ``UsdSaveError`` escape ``run_sleep_pass``; every entity that
+        pass staged stays ``STAGED_FOR_SYNC`` and no later pass commits it
+        again (classification takes only ``VOLATILE`` entities). The v5
+        compat ``Moneta`` returns it as ``SleepPassResult.projection_error``
+        with an ERROR line and projects the failed batch, and every later
+        one, again on the next pass; ``author_stage_batch`` re-authors those
+        prims in place.
         """
-        if not self._in_memory:
-            for layer in self._layers.values():
-                layer.Save()
-            self._root_layer.Save()
+        if self._in_memory:
+            return
+        failures: dict[str, str] = {}
+        first_raise: BaseException | None = None
+        for layer in [*self._layers.values(), self._root_layer]:
+            try:
+                saved = layer.Save()
+            except Exception as exc:  # noqa: BLE001 - reported below, never dropped
+                failures[layer.identifier] = (
+                    f"Save() raised {type(exc).__name__}: {str(exc).strip()}"
+                )
+                if first_raise is None:
+                    first_raise = exc
+                continue
+            if not saved:
+                failures[layer.identifier] = "Save() returned False"
+        if failures:
+            _logger.error(
+                "usd_target.flush failed for %d layer(s): %s",
+                len(failures),
+                ", ".join(failures),
+            )
+            raise UsdSaveError(failures) from first_raise
 
     # ------------------------------------------------------------------
     # Inspection / lifecycle helpers
