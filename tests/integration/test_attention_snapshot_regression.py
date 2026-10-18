@@ -892,6 +892,48 @@ def test_AB_c_an_interrupt_inside_apply_is_a_stated_loss_not_a_double(
         m.close()
 
 
+def test_AB_c2_an_interrupt_right_after_the_seq_record_is_a_logged_torn_apply(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    """Design revision 6 (the reducer nit from the Architect review): the
+    inner `try` opens before `applied_seqs.update`, so an async exception
+    landing right after the record, before `apply_attention` runs, is
+    logged as a torn apply and propagates. Before the fix that window was
+    silent: the seq stayed recorded with no effect and no ERROR line."""
+
+    class _RecordThenInterrupt(set):
+        def update(self, *others: Any) -> None:
+            super().update(*others)
+            raise KeyboardInterrupt  # stands in for an async exception
+
+    cfg = _store(tmp_path / "s")
+    m = Moneta(cfg)
+    try:
+        x = m.deposit("x", [1.0, 0.0])
+        _save(m)
+        m.signal_attention({x: 0.5})
+        (seq,) = _buffer_seqs(m)
+        applied: list[Any] = []
+
+        def apply(agg: Any, now: float) -> int:
+            applied.append(agg)
+            return 0
+
+        with monkeypatch.context() as mp:
+            mp.setattr(m.attention, "applied_seqs", _RecordThenInterrupt())
+            mp.setattr(m.ecs, "apply_attention", apply)
+            with pytest.raises(KeyboardInterrupt):
+                m.run_sleep_pass()
+            assert set(m.attention.applied_seqs) == {seq}
+        torn = _messages(caplog, logging.ERROR, "torn attention apply")
+        assert len(torn) == 1 and "1 of 1 drained WAL seq(s) recorded" in torn[0]
+        assert applied == []  # the apply never ran
+        assert m.attention._inflight == set()
+        assert _attended(m, x) == 0
+    finally:
+        m.close()
+
+
 def test_AB_d_overlapping_reducers_never_produce_a_torn_keyed_snapshot(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
 ) -> None:

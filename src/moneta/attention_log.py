@@ -223,9 +223,10 @@ def reduce_attention_log(log: "AttentionLog", ecs, decay, now: float) -> int:
     ``log._apply_epoch``; it never blocks or waits. The drain, the seq
     record and the apply all happen while the token is registered, so a
     save never pairs rows and ``applied_seqs`` from the middle of a pass.
-    Seqs are recorded before ``apply_attention`` (gate 3 ruling); if the
-    apply raises, an ERROR "torn attention apply" names how many recorded
-    seqs may lack their effects, and the exception propagates unchanged.
+    Seqs are recorded before ``apply_attention`` (gate 3 ruling), inside
+    the same ``try``: if the record or the apply is interrupted, an ERROR
+    "torn attention apply" names how many drained seqs were recorded and
+    may lack their effects, and the exception propagates unchanged.
     Concurrent-reducer detection logs ERROR and never raises.
 
     Args:
@@ -254,15 +255,19 @@ def reduce_attention_log(log: "AttentionLog", ecs, decay, now: float) -> int:
         items = log._drain_with_seqs()  # ONE tuple: stragglers + this swap
         agg = aggregate([entry for entry, _ in items])
         seqs = [seq for _, seq in items if seq is not None]
-        log.applied_seqs.update(seqs)  # recorded BEFORE the apply (gate 3)
+        # The try opens BEFORE the record (design revision 6): an async
+        # exception between the record and the apply is logged, never silent.
         try:
+            log.applied_seqs.update(seqs)  # recorded BEFORE the apply (gate 3)
             updated = ecs.apply_attention(agg, now)
         except BaseException:
             _logger.error(
-                "torn attention apply: apply_attention raised after %d drained "
-                "WAL seq(s) were recorded as applied; their effects may be "
-                "missing from the rows, and the next save drops their WAL "
-                "lines (a stated loss, never a double apply)",
+                "torn attention apply: the pass stopped after its drain with "
+                "%d of %d drained WAL seq(s) recorded as applied; a recorded "
+                "seq's effect may be missing from the rows, and the next save "
+                "drops its WAL line (a stated loss, never a double apply); an "
+                "unrecorded seq keeps its line and replays at the next reopen",
+                sum(1 for s in seqs if s in log.applied_seqs),
                 len(seqs),
             )
             raise
