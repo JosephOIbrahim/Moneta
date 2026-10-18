@@ -15,7 +15,10 @@ of truth. This module:
   - Defines ``_ACTIVE_URIS`` and :class:`MonetaResourceLockedError`,
     the in-memory exclusivity registry from §5.4. Two handles
     constructed against the same ``storage_uri`` collide synchronously
-    at the second constructor call.
+    at the second constructor call. Its sibling ``_ACTIVE_STORE_PATHS``
+    (R1′, docs/design/R1-attention-durability.md §2.6) refuses a second
+    live handle on the same snapshot, WAL or derived tmp path, even
+    under a different ``storage_uri``.
 
 What this module is not
 -----------------------
@@ -32,6 +35,7 @@ What this module is not
 from __future__ import annotations
 
 import logging
+import os
 import time
 import uuid as _uuid
 from dataclasses import dataclass
@@ -48,7 +52,7 @@ from .consolidation import (
     ConsolidationRunner,
 )
 from .decay import DEFAULT_HALF_LIFE_SECONDS, DecayConfig
-from .durability import DurabilityManager
+from .durability import DurabilityManager, snapshot_tmp_path, wal_tmp_path
 from .ecs import ECS
 from .manifest import build_manifest
 from .mock_usd_target import MockUsdTarget
@@ -75,11 +79,13 @@ class ProtectedQuotaExceededError(RuntimeError):
 
 class MonetaResourceLockedError(RuntimeError):
     """Raised when a :class:`Moneta` is constructed against a ``storage_uri``
-    already held by another live handle in this process.
+    or a store path already held by another live handle in this process.
 
     Per DEEP_THINK_BRIEF_substrate_handle.md §5.4, the in-memory
     ``_ACTIVE_URIS`` registry physically prevents two handles from
-    pointing at the same underlying state. Release is via the holding
+    pointing at the same underlying state. ``_ACTIVE_STORE_PATHS`` does
+    the same for the files (R1′ §2.6): the resolved ``snapshot_path``,
+    ``wal_path`` and their two tmp paths. Release is via the holding
     handle's :meth:`Moneta.close` (or context-manager exit).
     """
 
@@ -195,6 +201,25 @@ _HANDLE_BACKEND = {"auto": "auto", "off": "python", "require": "native"}
 # coordination in the next surgery.
 _ACTIVE_URIS: set[str] = set()
 
+# R1′ §2.6: the store paths of every live handle with durability, as
+# ``os.path.normcase(os.path.realpath(p))``. One set holds every kind of
+# path, so a snapshot path equal to another handle's WAL (or tmp) path is
+# refused too. Hard links and aliasing that realpath does not resolve stay
+# a stated precondition.
+_ACTIVE_STORE_PATHS: set[str] = set()
+
+
+def _store_paths(config: MonetaConfig) -> List[str]:
+    """The four resolved store paths of a durable config, else none."""
+    if config.snapshot_path is None or config.wal_path is None:
+        return []
+    snap = Path(config.snapshot_path)
+    wal = Path(config.wal_path)
+    return [
+        os.path.normcase(os.path.realpath(p))
+        for p in (snap, wal, snapshot_tmp_path(snap), wal_tmp_path(wal))
+    ]
+
 
 # ----------------------------------------------------------------------
 # Moneta — the handle
@@ -204,10 +229,12 @@ _ACTIVE_URIS: set[str] = set()
 class Moneta:
     """Moneta substrate handle.
 
-    Constructor acquires a process-level lock on ``config.storage_uri``;
-    :meth:`close` (or context-manager exit) releases it. Two live
-    handles on the same ``storage_uri`` is a runtime error
-    (:class:`MonetaResourceLockedError`).
+    Constructor acquires a process-level lock on ``config.storage_uri``
+    and, with durability, on the resolved store paths (R1′ §2.6);
+    :meth:`close` (or context-manager exit) releases both. Two live
+    handles on the same ``storage_uri``, or on any shared snapshot, WAL
+    or tmp path, is a runtime error (:class:`MonetaResourceLockedError`);
+    a config whose own store paths coincide raises ``ValueError``.
 
     The handle owns all substrate state — ECS, decay config, attention
     log, shadow vector index, consolidation runner, sequential writer,
@@ -238,14 +265,32 @@ class Moneta:
                 )
 
         # Acquire URI lock first so a partial init below cannot leak the
-        # lock to a concurrent caller.
+        # lock to a concurrent caller. Every check runs before anything is
+        # registered, so a refused construct holds nothing.
+        store_paths = _store_paths(config)
+        if len(set(store_paths)) != len(store_paths):
+            raise ValueError(
+                "MonetaConfig store paths must be pairwise distinct: "
+                "snapshot_path, wal_path and their tmp files resolve to "
+                f"{store_paths!r}"
+            )
         if config.storage_uri in _ACTIVE_URIS:
             raise MonetaResourceLockedError(
                 f"storage_uri {config.storage_uri!r} is already held by "
                 f"another live Moneta handle in this process; release it "
                 f"via close() or context-manager exit before reconstructing"
             )
+        for path in store_paths:
+            if path in _ACTIVE_STORE_PATHS:
+                raise MonetaResourceLockedError(
+                    f"store path {path!r} is already held by another live "
+                    f"Moneta handle in this process (possibly under a "
+                    f"different storage_uri); release it via close() or "
+                    f"context-manager exit before reconstructing"
+                )
         _ACTIVE_URIS.add(config.storage_uri)
+        _ACTIVE_STORE_PATHS.update(store_paths)
+        self._store_paths: tuple[str, ...] = tuple(store_paths)
 
         self._closed: bool = True  # until construction completes
         self.durability: Optional[DurabilityManager] = None
@@ -278,7 +323,7 @@ class Moneta:
                     snapshot_path=config.snapshot_path,
                     wal_path=config.wal_path,
                 )
-                self.ecs, wal_replay = self.durability.hydrate(
+                self.ecs, wal_replay = self.durability._hydrate_with_seqs(
                     native=native_mode, _source=native_source
                 )
                 # Rebuild vector index from hydrated ECS (shadow rebuild).
@@ -294,11 +339,14 @@ class Moneta:
                         memory.semantic_vector,
                         memory.state,
                     )
-                # Replay WAL entries into the attention log for next reduce.
-                for entry in wal_replay:
+                # Replay WAL entries into the attention log for next reduce,
+                # each with its WAL seq (R1′ §2.5 step 9).
+                for entry, seq in wal_replay:
                     self.attention.append(
-                        entry.entity_id, entry.weight, entry.timestamp
+                        entry.entity_id, entry.weight, entry.timestamp, seq=seq
                     )
+                # The save pairs this log's applied seqs with this ECS only.
+                self.durability.attach(self.attention, self.ecs)
                 _logger.info(
                     "Moneta.hydrate uri=%s n=%d wal_replay=%d",
                     config.storage_uri,
@@ -358,13 +406,14 @@ class Moneta:
         except BaseException:
             # Partial init (including a NativeSeamError while rebuilding the
             # index from a hydrated store): close the durability manager
-            # (hydrate only reads; nothing was written) and release the lock
-            # so the consumer can retry.
+            # (hydrate only reads; nothing was written), then release the
+            # lock and the store paths so the consumer can retry.
             try:
                 if self.durability is not None:
                     self.durability.close()
             finally:
                 _ACTIVE_URIS.discard(config.storage_uri)
+                _ACTIVE_STORE_PATHS.difference_update(store_paths)
             raise
         self._closed = False
 
@@ -405,12 +454,17 @@ class Moneta:
         return False  # do not suppress exceptions
 
     def close(self) -> None:
-        """Release native resources and the URI lock. Idempotent.
+        """Release native resources, the URI lock and the store paths.
+        Idempotent.
 
         Order matters: shut the snapshot daemon thread before closing
         the authoring target, then discard the URI from
-        ``_ACTIVE_URIS``. Reverse order would let a re-construct on the
-        same URI race against an in-flight snapshot or open file handle.
+        ``_ACTIVE_URIS`` and the store paths from ``_ACTIVE_STORE_PATHS``.
+        Reverse order would let a re-construct on the same URI or files
+        race against an in-flight snapshot or open file handle. After
+        close, the durability manager refuses every append and save, so
+        ``signal_attention`` on a closed durable handle raises
+        ``ValueError`` and buffers nothing.
         """
         if self._closed:
             return
@@ -422,6 +476,7 @@ class Moneta:
                 self.authoring_target.close()
         finally:
             _ACTIVE_URIS.discard(self.config.storage_uri)
+            _ACTIVE_STORE_PATHS.difference_update(self._store_paths)
             _logger.info(
                 "Moneta.close uri=%s", self.config.storage_uri
             )
@@ -528,21 +583,33 @@ class Moneta:
         """Record agent attention for the given entities.
 
         Writes go to the append-only attention log (ARCHITECTURE.md
-        §5.1). If durability is enabled, each signal is also appended to
-        the JSONL WAL and flushed to the OS before return (no fsync;
-        see ``DurabilityManager.wal_append``). A flushed signal survives
-        a process kill -9, but an OS crash or power loss can still lose
-        recently acknowledged signals (Round 4 F1). The ECS update
-        happens when the sleep-pass reducer drains the log.
+        §5.1). If durability is enabled, each signal's WAL line is
+        written FIRST, as one unbuffered write that reaches the OS before
+        return (no fsync; see ``DurabilityManager.wal_append``), and only
+        then appended to the log with its WAL seq (R1′ §2.2). A signal
+        whose WAL write fails is in neither place, and the ``OSError``
+        escapes; on a closed durable handle the write raises
+        ``ValueError``. A written signal survives a process kill -9 and
+        any save until a sleep pass has applied it, but an OS crash or
+        power loss can still lose recently acknowledged signals (Round 4
+        F1). For a multi-entity ``weights``, entities before a failing
+        one stay recorded. The ECS update happens when the sleep-pass
+        reducer drains the log.
         """
         now = time.time()
         for entity_id, weight in weights.items():
             w = float(weight)
-            self.attention.append(entity_id, w, now)
-            if self.durability is not None:
-                self.durability.wal_append(
-                    AttentionEntry(entity_id, w, now)
-                )
+            if self.durability is None:
+                self.attention.append(entity_id, w, now)
+                continue
+            seq = self.durability.wal_append(
+                AttentionEntry(entity_id, w, now)
+            )  # WAL first
+            try:
+                self.attention.append(entity_id, w, now, seq=seq)
+            except BaseException:  # e.g. KeyboardInterrupt after the write
+                self.durability.void_seq(seq)  # tombstone: never replayed
+                raise
         self.consolidation.mark_activity(now * 1000)
 
     def get_consolidation_manifest(self) -> List[Memory]:
