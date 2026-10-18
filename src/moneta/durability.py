@@ -4,40 +4,69 @@ ARCHITECTURE.md §11 deliverable list (Phase 1). MONETA.md §5 risk #4
 ("ECS durability on crash") mitigation.
 
 Target: survive `kill -9` with at most 30 seconds of volatile state lost.
+That bound needs a save at least every 30 seconds. ``Moneta`` saves at the
+end of every ``run_sleep_pass`` and never starts the optional saver thread
+(``start_background``). An embedder can also save with
+``m.durability.snapshot_ecs(m.ecs)``, which is SYNAPSE's save.
 
 Design (R1′, docs/design/R1-attention-durability.md §2)
 --------------------------------------------------------
 
 1. **Snapshot** — the ECS is serialized to a JSON file atomically
-   (tmp-file + fsync + `os.replace`). Default cadence: every 30 seconds via
-   a background daemon thread. Snapshot replaces the previous file. With an
-   attention log attached, the snapshot also records ``wal_applied_seqs``
-   (the WAL sequence numbers whose effects its rows hold) and
-   ``wal_next_seq`` (an allocator hint). Both keys are optional.
+   (tmp-file + fsync + `os.replace`). Snapshot replaces the previous file.
+   ``start_background`` runs a daemon thread that saves every
+   ``snapshot_interval`` seconds (default 30), but only once a caller
+   starts it. With an attention log attached, the snapshot also records
+   ``wal_applied_seqs`` (the WAL sequence numbers whose effects its rows
+   hold) and ``wal_next_seq`` (an allocator hint). Both keys are optional;
+   a snapshot without them is "keyless".
 
-2. **WAL** — every `signal_attention` writes its line to a write-ahead log
-   (JSONL, one line per entry, each carrying a ``seq``) BEFORE the signal is
-   buffered, as one unbuffered ``os.write``. A line reaches the OS before
-   `signal_attention` returns; it is not fsynced (Round 4 F1), so an OS
-   crash or power loss can still lose recently acknowledged signals. A
-   save compacts the WAL: it keeps every line whose seq is not in the
-   snapshot's ``wal_applied_seqs``, so attention that no pass has applied
-   survives any save. The WAL file is removed only when a save keeps no
-   line.
+2. **WAL** — every `signal_attention` on a durable handle writes one line
+   per entity to a write-ahead log (JSONL, each line carrying a ``seq``)
+   BEFORE the signal is buffered, as one unbuffered ``os.write``. A line
+   reaches the OS before `signal_attention` returns. A keyed save compacts
+   the WAL: it keeps every line whose seq is not in the snapshot's
+   ``wal_applied_seqs``, that is, every signal the reducer has not recorded
+   as applied, so undrained attention survives the save (defects B and D).
+   The WAL file is removed only when a keyed save keeps no line. rc1
+   deleted the whole WAL at every save, on the premise that the snapshot
+   had captured its entries; that was false for undrained attention.
 
 3. **Hydrate** — on restart, load the latest snapshot, then decide each WAL
-   line: a line with a seq replays iff its seq is not in
-   ``wal_applied_seqs``. A line without a seq, or any line under a snapshot
-   without that key, replays iff its timestamp is strictly after
-   ``snapshot_created_at`` (the rc1 rule). Hydrate writes nothing; the
-   first save normalizes the WAL (step 0), and the first append terminates
-   a torn tail.
+   line once. Under a keyed snapshot, a line with a seq replays iff its seq
+   is not in ``wal_applied_seqs``. A line without a seq, and every line
+   under a keyless snapshot, replays iff its timestamp is strictly after
+   ``snapshot_created_at`` (the rc1 rule). With no snapshot file, every
+   entry line replays. The first occurrence of a duplicate seq wins
+   (WARNING), and a ``wal_applied_seqs`` that is not a list of valid seqs
+   counts as absent (WARNING). Hydrate writes nothing; the first save
+   normalizes the WAL (step 0), and the first append terminates a torn
+   tail.
 
 4. **Consistent read** — a save pairs ``applied_seqs`` with the rows only
    if no reducer was in flight (the log's in-flight set and apply epoch).
-   It retries for at most ``SEQLOCK_READ_TIMEOUT_S`` and then degrades to a
-   keyless snapshot with rc1 semantics that leaves the WAL whole. The
-   reducer never takes a lock.
+   The reducer never takes a lock.
+
+5. **Failure paths** — a step 0 failure, or a read still contended after
+   ``SEQLOCK_READ_TIMEOUT_S``, takes the DEGRADED save: a keyless snapshot
+   with rc1 semantics that leaves the WAL whole, logs ERROR and counts
+   ``degraded_saves``. Deposits are saved. But a reopen while that
+   snapshot is current judges every line by timestamp, so it loses every
+   line whose effect the snapshot's rows lack and whose timestamp is not
+   after the snapshot's (defect B, rc1-equal), until a keyed save follows.
+   A compaction failure (the K path) re-raises after the keyed snapshot is
+   written; the WAL keeps its applied lines, and the next save retries. A
+   manager with no attached log keeps rc1's save: a keyless snapshot, then
+   the WAL is unlinked, undrained attention included.
+
+No fsync beyond the snapshot's (design §5; Round 4 F1). WAL appends and
+the compacted WAL reach the OS but are not fsynced, and neither
+``os.replace`` is followed by a directory fsync. An OS crash or power loss
+can therefore lose recently acknowledged signals, and a power loss after a
+compaction can lose pending lines. R1′ also assumes that the filesystem
+keeps metadata operations in order across a power loss (NTFS's journal
+does). Where it does not, two saves' renames can reorder and double-apply
+lines.
 
 The "lite" in WAL-lite: no transaction framing, no checksums, no page
 boundaries. A Python dict gets JSON-dumped. Correct for Phase 1 scale;
@@ -404,6 +433,11 @@ class DurabilityManager:
             }
         )
         with self._lock:
+            # This unlink drops every WAL line, undrained attention included
+            # (defect B). rc1's comment here said "everything before `now`
+            # is captured in the snapshot", which holds for applied
+            # attention only. Moneta always attaches its log, so only a bare
+            # DurabilityManager reaches this path.
             self._close_wal_fd_locked()
             try:
                 os.unlink(self._wal_path)

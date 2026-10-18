@@ -589,10 +589,13 @@ class Moneta:
         then appended to the log with its WAL seq (R1′ §2.2). A signal
         whose WAL write fails is in neither place, and the ``OSError``
         escapes; on a closed durable handle the write raises
-        ``ValueError``. A written signal survives a process kill -9 and
-        any save until a sleep pass has applied it, but an OS crash or
-        power loss can still lose recently acknowledged signals (Round 4
-        F1). For a multi-entity ``weights``, entities before a failing
+        ``ValueError``. A written signal survives a process kill -9, and
+        every keyed save keeps its WAL line until the reducer has recorded
+        it as applied. A degraded save also leaves the line in place, but a
+        reopen under that keyless snapshot judges it by timestamp, the rc1
+        rule (see ``moneta.durability``). An OS crash or power loss can
+        still lose recently acknowledged signals (Round 4 F1). For a
+        multi-entity ``weights``, entities before a failing
         one stay recorded. The ECS update happens when the sleep-pass
         reducer drains the log.
         """

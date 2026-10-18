@@ -64,10 +64,17 @@ with moneta.Moneta(config) as m:
 declares its storage boundary on line one. There are no implicit
 defaults (Round 3 §5.3 ruling).
 
-Two handles on the same `storage_uri` raise `MonetaResourceLockedError`
-synchronously at the second constructor call. The collision check is
-in-memory (`_ACTIVE_URIS` set), not file-locks. Different `storage_uri`
-values yield physically distinct substrates — see
+Two live handles on the same `storage_uri` raise
+`MonetaResourceLockedError` synchronously at the second constructor call.
+So do two live durable handles whose store files coincide, even under
+different `storage_uri` values. A handle's store files are the resolved
+`snapshot_path`, `wal_path` and their two tmp files (each the same path
+plus `.tmp`). A config whose own four store paths are not pairwise
+distinct (for example `snapshot_path == wal_path`) raises `ValueError`.
+Both checks are in-memory (the `_ACTIVE_URIS` and `_ACTIVE_STORE_PATHS`
+sets), not file locks, so they cover one process only; two processes on
+one store are unsupported. Different `storage_uri` values with distinct
+store files yield physically distinct substrates — see
 [Multi-instance](#multi-instance) below.
 
 ## The four operations
@@ -142,10 +149,34 @@ m.signal_attention({
 ```
 
 If durability is enabled (`snapshot_path` + `wal_path` set on the
-config), each signal is also appended to the WAL and flushed to the OS
-before return. The WAL is not fsync'd: a flushed signal survives a
+config), each signal's WAL line is written **first**, as one unbuffered
+write that reaches the OS before return, and only then appended to the
+attention log. The WAL is not fsync'd: a written signal survives a
 process `kill -9`, but an OS crash or power loss can lose recently
-acknowledged signals (Round 4 F1).
+acknowledged signals (Round 4 F1). The line stays in the WAL until a
+save records the signal as applied (see
+[Durability guarantees](#durability-guarantees)).
+
+**Behaviour change (R1′).** rc1 buffered the signal first and wrote the
+WAL second. The signature, return type and exception types are
+unchanged.
+
+- **The WAL write fails:** the signal is now in **neither** place, and
+  the same `OSError` escapes, so a caller that retries is not
+  double-counted. In rc1 the signal was already applied in memory, and a
+  line left in the buffer by a failed flush could still reach the file
+  later and replay on reopen.
+- **The call is interrupted after the WAL write** (for example by
+  `KeyboardInterrupt`): the line's seq is tombstoned, so no reopen after
+  the next save replays it. A crash before that save replays it once.
+  Narrow windows remain in which an interrupted call still applies once
+  at the next reopen; `docs/design/R1-attention-durability.md` §1.4
+  describes them.
+- **A closed durable handle:** `signal_attention` raises
+  `ValueError("durability manager is closed")` and buffers nothing. A
+  handle without durability is unchanged.
+- For a multi-entity `weights` dict, the entities before a failing one
+  stay recorded, as in rc1.
 
 ### `get_consolidation_manifest() -> List[Memory]`
 
@@ -175,6 +206,13 @@ print(f"pruned={result.pruned} staged={result.staged}")
 
 `run_sleep_pass()` is the harness's lever — it is not one of the four
 agent operations and is not part of the locked agent surface.
+
+Run one sleep pass at a time; concurrent passes are unsupported, as in
+rc1. A pass that finds another pass in flight logs ERROR (`concurrent
+attention reducer ...`) and still drains and applies. It never raises
+for this. On a durable handle the pass ends with a save, which raises
+after its snapshot is written if WAL compaction fails (see
+[Durability guarantees](#durability-guarantees)).
 
 ## Native seams: config and status
 
@@ -348,7 +386,7 @@ at most ~30 seconds of volatile state lost.
 | Operation | Durability coverage | Medium |
 |---|---|---|
 | `deposit` | Snapshot-covered | Captured by the next `run_sleep_pass` that writes the ECS snapshot |
-| `signal_attention` | WAL-covered | Every call appended to the JSONL WAL and flushed to the OS (not fsync'd) when durability is enabled |
+| `signal_attention` | WAL-covered | When durability is enabled, every call is written to the JSONL WAL before it is buffered (one unbuffered write that reaches the OS; not fsync'd). The line stays until a save records the signal as applied |
 | `query` | Not applicable (read-only) | — |
 | `get_consolidation_manifest` | Not applicable (read-only) | — |
 
@@ -356,13 +394,15 @@ at most ~30 seconds of volatile state lost.
 
 Deposits made after the last successful snapshot and before a `kill -9`
 are **lost** on restart. The window width is whatever wall-clock time
-elapsed since the last `run_sleep_pass` (sleep-pass-driven cadence) or
-~30 seconds (background-snapshot cadence).
+elapsed since the last save: the end of the last `run_sleep_pass`, an
+embedder's own `m.durability.snapshot_ecs(m.ecs)` (SYNAPSE's save), or
+~30 seconds if the embedder started `m.durability.start_background(m.ecs)`.
+`Moneta` never starts that background thread itself.
 
 This is a deliberately accepted risk: signals (high-frequency, cheap)
-survive process death via the flushed WAL (but not OS crash or power
-loss, since the WAL is not fsync'd); deposits (low-frequency,
-expensive) accept a small loss window. MONETA.md §5 risk #4
+survive process death via the WAL (but not OS crash or power loss,
+since the WAL is not fsync'd); deposits (low-frequency, expensive)
+accept a small loss window. MONETA.md §5 risk #4
 documents this trade-off as "WAL-lite periodic snapshot, accept
 small volatility window."
 
@@ -375,25 +415,64 @@ set on the config and those files exist on disk:
 2. The shadow vector index is rebuilt from the hydrated ECS rows — the
    vector index does not persist independently in v1.x; it is a pure
    shadow.
-3. WAL entries with `timestamp > snapshot_created_at` are replayed into
-   the attention log. They apply on the next `run_sleep_pass`.
-4. Pre-snapshot WAL entries are filtered out (they are already captured
-   by the snapshot).
-
-> **UNRESOLVED DEFECT (B and D): undrained attention is currently lost by
-> a bare snapshot.** Step 4's premise holds for applied attention only.
-> The snapshot holds ECS rows, not the undrained attention log, and every
-> snapshot deletes the WAL. So a `signal_attention` that no sleep pass has
-> applied yet is lost when a bare snapshot
-> (`m.durability.snapshot_ecs(m.ecs)`) is followed by a restart (path B),
-> or when it lands between a sleep pass's drain and that pass's snapshot
-> (path D). This also limits the "signals survive process death via the
-> flushed WAL" statement above. It is not fixed. Both paths are pinned as
-> strict xfail in `tests/integration/test_attention_snapshot_regression.py`;
-> the repair design is `docs/design/R1-attention-durability.md`.
+3. Each WAL line is decided once. Under a **keyed** snapshot (one that
+   carries `wal_applied_seqs`, as every non-degraded save writes), a
+   line with a `seq` replays iff its seq is **not** in
+   `wal_applied_seqs`, whatever its timestamp. A line without a `seq`
+   (an rc1 line), and every line under a **keyless** snapshot (written
+   by rc1, by a degraded save, or by a rewrite of `snapshot.json` that
+   dropped the key), replays iff `timestamp > snapshot_created_at`, the
+   rc1 rule. A `wal_applied_seqs` that is not a list of valid seqs
+   counts as absent (WARNING). If a seq appears twice, the first line
+   wins and the duplicate is dropped (WARNING).
+4. Replayed lines go into the attention log with their seqs and apply
+   on the next `run_sleep_pass`. Blank and undecodable lines are skipped
+   (WARNING for undecodable). A line that is valid JSON but not a valid
+   entry (no `entity_id`, a malformed UUID, a `null` weight) makes
+   construction raise, as in rc1; the lock is released and no file is
+   modified. Hydrate writes nothing: the first save normalizes the WAL,
+   and the first append terminates a torn tail.
 
 If no snapshot exists (cold start, or `kill -9` before the first
-successful pass), construction returns an empty ECS.
+successful save), construction starts from an empty ECS, and every WAL
+entry line still replays into the attention log.
+
+Undrained attention now survives a save (defects B and D): a keyed save
+keeps every WAL line whose signal the reducer has not recorded as
+applied, and the next reopen replays it once. B and D pass unmarked in
+all three matrix rows (native on, native off, wheel absent) at `b122a3a`
+on branch `r1prime/attention-durability`. That change is not yet
+accepted (design §6 gate 6) or released.
+
+**What can still lose attention:**
+
+- **An OS crash or power loss.** The WAL is not fsync'd (Round 4 F1).
+  The compacted WAL is not fsync'd either, so a power loss just after a
+  save can lose pending lines (design §5).
+- **A reopen while a keyless snapshot is current.** After a degraded save
+  (logged at ERROR as `durability.snapshot DEGRADED`), an rc1 save, or a
+  rewrite of `snapshot.json` that drops `wal_applied_seqs`, every line is
+  judged by timestamp. Every line whose effect the snapshot's rows lack
+  and whose timestamp is not after the snapshot's is lost: rc1's defect
+  B. The next keyed save closes the exposure.
+- **A torn attention apply.** If `apply_attention` raises inside a pass,
+  the drained seqs are already recorded as applied (a stated loss is
+  preferred to a silent double), so the next save drops their lines.
+  Logged at ERROR as `torn attention apply`.
+- **A switch to a reader that ignores `seq`** (rc1, or the v5
+  migration). Both use the timestamp rule. Drain, then verify that the
+  WAL is empty, before switching (`docs/OPERATOR_CARD_native.md`).
+
+**What can double-apply:** only the timestamp rule replays an applied
+line, and only when the line's timestamp is later than the
+`snapshot_created_at` of a snapshot that already holds its effect. That
+needs a broken clock precondition (a backward wall-clock step between
+signal and save, or signal and snapshot stamped from different clocks)
+plus a keyless reopen, or an rc1 reader of a store caught between a
+keyed snapshot and its compaction (a crash, or a compaction that keeps
+failing). Separately, on a filesystem that does not keep metadata
+operations in order across a power loss, two saves' renames can reorder
+(design §5). Concurrent sleep passes remain unsupported.
 
 ## Runtime requirements
 
@@ -422,8 +501,9 @@ successful pass), construction returns an empty ECS.
 ## Errors
 
 - `MonetaResourceLockedError` — raised when constructing a second
-  handle on a `storage_uri` that is already held by a live handle in
-  the same process. Subclass of `RuntimeError`.
+  handle on a `storage_uri`, or a second durable handle on a store file
+  (snapshot, WAL or either tmp file), that a live handle in the same
+  process already holds. Subclass of `RuntimeError`.
 - `ProtectedQuotaExceededError` — raised when a protected `deposit`
   (`protected_floor > 0`) would exceed `config.quota_override`
   (default 100). Subclass of `RuntimeError`.
@@ -440,8 +520,21 @@ successful pass), construction returns an empty ECS.
   unchanged; in a sleep pass no snapshot is written and the WAL keeps the
   signal). Subclass of `RuntimeError`.
 - When any of the three is raised during construction, the `storage_uri`
-  lock is released and no file is modified: the next construct on the
-  same `storage_uri` succeeds.
+  lock and the store paths are released (or were never taken) and no
+  file is modified: the next construct on the same store succeeds.
+- `ValueError` — raised by `Moneta(config)` when the config's own store
+  paths are not pairwise distinct; by `signal_attention` on a closed
+  durable handle (`"durability manager is closed"`, nothing buffered);
+  and by `m.durability.snapshot_ecs(ecs)` or
+  `m.durability.start_background(ecs)` after `close()`, or when `ecs` is
+  not the handle's own `m.ecs`. Each raises before anything is written.
+- `RuntimeError("cannot reseed the WAL sequence allocator")` — raised by
+  `Moneta(config)` only for a store whose recorded seqs leave no free
+  allocator window. Only a hand-edited `snapshot.json` can produce one;
+  no store this code writes reaches it. Construction fails cleanly: the
+  lock and store paths are released and no file is modified.
+- The sleep-pass reducer adds no exception: a concurrent pass is only
+  logged at ERROR.
 - `TypeError` — raised by `Moneta()` (no args) and by any `deposit` /
   `query` / `signal_attention` call with a missing required argument.
 

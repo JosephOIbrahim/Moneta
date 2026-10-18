@@ -1,10 +1,12 @@
-# Operator's Card · Moneta native seams
+# Operator's Card · Moneta native seams and attention durability
 
 **What it is:** an optional Rust wheel, `moneta_native`, that runs Moneta's two hottest loops (the cosine scan and the decay pass) in Rust. It is about 35–70× faster at p95 than pure Python and 4–9× faster than numpy, and it returns the *same bits* as the Python code, which numpy can't.
 
 **Golden rule:** Python is the oracle. If a conformance test goes red, the Rust is wrong, never the test.
 
 **Second rule:** "the wheel is installed" is not "the wheel ran". Read `m.native_status` and the suite's verdict line.
+
+**Also on this card:** attention durability (R1′), further down. It covers what survives a save, the new errors, what the ERROR lines mean, and how to downgrade without losing signals.
 
 ---
 
@@ -84,9 +86,9 @@ python -c "import moneta; b = moneta.build_info(); print(b.commit, b.src_digest)
 python -c "import moneta, moneta._native as n; w = n.wheel_info(); print(w.state, w.sha256, w.record_match)"
 ```
 
-| Check | Expected (this branch, run on 2026-10-16) |
+| Check | Expected (`r1prime/attention-durability`, computed 2026-10-18) |
 |---|---|
-| `src_digest` | `f5c721630ac32b9ffcf4bb81b63ce6151040b134dec645cc16236061f0e26de9` |
+| `src_digest` | `11df24bbcf3796553a8863b3064ef656e07e635690d4190c6e930c5344abf99c` (before R1′, on `harden/native-observability`: `f5c721630ac3…`) |
 | `.pyd` sha256 | `ec6d7f0c35c5b345f983f4aa80cfea086f3aca454e9cd74a58b6208227b02833` (0.1.0 abi3, `record_match=True`) |
 | `commit` | the commit you checked out. Docs-only commits leave `src_digest` unchanged. |
 
@@ -112,18 +114,19 @@ MONETA_NATIVE=0       PYTHONPATH="src;<unzipped-wheel>" python -m pytest tests -
 | `PYTHON-ONLY FAIL (not native qualified): …` | Red run without native. |
 | exit code 4, `MONETA_NATIVE='require' requires the native wheel` | Require asked, wheel not loaded. |
 
-**Measured on this branch** (Python 3.14.2, commit `98a998f084eb`, `src_digest` `f5c721630ac3`):
+**Measured on `r1prime/attention-durability`** (Python 3.14.2, commit `b122a3a`, the R1′ tests; wheel `.pyd` sha256 `ec6d7f0c35c5…`). Rows marked *before R1′* were not re-run on this branch. They are the last result on `harden/native-observability` (commit `98a998f084eb`, `src_digest` `f5c721630ac3`).
 
 | Run | Result | Verdict |
 |---|---|---|
-| wheel, `=1` | 779 passed, 2 xfailed | `NATIVE QUALIFIED` (71/71 native tests; Rust calls scan 594, decay 512) |
-| wheel, `=require` | 779 passed, 2 xfailed | `NATIVE QUALIFIED` |
-| wheel, `=0` | 779 passed, 2 xfailed | `PYTHON-ONLY PASS` |
-| no wheel / broken wheel | 708 passed, 71 skipped, 2 xfailed | `PYTHON-ONLY PASS` |
-| no wheel, `=require` | exit 4 | (refused) |
+| wheel, `=1` | 872 passed | `NATIVE QUALIFIED` (71/71 native tests, qualification 2/2) |
+| wheel, `=require` | *before R1′:* 779 passed, 2 xfailed | `NATIVE QUALIFIED` |
+| wheel, `=0` | 872 passed | `PYTHON-ONLY PASS` |
+| no wheel (absent) | 801 passed, 71 skipped | `PYTHON-ONLY PASS` |
+| broken wheel | *before R1′:* 708 passed, 71 skipped, 2 xfailed | `PYTHON-ONLY PASS` |
+| no wheel, `=require` | *before R1′:* exit 4 | (refused) |
 | hython 3.11, all rows | **PLANNED: awaiting owner coordination** | not run |
 
-**The 2 xfailed are defects B and D below.** They are not passes.
+**No xfails remain.** B and D (see **Attention durability** below) now pass unmarked. The summary no longer prints a "Known unresolved defects" block, because `KNOWN_DEFECTS` in `tests/conftest.py` is empty.
 
 **v5 mutation check** (every mutation must be caught):
 
@@ -134,14 +137,75 @@ cd <scratch> && PYTHONPATH=src python scripts/v5/mutation_check.py   # last line
 
 ---
 
-### Known unresolved defects: B and D
+### Attention durability (R1′)
 
-**Undrained attention is lost across a bare snapshot and restart. Not fixed.**
+**Status.** Defects B and D pass in all three matrix rows at `b122a3a` (wheel `=1`, wheel `=0`, no wheel). Not yet accepted (design §6 gate 6) or released. Design: `docs/design/R1-attention-durability.md`.
 
-- **B:** `signal_attention`, then `m.durability.snapshot_ecs(m.ecs)` (SYNAPSE's save), then restart: the signal is gone.
-- **D:** a signal that lands between the sleep pass's drain and its snapshot is gone.
-- Pinned as strict xfail in `tests/integration/test_attention_snapshot_regression.py`. The summary prints a "Known unresolved defects" block. Design (not implemented on this branch): `docs/design/R1-attention-durability.md`.
-- Native mode has no effect on B or D. Neither seam touches the WAL or the snapshot.
+- **B:** `signal_attention`, then `m.durability.snapshot_ecs(m.ecs)` (SYNAPSE's save), then restart. The signal now replays once: a save keeps every WAL line whose signal the reducer has not recorded as applied.
+- **D:** a signal that lands between a sleep pass's drain and its save is kept the same way.
+- **L (late landing):** an append that lands in a list the reducer has already swapped out is applied by the next pass, or at the next reopen if its appender stalls through that pass too. With one pass at a time, it is never applied twice.
+- Native mode has no effect on any of them. Neither seam touches the WAL or the snapshot.
+- **Not covered:** the WAL is still not fsync'd (Round 4 F1). An OS crash or power loss can lose recently acknowledged signals, and a power loss just after a save can lose pending lines. Forcing the WAL to disk is a separate change, not on this branch.
+
+**Behaviour changes.** Signatures are unchanged, and every raise below is an existing exception type.
+
+| Change | rc1 | R1′ |
+|---|---|---|
+| WAL-first `signal_attention` | Buffered, then the WAL. A failed WAL write left the signal applied in memory, and a failed flush could still write the line later. | WAL, then buffer. A failed write leaves the signal in neither place, and the same `OSError` escapes. |
+| Shared store files | Only the same `storage_uri` was refused. | A second live handle on the same snapshot, WAL or tmp path raises `MonetaResourceLockedError`, whatever its URI. A config whose own four paths collide raises `ValueError`. |
+| Wrong ECS | `snapshot_ecs(any_ecs)` saved it. | `snapshot_ecs(ecs)` or `start_background(ecs)` with anything but the handle's `m.ecs` raises `ValueError` and writes nothing. |
+| Closed handle | The WAL reopened lazily, and a stale save still rewrote the files. | After `close()`, `signal_attention`, `wal_append`, `snapshot_ecs` and `start_background` raise `ValueError("durability manager is closed")`. |
+| Unreseedable seq allocator | — | `RuntimeError("cannot reseed the WAL sequence allocator")` at construction. Needs a hand-edited `snapshot.json`; no file is changed. |
+| Concurrent sleep passes | Unsupported, silent. | Still unsupported. Logs ERROR and carries on; never raises. |
+
+An async exception such as `KeyboardInterrupt`, landing within a few bytecodes of a WAL write, can still leave a *phantom apply*: a signal whose call raised applies once at the next reopen. Design §1.4 describes these windows. That list is not claimed to be complete.
+
+**The clock precondition.** Every signal applied before a snapshot carries a timestamp at or before that snapshot's `snapshot_created_at`. One wall clock running forward satisfies it. A backward clock step between a signal and a save breaks it, and so do two clocks (a virtual signal clock, or v5's `ManualClock`). It matters only where a line is judged by timestamp.
+
+**Rollback and roll-forward** (design §3.5). rc1 and the v5 migration ignore `seq` and judge every line by timestamp. *T* is the `snapshot_created_at` of the snapshot on disk.
+
+| Sequence | Outcome |
+|---|---|
+| rc1 store → R1′ | **Safe** (rc1-equal). Lines are judged by timestamp until the first R1′ save normalizes the WAL. |
+| R1′, clean save → rc1 | **Loses** the pending lines with ts ≤ T: exactly the B and D lines R1′ kept. Never doubles. |
+| R1′, crash between snapshot and compaction → rc1 | **Loses** pending ts ≤ T lines. **Could double-apply** if the clock precondition is broken. |
+| R1′, compaction failing (K path), then a clean close → rc1 | As the row above, for as long as compaction keeps failing. |
+| R1′ degraded save → rc1, or → R1′ | Both judge by timestamp. No double under the precondition; **loses** pending ts ≤ T lines. |
+| R1′ → rc1 → R1′, rc1 saved | No double; **loses** the R1′-pending ts ≤ T lines. |
+| R1′ → rc1 → R1′, rc1 never saved | **Safe.** |
+| R1′ → rc1 → R1′, rc1 saved but its WAL unlink failed | No double (the first R1′ save drops the stale lines); **loses** the R1′-pending ts ≤ T lines. |
+| R1′ store → v5 migration | **Loses** pending lines with ts ≤ the snapshot time. Doubles only in the crash or K-path window, with a broken precondition. |
+| R1′ → v5 facade → R1′ | **Unsupported.** Loses v5-only state, double-applies when the v5 clock is behind the line timestamps, and then v5 refuses the store. **Cut over both interpreters together.** v5 enforces that by refusing; R1′ cannot detect a v5 export. Its only signal is the hydrate WARNING `snapshot has no usable wal_applied_seqs`. |
+
+No marker can make rc1 refuse an R1′ store. rc1 only warns on a version mismatch, and a version bump would be a §9 Trigger 2.
+
+**Drain, then verify, before a downgrade** (to rc1, or to anything that ignores `seq`). This is the only way to make R1′ → rc1 lossless.
+
+1. Quiesce signals.
+2. Under R1′, run `m.run_sleep_pass()`, then `m.close()`.
+3. Verify that the WAL is empty: the file is absent, or holds only whitespace.
+
+   ```
+   python -c "import pathlib, sys; p = pathlib.Path(sys.argv[1]); print('EMPTY: safe to switch' if not p.exists() or not p.read_bytes().strip() else 'NOT EMPTY: do not switch')" <wal_path>
+   ```
+
+4. If it is not empty, do not switch. A signal raced the pass, the save degraded, or compaction failed (the K path keeps applied lines). Fix the cause and repeat from step 2.
+
+**ERROR lines, and what to do.** Grep for these prefixes.
+
+| You see | Means | Do |
+|---|---|---|
+| `durability.snapshot DEGRADED (step 0 failed: …)` or `(step 1 timed out)` | The save wrote a keyless snapshot with rc1 semantics and left the WAL whole. Deposits are saved, and `degraded_saves` counts it. Until a keyed save, a reopen judges every WAL line by timestamp and loses pending lines up to the time printed in the line. | Do not reopen or downgrade until a later save is keyed (no DEGRADED line). For the cause, read the line logged just before it. |
+| `durability.snapshot step 0 (WAL normalization) failed: …` | The first save after a reopen could not rewrite the WAL. Causes: a foreign handle on the WAL (on Windows, `os.replace` raises `PermissionError`), or a WAL truncated or rewritten outside the handle, which repeats until the handle is reopened. | Close the foreign handle (antivirus, indexer, a tail, a v5 migration read). For a WAL changed outside the handle, close and reopen. |
+| `durability.snapshot consistent read timed out after …s (N reducer(s) in flight, epoch moved=…)` | Sleep passes ran back to back with no quiet gap, or a reducer token is stranded. | Leave a gap between passes. If N stays at 1 or more with no pass running, close and reopen the handle. |
+| `durability.snapshot WAL compaction failed: …` (the K path) | The keyed snapshot is written, so deposits are durable, but the WAL keeps its applied lines, and `snapshot_ecs` (or `run_sleep_pass`) raises. The next save retries. R1′ readers stay correct. An rc1 reader of this store could double-apply if the clock precondition is broken, for as long as this repeats. A background save logs it as `background snapshot failed`. | Find the foreign handle on the WAL. Do not downgrade while this repeats. |
+| `torn attention apply: …` | `apply_attention` raised inside a pass after the drained seqs were recorded. Their effects may be missing, and the next save drops their lines: a stated loss, never a double. The pass raises. | Read the exception that follows it. |
+| `concurrent attention reducer at entry (N in flight)` or `concurrent attention reducer detected` | Two sleep passes overlapped, which is unsupported. Nothing raised. No keyed snapshot is written from a torn read. | Run one pass at a time. If the entry line repeats with no other pass running, a token is stranded and every save will degrade: close and reopen. |
+| WARNING `durability.hydrate snapshot has no usable wal_applied_seqs but N WAL line(s) carry a seq` | The current snapshot is keyless over R1′ lines: an rc1 save, a degraded save, a rewrite of `snapshot.json` that dropped the key, or a v5 export. Lines are judged by timestamp. | If a v5 facade wrote it, stop, and cut over both interpreters together. |
+| `MonetaResourceLockedError` at construction | Another live handle in this process holds that URI, or that snapshot, WAL or tmp path. | Close it first. Two processes on one store are unsupported. |
+| `ValueError: durability manager is closed` | A stale reference to a closed handle. Nothing was written. | Use the live handle. |
+
+**Where it lives:** `src/moneta/durability.py` (WAL, snapshot, hydrate), `src/moneta/attention_log.py` (the log and its reducer), `src/moneta/api.py` (`signal_attention`, the store-path registry), and `tests/integration/test_attention_snapshot_regression.py` (B, D and the design §4.2 suite).
 
 ---
 

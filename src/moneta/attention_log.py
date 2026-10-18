@@ -31,9 +31,12 @@ What the log guarantees instead (R1′, design §2.3):
 - Entries that land in a swapped-out list after its snapshot are carried to
   the next pass (``_carry``), which applies them and records their seqs.
 - An entry whose appender stalls past the next pass as well is applied by no
-  pass in this process. Its seq is never recorded, so under durability its
-  WAL line survives every save and it is applied exactly once at the next
-  reopen. Without durability there is no WAL, and it is lost, as in rc1.
+  pass in this process. Its seq is never recorded, so under durability
+  every keyed save keeps its WAL line, and it is applied exactly once at
+  the next reopen. If the snapshot current at that reopen is keyless (a
+  degraded save, see ``moneta.durability``), the line is judged by
+  timestamp instead and is lost unless it is newer than that snapshot, the
+  rc1 loss. Without durability there is no WAL, and it is lost, as in rc1.
 
 So the log stays eventually consistent (ARCHITECTURE.md §5.1), but for a
 worst-case straggler "eventually" can now mean "at the next reopen".
@@ -141,10 +144,19 @@ class AttentionLog:
         """Swap out the current buffer and return its entries.
 
         Subsequent appends land in a fresh buffer. The returned list is
-        built from one snapshot of the swapped-out list; an append that
-        lands in that list after the snapshot is not returned (path L, see
-        the module docstring). Not used by the reducer, which calls
-        ``_drain_with_seqs``; this method does not touch the carry-over.
+        built from one snapshot of the swapped-out list. An append can
+        still land in that list after the snapshot (path L, see the module
+        docstring): it is not returned, no later drain sees it, and it is
+        lost in memory, as in rc1. The rc1 claim that entries cannot be
+        lost was false.
+
+        Only the reducer path is safe on a durable handle's log. This
+        method records no seq in ``applied_seqs``, so the WAL keeps the
+        line of every entry it returns and a reopen replays it. A caller
+        that applies the result itself therefore double-applies after a
+        keyed save and a reopen. No production path calls this method:
+        the reducer uses ``_drain_with_seqs``, and this method does not
+        touch the carry-over.
         """
         old, self._buffer = self._buffer, []
         return [entry for entry, _ in tuple(old)]
@@ -205,7 +217,8 @@ def reduce_attention_log(log: "AttentionLog", ecs, decay, now: float) -> int:
     followed by §4 evaluation point 2 (decay immediately after the
     attention-write phase).
 
-    Lock-free (ARCHITECTURE.md §340): the reducer adds and discards its
+    Lock-free (ARCHITECTURE.md §5.1 and the conformance checklist at
+    ARCHITECTURE.md:340): the reducer adds and discards its
     token in ``log._inflight`` and stores fresh objects in
     ``log._apply_epoch``; it never blocks or waits. The drain, the seq
     record and the apply all happen while the token is registered, so a
