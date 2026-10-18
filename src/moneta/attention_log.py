@@ -11,15 +11,44 @@ Lock-free under CPython GIL
 `list.append` is atomic at the bytecode level under the CPython GIL. The
 drain uses a single tuple assignment::
 
-    drained, self._buffer = self._buffer, []
+    old, self._buffer = self._buffer, []
 
-which rebinds `self._buffer` to a fresh list in one `STORE_ATTR`. A
-concurrent `append` either lands in the old list (and is drained this
-window) or in the new list (and is drained next window). Entries cannot
-be lost.
+which rebinds `self._buffer` to a fresh list in one `STORE_ATTR`.
 
-This analysis holds for CPython 3.11 / 3.12 with the GIL enabled. It does
-not hold under free-threaded Python (PEP 703) or sub-interpreters with
+An append can still land in a list that was already swapped out (path L,
+``docs/design/R1-attention-durability.md`` §0 root cause 6). ``append``
+loads ``self._buffer`` (capturing the current list) before it calls
+``list.append``, and CPython can switch threads between the two. If the
+reducer's swap runs in that gap, the entry lands in the old list after the
+swap. The rc1 text here said "Entries cannot be lost"; that was false.
+
+What the log guarantees instead (R1′, design §2.3):
+
+- The reducer takes ONE snapshot (``tuple(old)``) of each swapped-out list
+  and uses that same tuple for the aggregate and for the record of applied
+  WAL sequence numbers (``applied_seqs``). A seq is recorded only together
+  with its own entry; an entry that lands after the snapshot is in neither.
+- Entries that land in a swapped-out list after its snapshot are carried to
+  the next pass (``_carry``), which applies them and records their seqs.
+- An entry whose appender stalls past the next pass as well is applied by no
+  pass in this process. Its seq is never recorded, so under durability
+  every keyed save keeps its WAL line, and it is applied exactly once at
+  the next reopen. If the snapshot current at that reopen is keyless (a
+  degraded save, see ``moneta.durability``), the line is judged by
+  timestamp instead and is lost unless it is newer than that snapshot, the
+  rc1 loss. Without durability there is no WAL, and it is lost, as in rc1.
+
+So the log stays eventually consistent (ARCHITECTURE.md §5.1), but for a
+worst-case straggler "eventually" can now mean "at the next reopen".
+
+Seqs are recorded BEFORE ``apply_attention`` runs (gate 3 ruling: a stated
+loss over a silent double). If ``apply_attention`` raises, the drained seqs
+stay recorded while their effects may be missing from the rows, so the next
+save drops their WAL lines. That loss is logged at ERROR as
+"torn attention apply"; it is never a double apply.
+
+This analysis holds for CPython with the GIL enabled. It does not hold
+under free-threaded Python (PEP 703) or sub-interpreters with
 per-interpreter GILs. Phase 1 targets CPython GIL; escalate per MONETA.md
 §9 Trigger 2 if that assumption changes.
 
@@ -30,19 +59,28 @@ failure under free-threaded Python into a loud escalation.
 Single-reducer rule
 -------------------
 
-Only one reducer may drain the log at a time. Multi-reducer drain is not
-supported — two concurrent `drain()` calls would both swap, and one would
-see an already-empty buffer. Consolidation Engineer's sleep-pass trigger
-is the only caller of `drain()` in the production data path.
+Only one reducer may drain the log at a time. Concurrent reducers are not
+supported: their row updates can interleave. The reducer takes no lock. It
+registers a token in ``_inflight`` and stores a fresh object in
+``_apply_epoch`` at its start and at its end; a save reads the rows and
+``applied_seqs`` only when no token is present and the epoch has not moved
+(``DurabilityManager.snapshot_ecs``, design §2.4 step 1). A reducer that sees
+another reducer's token, or an epoch it did not write, logs ERROR and
+carries on. Detection is diagnostic only and never raises.
+Consolidation Engineer's sleep-pass trigger is the only production caller
+of the reducer.
 """
 from __future__ import annotations
 
+import logging
 import sys
-from typing import NamedTuple
+from typing import NamedTuple, Optional
 from uuid import UUID
 
 # Forward imports resolved at call time to keep the module import-light.
 # `reduce_attention_log` takes concrete types from .ecs and .decay.
+
+_logger = logging.getLogger(__name__)
 
 
 class AttentionEntry(NamedTuple):
@@ -56,8 +94,12 @@ class AttentionEntry(NamedTuple):
 class AttentionLog:
     """Append-only log with single-reducer drain.
 
-    No locks. No CAS. See module docstring for the CPython-GIL correctness
-    argument. The constructor enforces the GIL invariant at runtime.
+    No locks. No CAS. See the module docstring for the CPython-GIL argument
+    and its path L amendment. The constructor enforces the GIL invariant at
+    runtime.
+
+    Each buffered item is ``(AttentionEntry, seq)``, where ``seq`` is the
+    entry's WAL sequence number, or ``None`` without durability.
     """
 
     def __init__(self) -> None:
@@ -66,21 +108,83 @@ class AttentionLog:
                 "AttentionLog lock-free drain requires CPython GIL; "
                 "free-threaded Python is not supported (MONETA.md §9 Trigger 2)"
             )
-        self._buffer: list[AttentionEntry] = []
+        self._buffer: list[tuple[AttentionEntry, Optional[int]]] = []
+        # WAL seqs whose effects the reducer put into the ECS rows and that
+        # no save has released yet (DurabilityManager.snapshot_ecs step 4).
+        # Mutated in place only; never rebound.
+        self.applied_seqs: set[int] = set()
+        # One token per running reducer; empty means idle (design §1.3).
+        self._inflight: set[object] = set()
+        # A fresh object at every reducer start and end (design §2.3).
+        self._apply_epoch: object = object()
+        # (the list the last reducer swapped out, how many items it took).
+        # One attribute, so it is stored and read in one step.
+        self._carry: Optional[
+            tuple[list[tuple[AttentionEntry, Optional[int]]], int]
+        ] = None
+        # Late entries taken from a previous swap (path L), for tests and logs.
+        self.stragglers_carried: int = 0
 
-    def append(self, entity_id: UUID, weight: float, timestamp: float) -> None:
-        """Record one attention signal. Non-blocking, lock-free."""
-        self._buffer.append(AttentionEntry(entity_id, weight, timestamp))
+    def append(
+        self,
+        entity_id: UUID,
+        weight: float,
+        timestamp: float,
+        seq: Optional[int] = None,
+    ) -> None:
+        """Record one attention signal. Non-blocking, lock-free.
+
+        The item is built before ``self._buffer`` is loaded, which narrows
+        (but does not close) the path L window; nothing relies on it.
+        """
+        item = (AttentionEntry(entity_id, weight, timestamp), seq)
+        self._buffer.append(item)
 
     def drain(self) -> list[AttentionEntry]:
-        """Atomically swap out the current buffer and return its contents.
+        """Swap out the current buffer and return its entries.
 
-        Subsequent appends land in a fresh buffer. The caller owns the
-        returned list and is expected to pass it to `aggregate` and then
-        into the ECS reducer.
+        Subsequent appends land in a fresh buffer. The returned list is
+        built from one snapshot of the swapped-out list. An append can
+        still land in that list after the snapshot (path L, see the module
+        docstring): it is not returned, no later drain sees it, and it is
+        lost in memory, as in rc1. The rc1 claim that entries cannot be
+        lost was false.
+
+        Only the reducer path is safe on a durable handle's log. This
+        method records no seq in ``applied_seqs``, so the WAL keeps the
+        line of every entry it returns and a reopen replays it. A caller
+        that applies the result itself therefore double-applies after a
+        keyed save and a reopen. No production path calls this method:
+        the reducer uses ``_drain_with_seqs``, and this method does not
+        touch the carry-over.
         """
-        drained, self._buffer = self._buffer, []
-        return drained
+        old, self._buffer = self._buffer, []
+        return [entry for entry, _ in tuple(old)]
+
+    def _drain_with_seqs(
+        self,
+    ) -> tuple[tuple[AttentionEntry, Optional[int]], ...]:
+        """Reducer only: swap, snapshot, and take the previous swap's stragglers.
+
+        Returns one immutable tuple: the late entries of the PREVIOUS swap
+        (those that landed after its snapshot), then one snapshot of this
+        swap. The reducer uses that tuple for both the aggregate and the
+        seq record, so recorded == applied (design §2.3).
+        """
+        carry = self._carry
+        old, self._buffer = self._buffer, []
+        late = tuple(carry[0][carry[1]:]) if carry is not None else ()
+        items = tuple(old)
+        self._carry = (old, len(items))
+        if late:
+            self.stragglers_carried += len(late)
+            _logger.warning(
+                "attention log: %d late entr%s carried over from the previous "
+                "swap (path L); applied this pass",
+                len(late),
+                "y" if len(late) == 1 else "ies",
+            )
+        return late + items
 
     def __len__(self) -> int:
         return len(self._buffer)
@@ -113,6 +217,18 @@ def reduce_attention_log(log: "AttentionLog", ecs, decay, now: float) -> int:
     followed by §4 evaluation point 2 (decay immediately after the
     attention-write phase).
 
+    Lock-free (ARCHITECTURE.md §5.1 and the conformance checklist at
+    ARCHITECTURE.md:340): the reducer adds and discards its
+    token in ``log._inflight`` and stores fresh objects in
+    ``log._apply_epoch``; it never blocks or waits. The drain, the seq
+    record and the apply all happen while the token is registered, so a
+    save never pairs rows and ``applied_seqs`` from the middle of a pass.
+    Seqs are recorded before ``apply_attention`` (gate 3 ruling), inside
+    the same ``try``: if the record or the apply is interrupted, an ERROR
+    "torn attention apply" names how many drained seqs were recorded and
+    may lack their effects, and the exception propagates unchanged.
+    Concurrent-reducer detection logs ERROR and never raises.
+
     Args:
         log: the attention log to drain.
         ecs: the ECS instance to update (typed loosely to avoid a circular
@@ -124,9 +240,46 @@ def reduce_attention_log(log: "AttentionLog", ecs, decay, now: float) -> int:
         The number of entities actually updated by the attention pass
         (drained entries may reference pruned entities, which are skipped).
     """
-    entries = log.drain()
-    agg = aggregate(entries)
-    updated = ecs.apply_attention(agg, now)
+    if log._inflight:  # best-effort, diagnostic only: log, never raise
+        _logger.error(
+            "concurrent attention reducer at entry (%d in flight)",
+            len(log._inflight),
+        )
+    tok = object()
+    clash = False
+    updated = 0
+    try:
+        log._inflight.add(tok)  # inside the try: nothing stranded before it
+        mine = object()
+        log._apply_epoch = mine  # a value no other reducer can write
+        items = log._drain_with_seqs()  # ONE tuple: stragglers + this swap
+        agg = aggregate([entry for entry, _ in items])
+        seqs = [seq for _, seq in items if seq is not None]
+        # The try opens BEFORE the record (design revision 6): an async
+        # exception between the record and the apply is logged, never silent.
+        try:
+            log.applied_seqs.update(seqs)  # recorded BEFORE the apply (gate 3)
+            updated = ecs.apply_attention(agg, now)
+        except BaseException:
+            _logger.error(
+                "torn attention apply: the pass stopped after its drain with "
+                "%d of %d drained WAL seq(s) recorded as applied; a recorded "
+                "seq's effect may be missing from the rows, and the next save "
+                "drops its WAL line (a stated loss, never a double apply); an "
+                "unrecorded seq keeps its line and replays at the next reopen",
+                sum(1 for s in seqs if s in log.applied_seqs),
+                len(seqs),
+            )
+            raise
+        clash = log._apply_epoch is not mine or len(log._inflight) > 1
+    finally:
+        try:
+            log._inflight.discard(tok)  # idempotent; cannot raise
+        finally:
+            log._inflight.discard(tok)  # again: stranding needs two faults
+        log._apply_epoch = object()  # end-of-apply epoch
     # Evaluation point 2 per ARCHITECTURE.md §4.
     ecs.decay_all(decay.lambda_, now)
+    if clash:
+        _logger.error("concurrent attention reducer detected")  # never raise
     return updated

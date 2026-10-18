@@ -52,7 +52,7 @@ At HEAD `6cf05f5`, eleven defects are reproducible. Each one is a pair of tests 
 | P8 | A failed USD commit strands records in `STAGED_FOR_SYNC` forever | `consolidation.py:177-183` | Failed projection is retried next pass |
 | P9 | `query()` writes state: every read mutates utility and `LastEvaluated` | `api.py:401` | Reads are pure |
 | P10 | Prune reports a count; what was deleted is gone | `consolidation.py:190` | `pruned_ids`, and payloads stay readable in `explain()` |
-| P11 | Two URIs on one snapshot path both open and silently lose writes | `api.py:204` | OS file lock on the resolved path |
+| P11 | Two URIs on one snapshot path both open and silently lose writes. **Fixed in v1 by R1′** (branch `r1prime/attention-durability`, not yet released): a second live handle on any of the same store paths (snapshot, WAL or either tmp file) now raises `MonetaResourceLockedError`, whatever its URI. The check is in-process only. The `test_v1_*` half is now `test_v1_p11_two_uris_on_one_store_are_refused`, which asserts the refusal | `api.py` `_ACTIVE_STORE_PATHS` (was `api.py:204`) | OS file lock on the resolved path |
 
 **P4 is a spec defect, not only a code bug.** ARCHITECTURE.md §5 prescribes `LastEvaluated = now()` at attention write. §4 then prescribes decay evaluation point 2 *after* that write. The code does exactly what the locked spec says, and the spec erases decay. That is a §9 Trigger 2, a spec-level surprise.
 

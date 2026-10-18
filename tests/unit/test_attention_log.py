@@ -192,4 +192,44 @@ class TestLockFreeDiscipline:
                     "attention_log must not import threading.RLock (§5.1 lock-free)"
                 )
 
+    def test_no_threading_import_in_any_form(self) -> None:
+        """R1′ design §4.2 P: no ``threading`` (or ``_thread``) import in any
+        form. The ImportFrom check above misses ``import threading``
+        followed by ``threading.Lock()``; this one does not."""
+        import moneta.attention_log as mod
 
+        tree = ast.parse(open(mod.__file__, encoding="utf-8").read())
+        banned = {"threading", "_thread"}
+        hits = []
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Import):
+                hits += [a.name for a in node.names if a.name.split(".")[0] in banned]
+            elif isinstance(node, ast.ImportFrom) and node.module:
+                if node.module.split(".")[0] in banned:
+                    hits.append(node.module)
+        assert hits == [], f"attention_log imports {hits} (§5.1 lock-free)"
+
+    def test_reducer_has_no_with_and_no_acquire(self) -> None:
+        """R1′ design §4.2 P: the reducer and its drain take no lock: no
+        ``with`` statement and no ``.acquire()`` call anywhere in them."""
+        import moneta.attention_log as mod
+
+        tree = ast.parse(open(mod.__file__, encoding="utf-8").read())
+        targets = {"reduce_attention_log", "_drain_with_seqs"}
+        found = {
+            node.name: node
+            for node in ast.walk(tree)
+            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+            and node.name in targets
+        }
+        assert set(found) == targets
+        for name, fn in found.items():
+            withs = [n.lineno for n in ast.walk(fn) if isinstance(n, (ast.With, ast.AsyncWith))]
+            acquires = [
+                n.lineno
+                for n in ast.walk(fn)
+                if isinstance(n, ast.Call)
+                and isinstance(n.func, ast.Attribute)
+                and n.func.attr == "acquire"
+            ]
+            assert withs == [] and acquires == [], (name, withs, acquires)

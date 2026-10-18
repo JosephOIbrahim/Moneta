@@ -20,7 +20,7 @@ from uuid import uuid4
 
 import pytest
 
-from moneta import Moneta, MonetaConfig
+from moneta import Moneta, MonetaConfig, MonetaResourceLockedError
 from moneta.types import EntityState
 from moneta.v5 import (
     Config,
@@ -310,18 +310,21 @@ def test_v5_p10_prune_names_what_it_removed_and_keeps_it_inspectable():
 # P11 ------------------------------------------------------------------
 
 
-def test_v1_p11_two_uris_on_one_snapshot_lose_writes(tmp_path):
+def test_v1_p11_two_uris_on_one_store_are_refused(tmp_path):
+    # Register update: R1′ (docs/design/R1-attention-durability.md §2.6)
+    # closed P11 on v1. A second live handle on the same store paths is
+    # refused under any URI, so the writes of the first are never lost.
     kw = dict(snapshot_path=tmp_path / "shared.json", wal_path=tmp_path / "shared.wal")
     a = Moneta(MonetaConfig(storage_uri="A", **kw))
-    b = Moneta(MonetaConfig(storage_uri="B", **kw))
-    a.deposit("from A", [1.0, 0.0])
-    b.deposit("from B", [0.0, 1.0])
-    a.run_sleep_pass()
-    b.run_sleep_pass()
-    a.close()
-    b.close()
+    try:
+        with pytest.raises(MonetaResourceLockedError):
+            Moneta(MonetaConfig(storage_uri="B", **kw))
+        a.deposit("from A", [1.0, 0.0])
+        a.run_sleep_pass()
+    finally:
+        a.close()
     with Moneta(MonetaConfig(storage_uri="C", **kw)) as c:
-        assert sorted(x.payload for x in c.ecs.iter_rows()) == ["from B"]
+        assert sorted(x.payload for x in c.ecs.iter_rows()) == ["from A"]
 
 
 def test_v5_p11_one_journal_one_owner(tmp_path):

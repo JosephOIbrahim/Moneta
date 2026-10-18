@@ -1,13 +1,13 @@
 # Round 4 brief: attention-log late-entry loss ("path L")
 
 - **Who rules:** Joseph Ibrahim (owner). This brief recommends; it decides nothing.
-- **Status:** DRAFT, for owner review before it goes to Gemini Deep Think (MONETA.md §9 escalation protocol).
-- **Date:** 2026-10-16. Branch `harden/native-observability` in the isolated clone `C:/Users/User/Moneta-harden`.
+- **Status:** DRAFT, never sent. It was written for owner review before going to Gemini Deep Think (MONETA.md §9 escalation protocol). Superseded on 2026-10-18 by the gate 2 ruling (see Freeze); kept as the record of the question.
+- **Date:** 2026-10-16. Branch `harden/native-observability` in an isolated clone.
 - **How this relates to other rounds:**
   - This is separate from the v7 "Round 4: Mile 0 rulings" (`docs/v7/ROUND4_BRIEF.md`). That round ruled on v5's E1–E4. This one covers v1's locked concurrency primitive.
-  - The R1′ durability design that this brief refers to is `docs/design/R1-attention-durability.md` (revision 5).
+  - The R1′ durability design that this brief refers to is `docs/design/R1-attention-durability.md` (revision 5 when this brief was drafted; revision 6 records the implementation).
 - **Owner framing, approved 2026-10-16:** path L is treated as **both an implementation defect and a possible §9 Trigger 2 case**. The two are not mutually exclusive.
-- **Freeze:** no implementation on the attention-log subsystem until this round closes. That covers `src/moneta/attention_log.py` and the reducer path in `consolidation.py`. B and D stay unresolved, and fsync stays deferred.
+- **Freeze (superseded 2026-10-18):** no implementation on the attention-log subsystem until this round closes. That covers `src/moneta/attention_log.py` and the reducer path in `consolidation.py`. B and D stay unresolved, and fsync stays deferred. **Superseded by the gate 2 ruling** (2026-10-18, under the owner's delegation): path L is an implementation defect that the append-log pattern absorbs, not a §9 Trigger 2, so this round did not open and the freeze never took effect. R1′ is implemented (design revision 6), B, D and L are fixed, and every WAL append is fsynced (F1).
 
 ---
 
@@ -47,11 +47,11 @@ def drain(self) -> list[AttentionEntry]:
 
 | # | Evidence | Status | Where |
 |---|---|---|---|
-| E1 | **Deterministic interleaving.** `AttentionEntry` construction is blocked on the appender thread. `drain()` runs, then the appender is released. Result: `n_at_drain=0 drained_after=1 buffer_after=0`. The entry landed in the list `drain()` had already returned, and the live buffer is empty. | **Saved record** | probe `…/scratchpad/harden/probes/r1_append_race.py` (sha256 `f062fc70bfd609a29ff00a83c991ad6df23e4ff9ff4adfbdbcd28029a7469514`); record `…/scratchpad/harden/runs/R1review-append-race-probe.txt` (sha256 `de556934c5227bf4c7c04ec7b87f2becf6de864a6e26270d0b5265f49ebe4da0`); HEAD `e7325bb`; Python 3.14.2 |
+| E1 | **Deterministic interleaving.** `AttentionEntry` construction is blocked on the appender thread. `drain()` runs, then the appender is released. Result: `n_at_drain=0 drained_after=1 buffer_after=0`. The entry landed in the list `drain()` had already returned, and the live buffer is empty. | **Saved record** | probe `<scratch>/harden/probes/r1_append_race.py` (sha256 `f062fc70bfd609a29ff00a83c991ad6df23e4ff9ff4adfbdbcd28029a7469514`); record `<scratch>/harden/runs/R1review-append-race-probe.txt` (sha256 `de556934c5227bf4c7c04ec7b87f2becf6de864a6e26270d0b5265f49ebe4da0`); HEAD `e7325bb`; Python 3.14.2 |
 | E2 | **Statistical, unpatched code, `sys.setswitchinterval(1e-6)`.** 613 of 200 000 appends landed in an already-drained list. That is a lower bound: the probe counts only landings before its next drain. | **Saved record** | same record as E1, part 2 |
-| E3 | **Independent check at the default switch interval (5 ms)**, using the real `aggregate()` and a 1 ms pause per pass: **1 of 200 000 lost.** The same script lost 0 at 1 µs. | **Observed in-session on 2026-10-16. Not saved to a run record.** The script is retained, so it can be rerun when new execution is authorized. | `…/scratchpad/harden/probes/race2.py` (sha256 `339486266821c5ea0862abff9dcf879cdb4e360240f6ea1e768b3554c3b1d08b`) |
+| E3 | **Independent check at the default switch interval (5 ms)**, using the real `aggregate()` and a 1 ms pause per pass: **1 of 200 000 lost.** The same script lost 0 at 1 µs. | **Observed in-session on 2026-10-16. Not saved to a run record.** The script is retained, so it can be rerun when new execution is authorized. | `<scratch>/harden/probes/race2.py` (sha256 `339486266821c5ea0862abff9dcf879cdb4e360240f6ea1e768b3554c3b1d08b`) |
 
-`…` = `C:/Users/User/AppData/Local/Temp/claude/C--Users-User-Moneta/eb45e56e-ffee-4251-86c6-41782cf26935`.
+`<scratch>` = the author's local scratch directory; the records are not published.
 
 **How to read it:**
 - E1 establishes that the window exists.
