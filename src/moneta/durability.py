@@ -435,7 +435,11 @@ class DurabilityManager:
         consistently, step 2 writes the keyed snapshot, step 3 keeps every
         WAL line whose seq it does not cover, step 4 releases the covered
         seqs. A step 0 failure or a step 1 timeout writes a keyless snapshot
-        instead and leaves the WAL whole (``degraded_saves``). A step 3
+        instead and leaves the WAL whole (``degraded_saves``). Step 0
+        degrades on any ``Exception``; a ``BaseException`` such as
+        ``KeyboardInterrupt`` inside step 0 escapes instead, after step 0
+        deletes its tmp file and keeps the disposition, so the next save
+        retries step 0. A step 3
         failure re-raises after the snapshot is written. Every tmp file is
         fsynced before its ``os.replace``, and each ``os.replace`` (and
         step 3's unlink) is followed by a directory fsync where supported
@@ -566,7 +570,10 @@ class DurabilityManager:
             )
             raise
 
-        # Step 4: release, only after step 3 succeeded.
+        # Step 4: release, only after step 3 succeeded. applied_seqs is
+        # released outside _lock: the reducer never takes _lock, and
+        # difference_update is one in-place C call; only _void_seqs needs
+        # the lock (design §2.4, revision 6).
         log.applied_seqs.difference_update(applied)
         with self._lock:
             self._void_seqs.difference_update(applied)
