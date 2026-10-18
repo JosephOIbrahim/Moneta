@@ -18,7 +18,10 @@ process reopened an existing store. Changes from the candidate:
 - the gate's two conditions are pinned: flush() checks every ``Save()``
   (a False result and a raise) and reports failures as ``UsdSaveError``,
   and a layer another holder already loaded in this process (a LOP
-  network) is detected and logged.
+  network) is detected and logged;
+- from the USD Engineer review: a batch authored again after a failed
+  flush() (the v5 compat projector's retry) is re-authored in place, and
+  the prim count stays the layer's real one.
 
 These use the interpreter's installed pxr (usd-core), never Houdini.
 """
@@ -31,6 +34,7 @@ import logging
 import os
 import subprocess
 import sys
+from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import Mock
@@ -533,4 +537,56 @@ def test_layer_another_holder_loaded_is_detected_and_logged(
     memory = _memory("visible-to-the-other-holder", protected=True)
     target.author_stage_batch([memory])
     assert lop_held.GetPrimAtPath(f"/Memory_{memory.entity_id.hex}") is not None
+    target.close()
+
+
+# ------------------------------ a batch authored again after a failed flush()
+
+
+def test_a_batch_authored_again_after_a_failed_flush_is_reauthored_in_place(
+    tmp_path: Path, fixed_clock: None
+) -> None:
+    """USD Engineer review: the retry that a failed flush() leaves to the next pass.
+
+    The v5 compat projector projects a staged batch again on the next pass, on
+    the same long-lived target: author_stage_batch with the same entities, then
+    flush(). Sdf.AttributeSpec refuses to create a spec that exists, so the
+    second author used to raise ("Cannot create spec ... already exists")
+    before flush() was reached, and no pass saved the dirty layer again. The
+    prim count must stay the layer's real one, or the layer rotates early.
+    """
+    store = tmp_path / "store"
+    target = UsdTarget(store, rotation_cap=4)
+    target.author_stage_batch([_memory("first")])
+    target.flush()
+    rolling = store / ROLLING_NAME
+    batch = [_memory("retry-a"), _memory("retry-b")]
+    target.author_stage_batch(batch)
+    rolling.unlink()
+    rolling.mkdir()  # a directory in the way: the rolling layer's Save() raises
+    with pytest.raises(usd_target.UsdSaveError):
+        target.flush()
+    rolling.rmdir()
+    # The next pass projects the same entities again, with their current values.
+    again = [replace(m, utility=0.25, attended_count=3) for m in batch]
+    target.author_stage_batch(again)
+    target.flush()
+    layer = target.get_layer(ROLLING_NAME)
+    assert len(layer.rootPrims) == 3
+    assert target.get_prim_count(ROLLING_NAME) == 3  # not 5: no double count
+    on_disk = Sdf.Layer.OpenAsAnonymous(str(rolling))
+    assert len(on_disk.rootPrims) == 3  # each prim once
+    for memory in again:
+        prim = on_disk.GetPrimAtPath(f"/Memory_{memory.entity_id.hex}")
+        assert prim is not None
+        assert prim.attributes["utility"].default == pytest.approx(0.25)
+        assert prim.attributes["attendedCount"].default == 3
+        assert prim.attributes["payload"].default == memory.payload
+    # The count is the layer's real one, so the cap (4) is reached by the next
+    # entity rather than passed early: it lands in the base layer.
+    fourth = _memory("fills-the-cap")
+    target.author_stage_batch([fourth])
+    assert target.get_prim_count(ROLLING_NAME) == 4
+    assert target.get_layer("cortex_2026_10_16_001.usda") is None
+    target.flush()
     target.close()

@@ -62,6 +62,8 @@ positive. Gate 2's two conditions: a layer already loaded in this process
 ERROR, naming the layer, and ``flush()`` reports every failed ``Save()``
 as ``UsdSaveError``. ce45 (``ce45f133``) is Codex's isolated candidate,
 prepared outside this repository; it is not in this repository's history.
+A prim that already exists is re-authored in place, so a batch authored
+again after a failed ``flush()`` updates its prims instead of raising.
 
 In-memory mode
 --------------
@@ -187,8 +189,18 @@ def _set_attr(
     type_name: Sdf.ValueTypeName,
     value: object,
 ) -> None:
-    """Author an attribute with default value on a prim spec."""
-    attr = Sdf.AttributeSpec(prim_spec, name, type_name)
+    """Author an attribute's default value on a prim spec, in place if it exists.
+
+    ``Sdf.AttributeSpec`` refuses to create a spec that already exists
+    ("Cannot create spec ... because it already exists"), so an existing
+    attribute is reused. A batch authored again after its ``flush()``
+    failed (the v5 compat projector projects a staged batch again on the
+    next pass, on the same target) then updates its prims instead of
+    raising before ``flush()`` can save the dirty layer.
+    """
+    attr = prim_spec.attributes.get(name)
+    if attr is None:
+        attr = Sdf.AttributeSpec(prim_spec, name, type_name)
     attr.default = value
 
 
@@ -398,6 +410,10 @@ class UsdTarget:
         method returns. This narrow-lock scope allows concurrent readers
         to traverse the stage during the Save window. Empirical basis:
         Pass 5 Q6 investigation (commit 500b1dd, OpenUSD 0.25.5).
+
+        A prim that already exists is re-authored in place (``_set_attr``),
+        so a batch authored again after a failed ``flush()`` updates its
+        prims, and each layer's prim count is its real root-prim count.
         """
         authored_at = time.time()
         batch_id = str(_uuid.uuid4())
@@ -435,7 +451,10 @@ class UsdTarget:
                         prim_spec, "priorState", Sdf.ValueTypeNames.Token, _state_to_token(m.state)
                     )
 
-            self._prim_counts[name] = self._prim_counts.get(name, 0) + len(batch)
+            # The layer's own count, not ``+= len(batch)``: a batch authored
+            # again after a failed flush() reuses its prims, and adding would
+            # count them twice and rotate the layer early.
+            self._prim_counts[name] = len(layer.rootPrims)
 
         _logger.info(
             "usd_target.author batch=%s count=%d mode=%s",
@@ -472,6 +491,15 @@ class UsdTarget:
         ``SequentialWriter`` does not catch it, so the batch's vector
         commit does not happen (ARCHITECTURE.md §7: USD first). A failed
         layer stays dirty, and the next ``flush()`` retries it.
+
+        What happens to the batch depends on the handle. The v1 ``Moneta``
+        lets ``UsdSaveError`` escape ``run_sleep_pass``; every entity that
+        pass staged stays ``STAGED_FOR_SYNC`` and no later pass commits it
+        again (classification takes only ``VOLATILE`` entities). The v5
+        compat ``Moneta`` returns it as ``SleepPassResult.projection_error``
+        with an ERROR line and projects the failed batch, and every later
+        one, again on the next pass; ``author_stage_batch`` re-authors those
+        prims in place.
         """
         if self._in_memory:
             return

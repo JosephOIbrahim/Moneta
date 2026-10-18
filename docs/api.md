@@ -413,10 +413,15 @@ successful pass), construction returns an empty ECS.
   its authored sublayer stack, prim counts and opinions: an existing
   layer is opened, never re-created, and one that cannot be opened
   raises (ce45, Codex's candidate, prepared outside this repository). A
-  layer whose save fails (a `False` result or a raise)
-  makes `run_sleep_pass` raise `moneta.usd_target.UsdSaveError` (a
-  `RuntimeError`) before that batch's vector commit; the layer stays
-  dirty and the next flush retries it. A store layer that something else
+  layer whose save fails (a `False` result or a raise) stops that batch
+  before its vector commit; the layer stays dirty and the next flush
+  retries it. On the v1 handle, `run_sleep_pass` raises
+  `moneta.usd_target.UsdSaveError` (a `RuntimeError`), and every entity
+  that pass staged stays `STAGED_FOR_SYNC`: no later pass commits them
+  again. On the v5 compat handle, the pass returns the error as
+  `SleepPassResult.projection_error` with an ERROR log line, and the next
+  pass projects the failed batch, and every later one, again; a prim that
+  already exists is re-authored in place. A store layer that something else
   in the process already loaded (a Houdini LOP network shares Sdf's
   layer registry) is logged at ERROR as `Sdf registry sharing`, naming
   the layer, and
