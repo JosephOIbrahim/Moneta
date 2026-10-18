@@ -1,8 +1,8 @@
 """Round 4 F1: the attention log is forced to disk.
 
-Joe approved "forcing the log to disk" with the Risk B fix (verbatim
-"3.approved"), and gate 2 ruled the tier: fsync every WAL append (measured
-on the seat box at 1.16 ms median per line). These tests pin what that tier
+The owner approved forcing the log to disk with the risk B fix, and gate 2
+ruled the tier: fsync every WAL append (measured on one Windows
+workstation at 1.16 ms median per line). These tests pin what that tier
 promises in ``moneta.durability``:
 
 - an acknowledged signal's WAL line was written, then fsynced, before

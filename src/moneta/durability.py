@@ -63,11 +63,11 @@ Design (R1′, docs/design/R1-attention-durability.md §2)
 
 Round 4 F1: the log is forced to disk
 -------------------------------------
-Joe approved "forcing the log to disk"; gate 2 ruled the tier: **fsync
-every WAL append**. A line is written, then fsynced, before
-``signal_attention`` returns (measured on the seat box at 1.16 ms median and
-2.1 ms p95 per line, against 0.011 ms unsynced; a per-call group commit was
-the alternative shown). A failed fsync rejects the signal: its line is
+The owner approved forcing the log to disk (Round 4, risk B); gate 2 ruled
+the tier: **fsync every WAL append**. A line is written, then fsynced,
+before ``signal_attention`` returns (measured on one Windows workstation at
+1.16 ms median and 2.1 ms p95 per line, against 0.011 ms unsynced; a
+per-call group commit was the alternative shown). A failed fsync rejects the signal: its line is
 truncated away, as for a failed write. Every tmp file a save publishes (the
 snapshot's, step 0's and step 3's) is fsynced BEFORE its ``os.replace``, so
 a rename never reaches the disk ahead of its data. Each ``os.replace``,
@@ -785,6 +785,12 @@ class DurabilityManager:
         closed, so a failed append leaves no line behind (if the truncate
         also fails, the seq is tombstoned). The original exception
         propagates.
+
+        Residual, a double fault: an ``os.fsync`` that fails although its
+        data reached the device, then a power loss before the truncate-back
+        is durable, replays the rejected line once at the next reopen,
+        although the caller was told the signal failed. The seq is not
+        tombstoned, because the truncate itself succeeded (design §5).
 
         Raises ``ValueError("durability manager is closed")`` after
         ``close()``.
