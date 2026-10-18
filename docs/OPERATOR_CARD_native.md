@@ -206,6 +206,22 @@ PYTHONPATH=src python scripts/bench_query.py --n 10000 --spread
 
 ---
 
+### USD mirror (cold tier)
+
+**LOP networks must not edit or reload `.moneta/usd` layers in a live session.** Sdf keeps one layer registry per process. A LOP network that loads a store layer holds the same layer object Moneta authors into, and Moneta's `flush()` saves every opinion that layer holds.
+
+| You see | Means | Do |
+|---|---|---|
+| ERROR `usd_target: Sdf registry sharing: layer <identifier> is already loaded in this process` | When the target opened, something else in this process (a LOP network, another stage or another `UsdTarget`) already held that store layer. The line names the shared layer and its dirty state. Moneta authors into it; nothing is refused. | Stop editing or reloading that layer from the LOP network while Moneta runs, and drop the network's reference to it before the next session. A holder that loads a layer after the target opened it is not detected. |
+| `UsdSaveError` from `run_sleep_pass` | A layer's `Save()` returned `False` or raised. Every other layer was still saved, and that batch's vector commit did not happen. The failed layer stays dirty, and the next flush retries it. | Read `.failures` (layer identifier to cause) and fix the file or its permissions. |
+| `ValueError: rotation_cap must be positive` | `rotation_cap < 1`. | Pass a positive cap (default 50,000). |
+
+**Reopen keeps the authored stack.** Existing layers open first and are created only when absent; an existing layer that cannot be opened raises instead of being replaced.
+
+**Owed before any Houdini seat moves to this code** (gate 2): a hython row on H22.0.400 with a LOP network sublayering `cortex_root.usda`. Not run.
+
+---
+
 ### Cut a release
 
 **Prerelease from a feature branch; `main` and "Latest" stay put.** `X.Y.Z-rcN` is the tag; `pyproject.toml` takes `X.Y.ZrcN`.

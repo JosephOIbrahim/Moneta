@@ -1,7 +1,8 @@
 """USD reopen-first lifecycle (ce45), flush() failure reporting and Sdf
 registry sharing. Disposable stores only.
 
-Ported from Codex's isolated candidate ce45f133 (its
+Ported from Codex's isolated candidate ce45f133, prepared outside this
+repository and not in its history (its
 tests/unit/test_usd_target_reopen.py; REPAIR_REPORT.txt), which fixed rc1's
 CreateNew-first open: rc1 reset the mirror's sublayer stack whenever a fresh
 process reopened an existing store. Changes from the candidate:
@@ -520,10 +521,10 @@ def test_layer_another_holder_loaded_is_detected_and_logged(
     # A same-named layer from another directory is not this store's.
     elsewhere = Sdf.Layer.CreateNew(str(tmp_path / "elsewhere" / PROTECTED_SUBLAYER_NAME))
     assert elsewhere is not None
-    with caplog.at_level(logging.WARNING, logger=_LOGGER):
+    with caplog.at_level(logging.ERROR, logger=_LOGGER):
         target = UsdTarget(store)
     shared = _sharing(caplog)
-    assert len(shared) == 1 and shared[0].levelno == logging.WARNING
+    assert len(shared) == 1 and shared[0].levelno == logging.ERROR
     assert lop_held.identifier in shared[0].getMessage()
     assert elsewhere.identifier not in shared[0].getMessage()
     # Detected and logged, not refused: Moneta authors into the very layer

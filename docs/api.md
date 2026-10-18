@@ -412,12 +412,14 @@ successful pass), construction returns an empty ECS.
   With the real target, reopening an existing `usd_target_path` keeps
   its authored sublayer stack, prim counts and opinions: an existing
   layer is opened, never re-created, and one that cannot be opened
-  raises (ce45). A layer whose save fails (a `False` result or a raise)
+  raises (ce45, Codex's candidate, prepared outside this repository). A
+  layer whose save fails (a `False` result or a raise)
   makes `run_sleep_pass` raise `moneta.usd_target.UsdSaveError` (a
   `RuntimeError`) before that batch's vector commit; the layer stays
   dirty and the next flush retries it. A store layer that something else
   in the process already loaded (a Houdini LOP network shares Sdf's
-  layer registry) is logged at WARNING as `Sdf registry sharing`, and
+  layer registry) is logged at ERROR as `Sdf registry sharing`, naming
+  the layer, and
   Moneta then authors into that shared layer; nothing is refused, and a
   holder that loads the layer later is not detected.
 - **`moneta_native` (optional)**: an abi3 wheel built from

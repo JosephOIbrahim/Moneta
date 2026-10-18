@@ -59,8 +59,9 @@ continuation. An existing layer or a stage that cannot be opened raises;
 nothing falls back to creating a new layer. ``rotation_cap`` must be
 positive. Gate 2's two conditions: a layer already loaded in this process
 (Sdf's registry is shared with LOP networks) is used as is and logged at
-WARNING, and ``flush()`` reports every failed ``Save()`` as
-``UsdSaveError``.
+ERROR, naming the layer, and ``flush()`` reports every failed ``Save()``
+as ``UsdSaveError``. ce45 (``ce45f133``) is Codex's isolated candidate,
+prepared outside this repository; it is not in this repository's history.
 
 In-memory mode
 --------------
@@ -217,8 +218,8 @@ def _warn_registry_sharing(directory: Path) -> int:
     stage or another ``UsdTarget``. Moneta will author into that same layer
     object, and its ``flush()`` saves every opinion the layer holds, while
     the other holder sees, edits or reloads it. Gate 2's condition on
-    adopting ce45 is that this sharing is detected and logged: one WARNING
-    per layer, nothing refused. A holder that loads the layer after this
+    adopting ce45 is that this sharing is detected and logged: one ERROR
+    per layer, naming it; nothing is refused. A holder that loads the layer after this
     target cannot be detected here. Returns the number of layers logged.
     """
     want = os.path.normcase(os.path.realpath(directory))
@@ -230,7 +231,7 @@ def _warn_registry_sharing(directory: Path) -> int:
         if os.path.normcase(os.path.dirname(os.path.realpath(real))) != want:
             continue
         n += 1
-        _logger.warning(
+        _logger.error(
             "usd_target: Sdf registry sharing: layer %s is already loaded in "
             "this process (a LOP network, another stage or another UsdTarget "
             "holds it; dirty=%s). Moneta authors into that shared layer, and "
@@ -244,7 +245,8 @@ def _warn_registry_sharing(directory: Path) -> int:
 def _open_or_create_disk_layer(path: Path) -> Sdf.Layer:
     """Open an existing layer; never replace an unreadable file with a new one.
 
-    Reopen-first (ce45): an existing file is opened, never re-created; a new
+    Reopen-first (ce45, the external candidate named in the module
+    docstring): an existing file is opened, never re-created; a new
     layer is created only after ``lstat`` reports the file absent.
 
     A layer already in this process's Sdf registry under this identifier is
@@ -461,7 +463,8 @@ class UsdTarget:
         itself — this method is the sole Save call site, enabling the
         narrow-lock pattern verified in Pass 5.
 
-        Every ``Save()`` is checked (gate 2's condition on adopting ce45):
+        Every ``Save()`` is checked (gate 2's condition on adopting ce45, the
+        external candidate named in the module docstring):
         a ``False`` result and a raise (usd-core raises
         ``Tf.ErrorException`` for an unwritable file) are both failures.
         The remaining layers are still saved, sublayers first and the root
