@@ -467,7 +467,11 @@ accepted (design §6 gate 6) or released.
   rewrite of `snapshot.json` that drops `wal_applied_seqs`, every line is
   judged by timestamp. Every line whose effect the snapshot's rows lack
   and whose timestamp is not after the snapshot's is lost: rc1's defect
-  B. The next keyed save closes the exposure.
+  B. The next keyed save closes the exposure. A step 0 that fails because
+  the WAL no longer starts with the bytes found at hydrate (changed
+  outside the handle, or already normalized by a step 0 an interrupt cut
+  short) fails at every save until the handle is reopened, so no keyed
+  save follows on that handle: run a sleep pass, then reopen.
 - **A torn attention apply.** If `apply_attention` raises inside a pass,
   the drained seqs are already recorded as applied (a stated loss is
   preferred to a silent double), so the next save drops their lines.
