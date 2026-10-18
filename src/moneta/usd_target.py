@@ -65,6 +65,18 @@ prepared outside this repository; it is not in this repository's history.
 A prim that already exists is re-authored in place, so a batch authored
 again after a failed ``flush()`` updates its prims instead of raising.
 
+Process and thread assumptions
+------------------------------
+One writer per store directory. A layer is created only after ``lstat``
+reports its file absent, and ``CreateNew`` writes the file at once, so a
+second process opening the same fresh store can overwrite a layer the
+first one just created: nothing locks the directory. ``UsdTarget`` takes
+no lock either. The v1 ``Moneta`` builds it on the constructing thread;
+the v5 compat projector builds it on the thread that runs the first sleep
+pass. In a Houdini session, a layer shared with a LOP network is mutated
+by Moneta with no synchronization against that network; gate 2 logs the
+sharing at ERROR rather than refusing it.
+
 In-memory mode
 --------------
 When ``log_path=None``, all layers are anonymous in-memory layers. No
@@ -231,8 +243,12 @@ def _warn_registry_sharing(directory: Path) -> int:
     object, and its ``flush()`` saves every opinion the layer holds, while
     the other holder sees, edits or reloads it. Gate 2's condition on
     adopting ce45 is that this sharing is detected and logged: one ERROR
-    per layer, naming it; nothing is refused. A holder that loads the layer after this
-    target cannot be detected here. Returns the number of layers logged.
+    per layer, naming it; nothing is refused. The scan runs once, when the
+    target is built, so a holder that loads a store layer later is not
+    detected (the rolling layer itself opens lazily, at its first write).
+    The v1 ``Moneta`` builds the target when the store opens, so in a live
+    seat detection covers holders loaded before Moneta started. Returns
+    the number of layers logged.
     """
     want = os.path.normcase(os.path.realpath(directory))
     n = 0
