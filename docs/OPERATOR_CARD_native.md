@@ -145,7 +145,7 @@ cd <scratch> && PYTHONPATH=src python scripts/v5/mutation_check.py   # last line
 - **D:** a signal that lands between a sleep pass's drain and its save is kept the same way.
 - **L (late landing):** an append that lands in a list the reducer has already swapped out is applied by the next pass, or at the next reopen if its appender stalls through that pass too. With one pass at a time, it is never applied twice.
 - Native mode has no effect on any of them. Neither seam touches the WAL or the snapshot.
-- **Not covered:** the WAL is still not fsync'd (Round 4 F1). An OS crash or power loss can lose recently acknowledged signals, and a power loss just after a save can lose pending lines. Forcing the WAL to disk is a separate change, not on this branch.
+- **Power loss (Round 4 F1):** every WAL append is fsync'd before `signal_attention` returns (about 1.2 ms per signal), and every file a save publishes is fsync'd before its rename; POSIX also fsyncs the directory after each rename. **Windows has no directory fsync:** a power loss shortly after a save can roll back that save's renames. Each file stays whole, but a signal appended after a rolled-back WAL rename is lost (`docs/api.md`, Durability guarantees).
 
 **Behaviour changes.** Signatures are unchanged, and every raise below is an existing exception type.
 

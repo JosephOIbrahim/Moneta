@@ -150,12 +150,14 @@ m.signal_attention({
 
 If durability is enabled (`snapshot_path` + `wal_path` set on the
 config), each signal's WAL line is written **first**, as one unbuffered
-write that reaches the OS before return, and only then appended to the
-attention log. The WAL is not fsync'd: a written signal survives a
-process `kill -9`, but an OS crash or power loss can lose recently
-acknowledged signals (Round 4 F1). The line stays in the WAL until a
-save records the signal as applied (see
-[Durability guarantees](#durability-guarantees)).
+write that is fsync'd before return, and only then appended to the
+attention log (Round 4 F1; gate 2 tier: fsync every append, about 1.2 ms
+per line on the seat box). A returned signal survives a process
+`kill -9`, an OS crash and a power loss, with one Windows caveat around
+saves (see [Durability guarantees](#durability-guarantees)). A failed
+fsync rejects the signal exactly like a failed write: the `OSError`
+escapes and no line is left behind. The line stays in the WAL until a
+save records the signal as applied.
 
 **Behaviour change (R1′).** rc1 buffered the signal first and wrote the
 WAL second. The signature, return type and exception types are
@@ -386,7 +388,7 @@ at most ~30 seconds of volatile state lost.
 | Operation | Durability coverage | Medium |
 |---|---|---|
 | `deposit` | Snapshot-covered | Captured by the next `run_sleep_pass` that writes the ECS snapshot |
-| `signal_attention` | WAL-covered | When durability is enabled, every call is written to the JSONL WAL before it is buffered (one unbuffered write that reaches the OS; not fsync'd). The line stays until a save records the signal as applied |
+| `signal_attention` | WAL-covered | When durability is enabled, every call is written to the JSONL WAL before it is buffered (one unbuffered write, fsync'd before return; Round 4 F1). The line stays until a save records the signal as applied |
 | `query` | Not applicable (read-only) | — |
 | `get_consolidation_manifest` | Not applicable (read-only) | — |
 
@@ -400,8 +402,9 @@ embedder's own `m.durability.snapshot_ecs(m.ecs)` (SYNAPSE's save), or
 `Moneta` never starts that background thread itself.
 
 This is a deliberately accepted risk: signals (high-frequency, cheap)
-survive process death via the WAL (but not OS crash or power loss,
-since the WAL is not fsync'd); deposits (low-frequency, expensive)
+survive process death via the WAL, and since Round 4 F1 an OS crash or
+power loss too, because every append is fsync'd (Windows caveat below);
+deposits (low-frequency, expensive)
 accept a small loss window. MONETA.md §5 risk #4
 documents this trade-off as "WAL-lite periodic snapshot, accept
 small volatility window."
@@ -446,9 +449,19 @@ accepted (design §6 gate 6) or released.
 
 **What can still lose attention:**
 
-- **An OS crash or power loss.** The WAL is not fsync'd (Round 4 F1).
-  The compacted WAL is not fsync'd either, so a power loss just after a
-  save can lose pending lines (design §5).
+- **A power loss on Windows shortly after a save.** Since Round 4 F1,
+  every WAL append and every file a save publishes (the snapshot, the
+  normalized WAL and the compacted WAL) is fsync'd before it counts, and
+  on POSIX every rename, the WAL's creation and step 3's unlink are
+  followed by a directory fsync. **Windows has no directory fsync**:
+  `os.open` refuses a directory, and `os.replace` (`MoveFileExW` without
+  `MOVEFILE_WRITE_THROUGH`) does not ask for write-through. Until NTFS
+  flushes its journal, a power loss can roll back a save's renames. Each
+  file is whole either way, and NTFS's ordered journal keeps the store
+  consistent, but a signal appended after a save whose WAL rename is then
+  rolled back is in the rolled-back file and is lost. Whether the
+  append's own fsync forces that rename's journal record first is not
+  verified.
 - **A reopen while a keyless snapshot is current.** After a degraded save
   (logged at ERROR as `durability.snapshot DEGRADED`), an rc1 save, or a
   rewrite of `snapshot.json` that drops `wal_applied_seqs`, every line is
@@ -470,9 +483,12 @@ needs a broken clock precondition (a backward wall-clock step between
 signal and save, or signal and snapshot stamped from different clocks)
 plus a keyless reopen, or an rc1 reader of a store caught between a
 keyed snapshot and its compaction (a crash, or a compaction that keeps
-failing). Separately, on a filesystem that does not keep metadata
-operations in order across a power loss, two saves' renames can reorder
-(design §5). Concurrent sleep passes remain unsupported.
+failing). Separately, a filesystem that did not keep metadata operations
+in order across a power loss could reorder two saves' renames (design
+§5). Since Round 4 F1 that needs Windows, which has no directory fsync,
+and a filesystem other than NTFS, whose journal keeps them in order; on
+POSIX every rename is directory-fsync'd. Concurrent sleep passes remain
+unsupported.
 
 ## Runtime requirements
 

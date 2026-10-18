@@ -13,7 +13,8 @@ Design (R1′, docs/design/R1-attention-durability.md §2)
 --------------------------------------------------------
 
 1. **Snapshot** — the ECS is serialized to a JSON file atomically
-   (tmp-file + fsync + `os.replace`). Snapshot replaces the previous file.
+   (tmp-file + fsync + `os.replace` + directory fsync where supported).
+   Snapshot replaces the previous file.
    ``start_background`` runs a daemon thread that saves every
    ``snapshot_interval`` seconds (default 30), but only once a caller
    starts it. With an attention log attached, the snapshot also records
@@ -23,8 +24,9 @@ Design (R1′, docs/design/R1-attention-durability.md §2)
 
 2. **WAL** — every `signal_attention` on a durable handle writes one line
    per entity to a write-ahead log (JSONL, each line carrying a ``seq``)
-   BEFORE the signal is buffered, as one unbuffered ``os.write``. A line
-   reaches the OS before `signal_attention` returns. A keyed save compacts
+   BEFORE the signal is buffered, as one unbuffered ``os.write`` followed
+   by an ``os.fsync``: a line is on disk before `signal_attention` returns
+   (Round 4 F1, below). A keyed save compacts
    the WAL: it keeps every line whose seq is not in the snapshot's
    ``wal_applied_seqs``, that is, every signal the reducer has not recorded
    as applied, so undrained attention survives the save (defects B and D).
@@ -59,14 +61,36 @@ Design (R1′, docs/design/R1-attention-durability.md §2)
    manager with no attached log keeps rc1's save: a keyless snapshot, then
    the WAL is unlinked, undrained attention included.
 
-No fsync beyond the snapshot's (design §5; Round 4 F1). WAL appends and
-the compacted WAL reach the OS but are not fsynced, and neither
-``os.replace`` is followed by a directory fsync. An OS crash or power loss
-can therefore lose recently acknowledged signals, and a power loss after a
-compaction can lose pending lines. R1′ also assumes that the filesystem
-keeps metadata operations in order across a power loss (NTFS's journal
-does). Where it does not, two saves' renames can reorder and double-apply
-lines.
+Round 4 F1: the log is forced to disk
+-------------------------------------
+Joe approved "forcing the log to disk"; gate 2 ruled the tier: **fsync
+every WAL append**. A line is written, then fsynced, before
+``signal_attention`` returns (measured on the seat box at 1.16 ms median and
+2.1 ms p95 per line, against 0.011 ms unsynced; a per-call group commit was
+the alternative shown). A failed fsync rejects the signal: its line is
+truncated away, as for a failed write. Every tmp file a save publishes (the
+snapshot's, step 0's and step 3's) is fsynced BEFORE its ``os.replace``, so
+a rename never reaches the disk ahead of its data. Each ``os.replace``,
+step 3's unlink and the open that may create the WAL are followed by a
+directory fsync where the platform has one (``_DIR_FSYNC_SUPPORTED``). A
+failed fsync inside a save raises from that save, as any save I/O failure
+does: step 0 degrades the save, step 2 raises before compaction, and step 3
+takes the K path (item 5).
+
+Windows limitation: there is no directory fsync. ``os.open`` refuses a
+directory, so the CRT has no handle to flush, and ``os.replace`` calls
+``MoveFileExW`` without ``MOVEFILE_WRITE_THROUGH``. NTFS journals each
+rename but may not have flushed that journal record when a save returns,
+so a power loss shortly after a save can roll back the save's renames.
+Each published file is whole either way, because it was fsynced before its
+rename. R1′ therefore still assumes, on Windows, that the filesystem keeps
+metadata operations in order across a power loss (NTFS's journal does):
+any rolled-back suffix of a save's renames then leaves a consistent store.
+A signal appended after a save whose compaction rename is rolled back
+landed in the rolled-back file and is lost; whether the append's own fsync
+(FlushFileBuffers) forces the earlier rename's journal record first is not
+verified here. On POSIX, the directory fsyncs remove the ordering
+assumption.
 
 The "lite" in WAL-lite: no transaction framing, no checksums, no page
 boundaries. A Python dict gets JSON-dumped. Correct for Phase 1 scale;
@@ -133,6 +157,29 @@ _INVALID = "invalid"
 _ENTRY = "entry"
 
 _LINESEP = os.linesep.encode("ascii")
+
+# Round 4 F1: a directory fsync makes a rename, create or unlink in that
+# directory durable. POSIX only: on Windows ``os.open`` refuses a directory,
+# so there is no descriptor to fsync (module docstring, "Windows
+# limitation"). Read from the module globals at every call, so tests can
+# run the POSIX branch on any platform.
+_DIR_FSYNC_SUPPORTED = os.name != "nt"
+
+
+def _fsync_dir(directory: Path) -> None:
+    """fsync ``directory`` where the platform supports it (Round 4 F1).
+
+    A no-op where ``_DIR_FSYNC_SUPPORTED`` is false (Windows). Errors
+    propagate, as in ``moneta.v5.journal._fsync_dir``; the descriptor is
+    closed either way.
+    """
+    if not _DIR_FSYNC_SUPPORTED:
+        return
+    fd = os.open(str(directory), os.O_RDONLY | getattr(os, "O_DIRECTORY", 0))
+    try:
+        os.fsync(fd)
+    finally:
+        os.close(fd)
 
 
 def snapshot_tmp_path(snapshot_path: Union[str, Path]) -> Path:
@@ -389,7 +436,10 @@ class DurabilityManager:
         WAL line whose seq it does not cover, step 4 releases the covered
         seqs. A step 0 failure or a step 1 timeout writes a keyless snapshot
         instead and leaves the WAL whole (``degraded_saves``). A step 3
-        failure re-raises after the snapshot is written.
+        failure re-raises after the snapshot is written. Every tmp file is
+        fsynced before its ``os.replace``, and each ``os.replace`` (and
+        step 3's unlink) is followed by a directory fsync where supported
+        (Round 4 F1).
 
         Raises ``ValueError`` if the manager is closed or if ``ecs`` is not
         the attached ECS, before writing anything. Without an attached log
@@ -411,7 +461,7 @@ class DurabilityManager:
             self._snapshot_attached(log, ecs)
 
     def _write_snapshot(self, snapshot: dict) -> None:
-        """tmp -> fsync -> os.replace, as rc1."""
+        """tmp -> fsync -> os.replace, as rc1, then a directory fsync (F1)."""
         self._snapshot_path.parent.mkdir(parents=True, exist_ok=True)
         tmp_path = self._snapshot_tmp
         with open(tmp_path, "w", encoding="utf-8") as fp:
@@ -420,6 +470,7 @@ class DurabilityManager:
             os.fsync(fp.fileno())
         os.replace(tmp_path, self._snapshot_path)
         self._last_snapshot_ts = snapshot["snapshot_created_at"]
+        _fsync_dir(self._snapshot_path.parent)
 
     def _snapshot_unattached(self, ecs: ECS) -> None:
         """rc1's save, for a manager with no attached log (design §2.4)."""
@@ -584,11 +635,15 @@ class DurabilityManager:
                             )
                         fp.write(_serialize_line(entry, seq))
                     fp.flush()
+                    os.fsync(fp.fileno())  # F1: the data before the rename
                 os.replace(tmp, self._wal_path)
             except BaseException:
                 _unlink_quiet(tmp)
                 raise
+            # Cleared before the directory fsync: the WAL is normalized now,
+            # so a sync failure must not leave a disposition to re-apply.
             self._disposition = []
+            _fsync_dir(self._wal_path.parent)
 
     def _compact_wal(self, applied: frozenset) -> None:
         """Step 3 (design §2.4): keep every entry line whose seq is not in
@@ -639,16 +694,19 @@ class DurabilityManager:
                     os.unlink(self._wal_path)
                 except FileNotFoundError:
                     pass
+                _fsync_dir(self._wal_path.parent)  # F1
                 return
             tmp = self._wal_tmp
             try:
                 with open(tmp, "wb") as fp:
                     fp.writelines(out)
                     fp.flush()
+                    os.fsync(fp.fileno())  # F1: the data before the rename
                 os.replace(tmp, self._wal_path)
             except BaseException:
                 _unlink_quiet(tmp)
                 raise
+            _fsync_dir(self._wal_path.parent)  # F1
 
     # ------------------------------------------------------------------
     # WAL
@@ -679,11 +737,15 @@ class DurabilityManager:
     def wal_append(self, entry: AttentionEntry) -> int:
         """Append one attention entry to the WAL; return its seq (design §2.2).
 
-        One unbuffered ``os.write`` of the whole line, under ``_lock``. On
-        any exception or a short write the file is truncated back to its
-        size before the write and the descriptor is closed, so a failed
-        append leaves no line behind (if the truncate also fails, the seq
-        is tombstoned). The original exception propagates. No fsync.
+        One unbuffered ``os.write`` of the whole line, then ``os.fsync``,
+        under ``_lock`` (Round 4 F1, gate 2 tier: every append), so the line
+        is on disk before the signal is acknowledged. The open that may
+        create the WAL also fsyncs its directory where supported. On any
+        exception (a failed fsync included) or a short write the file is
+        truncated back to its size before the write and the descriptor is
+        closed, so a failed append leaves no line behind (if the truncate
+        also fails, the seq is tombstoned). The original exception
+        propagates.
 
         Raises ``ValueError("durability manager is closed")`` after
         ``close()``.
@@ -704,6 +766,9 @@ class DurabilityManager:
                     size = os.fstat(fd).st_size
                     if size > 0 and self._last_wal_byte() != b"\n":
                         os.write(fd, _LINESEP)  # terminate a torn tail first
+                    # F1: this open may have created the WAL; its directory
+                    # entry must be durable before any line in it is.
+                    _fsync_dir(self._wal_path.parent)
                 except BaseException:
                     try:
                         os.close(fd)
@@ -722,6 +787,7 @@ class DurabilityManager:
                     raise OSError(
                         f"short WAL write ({n} of {len(data)} bytes)"
                     )
+                os.fsync(fd)  # F1: on disk before the signal is acknowledged
                 ok = True
             finally:
                 if not ok:  # any exception, including an async one

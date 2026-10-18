@@ -584,17 +584,19 @@ class Moneta:
 
         Writes go to the append-only attention log (ARCHITECTURE.md
         §5.1). If durability is enabled, each signal's WAL line is
-        written FIRST, as one unbuffered write that reaches the OS before
-        return (no fsync; see ``DurabilityManager.wal_append``), and only
+        written FIRST, as one unbuffered write that is fsync'd before
+        return (Round 4 F1; see ``DurabilityManager.wal_append``), and only
         then appended to the log with its WAL seq (R1′ §2.2). A signal
-        whose WAL write fails is in neither place, and the ``OSError``
-        escapes; on a closed durable handle the write raises
+        whose WAL write or fsync fails is in neither place, and the
+        ``OSError`` escapes; on a closed durable handle the write raises
         ``ValueError``. A written signal survives a process kill -9, and
         every keyed save keeps its WAL line until the reducer has recorded
         it as applied. A degraded save also leaves the line in place, but a
         reopen under that keyless snapshot judges it by timestamp, the rc1
-        rule (see ``moneta.durability``). An OS crash or power loss can
-        still lose recently acknowledged signals (Round 4 F1). For a
+        rule (see ``moneta.durability``). Since Round 4 F1 an OS crash or
+        power loss keeps acknowledged signals too, except on Windows
+        shortly after a save (no directory fsync; ``moneta.durability``,
+        "Windows limitation"). For a
         multi-entity ``weights``, entities before a failing
         one stay recorded. The ECS update happens when the sleep-pass
         reducer drains the log.
