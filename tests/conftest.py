@@ -165,6 +165,10 @@ def _pxr_version() -> str:
 
 
 def pytest_configure(config: pytest.Config) -> None:
+    config.addinivalue_line(
+        "markers",
+        "slow: long-running stress test (R1′ design §4.2 T); deselect with -m 'not slow'",
+    )
     _H.enabled = True
     _H.env_raw = os.environ.get(_native.ENV_VAR)
     _H.mode = _native.mode_for_class(_native.classify_env(_H.env_raw))
@@ -280,18 +284,12 @@ def pytest_runtest_teardown(item, nextitem):
 # terminal summary lists each one that xfailed under "Known unresolved
 # defects", so a green run never reads as if the defect were fixed. If one
 # starts passing, strict xfail fails the run and the block says so.
-KNOWN_DEFECTS = {
-    "tests/integration/test_attention_snapshot_regression.py::"
-    "test_B_undrained_attention_survives_snapshot_and_reopen": (
-        "B",
-        "undrained attention lost when a bare snapshot is followed by a restart",
-    ),
-    "tests/integration/test_attention_snapshot_regression.py::"
-    "test_D_attention_between_drain_and_pass_snapshot_survives": (
-        "D",
-        "attention landing between the sleep-pass drain and its snapshot is lost",
-    ),
-}
+#
+# Empty since R1′ (docs/design/R1-attention-durability.md): defects B and D
+# are fixed, and their tests in
+# tests/integration/test_attention_snapshot_regression.py now pass unmarked.
+# The machinery stays for the next known defect.
+KNOWN_DEFECTS: dict[str, tuple[str, str]] = {}
 KNOWN_DEFECTS_DOC = "docs/design/R1-attention-durability.md"
 _defect_outcomes: dict[str, str] = {}
 
