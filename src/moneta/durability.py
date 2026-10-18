@@ -111,6 +111,7 @@ header or marker line may ever be written.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
 import os
@@ -407,6 +408,10 @@ class DurabilityManager:
         # Per raw line of the WAL as found at hydrate: None (drop) or
         # (seq, rewrite). Empty when nothing needs normalizing (§2.5 step 7).
         self._disposition: List[Optional[Tuple[int, bool]]] = []
+        # (length, sha256) of the WAL bytes the disposition was computed
+        # from; step 0 applies the disposition only to a WAL that still
+        # starts with them. None whenever _disposition is empty.
+        self._disposition_basis: Optional[Tuple[int, bytes]] = None
         self.degraded_saves: int = 0
         self._stop_event: Optional[threading.Event] = None
         self._bg_thread: Optional[threading.Thread] = None
@@ -438,8 +443,13 @@ class DurabilityManager:
         instead and leaves the WAL whole (``degraded_saves``). Step 0
         degrades on any ``Exception``; a ``BaseException`` such as
         ``KeyboardInterrupt`` inside step 0 escapes instead, after step 0
-        deletes its tmp file and keeps the disposition, so the next save
-        retries step 0. A step 3
+        deletes its tmp file and keeps the disposition. Step 0 applies the
+        disposition only to a WAL that still starts with the bytes hydrate
+        read (length and sha256). So the next save retries step 0 if the
+        interrupt came before step 0's ``os.replace``; if it came after it
+        (the WAL is normalized already), or anything outside this handle
+        changed the WAL, step 0 fails and that save degrades, as does every
+        later save of the handle until it is reopened. A step 3
         failure re-raises after the snapshot is written. Every tmp file is
         fsynced before its ``os.replace``, and each ``os.replace`` (and
         step 3's unlink) is followed by a directory fsync where supported
@@ -499,6 +509,7 @@ class DurabilityManager:
             except FileNotFoundError:
                 pass
             self._disposition = []
+            self._disposition_basis = None
         _logger.info(
             "durability.snapshot path=%s n=%d", self._snapshot_path, ecs.n
         )
@@ -605,22 +616,40 @@ class DurabilityManager:
         )
 
     def _normalize_wal(self) -> None:
-        """Step 0 (design §2.4): apply the hydrate-time disposition."""
+        """Step 0 (design §2.4): apply the hydrate-time disposition.
+
+        Only to the WAL hydrate read: its first bytes must still be the
+        ones hydrate read (length and sha256, ``_disposition_basis``), or
+        this raises ``_Step0Error`` and the save degrades. Appends,
+        including the torn-tail repair, only add bytes after them. The
+        check catches a WAL that an earlier step 0 of this handle already
+        replaced before an interrupt skipped the clear below, and a WAL
+        changed or truncated outside the handle. Applying the disposition
+        to either would drop or rewrite the wrong raw lines.
+        """
         with self._lock:
             self._close_wal_fd_locked()
             data = _read_wal_bytes(self._wal_path)
             if data is None:  # absent: nothing left to normalize
                 self._disposition = []
+                self._disposition_basis = None
                 return
+            basis = self._disposition_basis
+            if basis is None:
+                raise _Step0Error(
+                    "no record of the WAL bytes the disposition was computed from"
+                )
+            n_basis, digest = basis
+            if len(data) < n_basis or hashlib.sha256(data[:n_basis]).digest() != digest:
+                raise _Step0Error(
+                    f"the WAL no longer starts with the {n_basis} bytes found at "
+                    "hydrate: an earlier step 0 of this handle replaced it "
+                    "before an interrupt, or something outside this handle "
+                    "changed it"
+                )
             raw_lines = _split_raw_lines(data)
             disposition = self._disposition
             prefix_len = len(disposition)
-            if len(raw_lines) < prefix_len:
-                raise _Step0Error(
-                    f"the WAL has {len(raw_lines)} raw lines, fewer than the "
-                    f"{prefix_len} found at hydrate; it was truncated outside "
-                    f"this handle"
-                )
             tmp = self._wal_tmp
             try:
                 with open(tmp, "wb") as fp:
@@ -649,7 +678,10 @@ class DurabilityManager:
                 raise
             # Cleared before the directory fsync: the WAL is normalized now,
             # so a sync failure must not leave a disposition to re-apply.
+            # An async exception between the replace and this clear keeps
+            # it; the basis check above then refuses to re-apply it.
             self._disposition = []
+            self._disposition_basis = None
             _fsync_dir(self._wal_path.parent)
 
     def _compact_wal(self, applied: frozenset) -> None:
@@ -1012,6 +1044,11 @@ class DurabilityManager:
             replay.append((entry, seq))
         self._next_seq = next_seq
         self._disposition = disposition if changed else []
+        self._disposition_basis = (
+            (len(data), hashlib.sha256(data).digest())
+            if changed and data is not None
+            else None
+        )
 
         # 8. A keyless snapshot over seq-bearing lines.
         if snapshot_exists and not key_present and n_seq_lines:

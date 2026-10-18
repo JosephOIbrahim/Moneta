@@ -2599,3 +2599,102 @@ def test_AK_e_a_wal_deleted_before_the_first_save_clears_the_disposition(tmp_pat
         assert m.durability._disposition == []
         assert "wal_applied_seqs" in _snap(cfg)
         assert _wal(cfg) is None
+
+
+# =====================================================================
+# §4.2 AL (revision 6, Persistence-Substrate cross-review): step 0 applies
+# the hydrate-time disposition only to the WAL hydrate read
+# =====================================================================
+
+
+def _al_store(root: Path) -> tuple[MonetaConfig, UUID, int]:
+    """A keyed store whose WAL gives the disposition [None, (s5, False)]:
+    raw line 0, a legacy line filtered by timestamp, is dropped at step 0;
+    raw line 1, pending seq s5, is kept unchanged."""
+    cfg = _store(root)
+    with Moneta(cfg) as m:
+        x = m.deposit("x", [1.0, 0.0])
+        _save(m)
+    snap = _snap(cfg)
+    t, s5 = snap["snapshot_created_at"], snap["wal_next_seq"]
+    cfg.wal_path.write_bytes(_line(x, t - 1.0) + _line(x, t + 0.001, seq=s5))
+    return cfg, x, s5
+
+
+def test_AL_a_an_interrupt_after_step_0s_replace_never_reapplies_the_disposition(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    """§4.2 AL(a): a BaseException after step 0's ``os.replace`` and before
+    it clears the disposition leaves a normalized WAL and the hydrate-time
+    disposition. Re-applied by index, that disposition dropped the pending
+    s5 line silently (cross-review probe: [s5, s6, s7] became [s6, s7] with
+    no ERROR). The WAL no longer starts with the bytes hydrate read, so
+    step 0 fails closed: this save degrades, and so does every later save
+    of the handle until it is reopened."""
+    caplog.set_level(logging.INFO, logger="moneta")
+    cfg, x, s5 = _al_store(tmp_path / "s")
+    m = Moneta(cfg)
+    try:
+        dm = m.durability
+        assert dm._disposition == [None, (s5, False)]
+        m.signal_attention({x: 0.5})
+        m.signal_attention({x: 0.5})
+        s_first, s6, s7 = _buffer_seqs(m)
+        assert s_first == s5
+        wal_tmp = wal_tmp_path(cfg.wal_path)
+
+        def replace_then_interrupt(src: Any, dst: Any, *a: Any, **k: Any) -> None:
+            os.replace(src, dst, *a, **k)
+            if Path(src) == wal_tmp:
+                raise KeyboardInterrupt("after step 0's os.replace")
+
+        with monkeypatch.context() as mp:
+            mp.setattr(dur_mod, "os", _Os(replace=replace_then_interrupt))
+            with pytest.raises(KeyboardInterrupt):
+                _save(m)
+        assert _wal_seqs(cfg) == [s5, s6, s7]  # normalized: raw line 0 is gone
+        assert dm._disposition == [None, (s5, False)]  # the clear was skipped
+        normalized = _wal(cfg)
+        for n in (1, 2):  # this save, and every later save of the handle
+            _save(m)
+            assert dm.degraded_saves == n
+            assert _wal(cfg) == normalized  # s5 kept; nothing applied by index
+            assert not any(k in _snap(cfg) for k in _KEYS)
+            assert dm._disposition == [None, (s5, False)]
+        failed = _messages(caplog, logging.ERROR, "step 0 (WAL normalization) failed")
+        assert len(failed) == 2
+        assert all("no longer starts with" in msg for msg in failed)
+    finally:
+        m.close()
+
+
+@pytest.mark.parametrize("change", ["truncated", "rewritten"])
+def test_AL_b_a_wal_changed_outside_the_handle_fails_step_0(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture, change: str
+) -> None:
+    """§4.2 AL(b): the bytes hydrate read are the only WAL the disposition
+    fits. A WAL truncated outside the handle (§2.4, "shortened WAL") or
+    rewritten in place with the same line count fails step 0: the save
+    degrades and the WAL is left as found."""
+    caplog.set_level(logging.INFO, logger="moneta")
+    cfg, x, s5 = _al_store(tmp_path / "s")
+    m = Moneta(cfg)
+    try:
+        dm = m.durability
+        assert dm._disposition == [None, (s5, False)]
+        lines = _split_raw_lines(_wal(cfg) or b"")
+        if change == "truncated":
+            foreign = lines[0]
+        else:  # raw line 0 now carries a pending seq the disposition would drop
+            t = _snap(cfg)["snapshot_created_at"]
+            foreign = _line(x, t + 0.002, seq=s5 - 1) + lines[1]
+        cfg.wal_path.write_bytes(foreign)
+        _save(m)
+        assert dm.degraded_saves == 1
+        assert _wal(cfg) == foreign
+        assert not any(k in _snap(cfg) for k in _KEYS)
+        assert dm._disposition == [None, (s5, False)]
+        failed = _messages(caplog, logging.ERROR, "step 0 (WAL normalization) failed")
+        assert len(failed) == 1 and "no longer starts with" in failed[0]
+    finally:
+        m.close()
