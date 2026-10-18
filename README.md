@@ -45,7 +45,7 @@ with moneta.Moneta(moneta.MonetaConfig.ephemeral()) as m:
 
 **`v1.3.0-rc1` added** the optional Rust native seams (bit-identical to the Python oracles; `MONETA_NATIVE=0` turns them off) and `moneta.v5`, a reference implementation where the journal is the database. The v1 API (`moneta.Moneta`) is unchanged. Nothing has flipped on `main`.
 
-**What is NOT done:** the hython rows; one adoption condition of the USD repair; and v5, which is gated on owner rulings with open conditions (5.0.0 is not released). See the [v1.3.0-rc2 verdict](#v130-rc2-verdict); the v5 items are in the [v1.3.0-rc1 verdict](#v130-rc1-verdict).
+**What is NOT done:** the hython rows; one adoption condition of the USD repair; `F_FULLFSYNC` on macOS, so the fsync guarantees are not established there; and v5, which is gated on owner rulings with open conditions (5.0.0 is not released). See the [v1.3.0-rc2 verdict](#v130-rc2-verdict); the v5 items are in the [v1.3.0-rc1 verdict](#v130-rc1-verdict).
 
 > The name invokes **Juno Moneta** — Roman goddess of warning and memory, whose temple housed the Roman mint because she also *reminded*. Memory as advisory, not only storage.
 
@@ -67,7 +67,7 @@ with moneta.Moneta(moneta.MonetaConfig.ephemeral()) as m:
 
 **Current version:** `v1.3.0-rc2` (prerelease, from branch `release/v1.3.0-rc2`; `v1.3.0-rc1` came from `v7-native-seams`). `main` is at `v1.2.0-rc3` plus one docs commit.
 
-**Test matrix, `v1.3.0-rc2`** (branch `release/v1.3.0-rc2`, v1 and v5 suites together, 2026-10-18, merge commit `3c01cf2`, `src_digest` `58600b5811c7`, wheel `.pyd` sha256 `ec6d7f0c35c5…`). The release commit changes no `*.py`, so its `src_digest` is the same. Full identity and the verdict lines are in [Native qualification results](#native-qualification-results-on-this-branch).
+**Test matrix, `v1.3.0-rc2`** (branch `release/v1.3.0-rc2`, v1 and v5 suites together, 2026-10-18, merge commit `3c01cf2`, `src_digest` `58600b5811c7`, wheel `.pyd` sha256 `ec6d7f0c35c5…`). The two release commits (`292105f` and the recut that records the reviews) change no `*.py`, so the tagged commit's `src_digest` is the same. Full identity and the verdict lines are in [Native qualification results](#native-qualification-results-on-this-branch).
 
 | Interpreter | `MONETA_NATIVE` unset | `MONETA_NATIVE=0` | `MONETA_NATIVE=1` | `MONETA_NATIVE=require` |
 |---|---|---|---|---|
@@ -777,12 +777,12 @@ The last block of the pytest summary is the native qualification report. Its hea
 
 ### Native qualification results on this branch
 
-All on branch `release/v1.3.0-rc2`, Python 3.14.2 on Windows, `pxr` 0.26.5, run on 2026-10-18 at the merge commit `3c01cf2979f2f33bcd1d323c7109314070157e70` (`src_digest` `58600b5811c719c9b6aee547509ae97287acededf65b6ab970c5ddc53e1420b0`, `build_info.mode` `git-src`). The release commit changes only docs and the version, so the same `src_digest` identifies `v1.3.0-rc2`. Wheel rows use the 0.1.0 abi3 wheel installed in the interpreter's site-packages, `.pyd` sha256 `ec6d7f0c35c5b345f983f4aa80cfea086f3aca454e9cd74a58b6208227b02833`, with `src` first on `PYTHONPATH`.
+All on branch `release/v1.3.0-rc2`, Python 3.14.2 on Windows, `pxr` 0.26.5, run on 2026-10-18 at the merge commit `3c01cf2979f2f33bcd1d323c7109314070157e70` (`src_digest` `58600b5811c719c9b6aee547509ae97287acededf65b6ab970c5ddc53e1420b0`, `build_info.mode` `git-src`). The two release commits change only docs and the version, so the same `src_digest` identifies `v1.3.0-rc2`. Wheel rows use the 0.1.0 abi3 wheel installed in the interpreter's site-packages, `.pyd` sha256 `ec6d7f0c35c5b345f983f4aa80cfea086f3aca454e9cd74a58b6208227b02833`, with `src` first on `PYTHONPATH`.
 
 | Run | Pytest | Native tests | Real Rust calls | Verdict |
 |---|---|---|---|---|
-| wheel, `MONETA_NATIVE=1` | 907 passed | 71/71 passed, 0 skipped; qualification 2/2 | scan 594, decay 795 | `NATIVE QUALIFIED` |
-| wheel, `MONETA_NATIVE=require` | 907 passed | 71/71 passed, 0 skipped; qualification 2/2 | scan 594, decay 795 | `NATIVE QUALIFIED` |
+| wheel, `MONETA_NATIVE=1` | 907 passed | 71/71 passed, 0 skipped; qualification 2/2 | scan 594, decay 795 (one run) | `NATIVE QUALIFIED` |
+| wheel, `MONETA_NATIVE=require` | 907 passed | 71/71 passed, 0 skipped; qualification 2/2 | scan 594, decay 795 (one run) | `NATIVE QUALIFIED` |
 | wheel, `MONETA_NATIVE=0` | 907 passed | 71/71 passed (explicit backends) | scan 235, decay 35 | `PYTHON-ONLY PASS (not native qualified)` |
 | no wheel (`ModuleNotFoundError`), env unset | 836 passed, 71 skipped | 0 run, 71 skipped visibly | 0, 0 | `PYTHON-ONLY PASS (not native qualified)` |
 | broken wheel (`ImportError`), env unset | 836 passed, 71 skipped | 0 run, 71 skipped visibly | 0, 0 | `PYTHON-ONLY PASS (not native qualified)` |
@@ -791,6 +791,8 @@ All on branch `release/v1.3.0-rc2`, Python 3.14.2 on Windows, `pxr` 0.26.5, run 
 | hython 3.11, every row above | **PLANNED: awaiting owner coordination** | — | — | not run |
 
 The absent and broken rows were produced with test shims on `PYTHONPATH` that make `import moneta_native` raise those errors. The 0 unexpected-fallback count holds in every row.
+
+**The decay call count varies from run to run** at the same `src_digest`; 795 is the count of the one run cited here. The scan count is stable at 594.
 
 ### Attention durability: B, D and L fixed
 
@@ -1095,15 +1097,18 @@ This release candidate is cut from branch `release/v1.3.0-rc2`, not `main`. It c
 | USD reopen in a fresh process | sublayer stack reset | existing layers opened first; stack, offsets and counts kept |
 | Did Rust run? | not shown | a verdict line ends every pytest run |
 
+**Reviewed and accepted (2026-10-18):** the Architect signed off design revision 6 (SIGNED_OFF); the re-reviews of the two code commits that landed after their reviews (`2007612`, `711d7fb`) returned SOUND-WITH-NITS; the owner accepted the rc2 content (gate 6) and the public-safety scan's history-only hit (Route A, no history rewrite). Details: [`RELEASE_NOTES.md`](RELEASE_NOTES.md), Review.
+
 **Open — not done:**
 
 | Item | State |
 |---|---|
 | hython 3.11 rows | Not run in any configuration. |
 | USD repair, gate 2 condition 3 | A hython row on the target Houdini build (H22.0.400) before any Houdini seat moves. Not run. |
-| USD repair review | Its own review unit (PR 2 of 2, merged in `3c01cf2`). The USD Engineer review returned SOUND-WITH-NITS; its fix-severity finding is fixed in `2007612`. Open from it: a second registry-sharing detection point for layers loaded later, `close()` releasing the root layer, a name-scoped sharing filter, drive-letter case in the stack dedup, a test for the rotation scan, and v5 projection freshness over a half-cleared store. |
-| R1′ reviews | The Persistence and Substrate cross-review of PR 1 (design gate 3) returned SOUND-WITH-NITS; its fix-severity finding (`711d7fb`) and its nits are fixed. The Architect conformance review returned SOUND-WITH-NITS, and its nits are fixed. Owed before publication: the Architect's sign-off of design revision 6 and the owner's acceptance (gate 6). |
+| USD repair review | Its own review unit (PR 2 of 2, merged in `3c01cf2`). The USD Engineer review returned SOUND-WITH-NITS; its fix-severity finding is fixed in `2007612`. Open from it: a second registry-sharing detection point for layers loaded later, `close()` releasing the root layer, a name-scoped sharing filter, drive-letter case in the stack dedup, a test for the rotation scan, and v5 projection freshness over a half-cleared store. The re-review of `2007612` and `49643c9` returned SOUND-WITH-NITS (2026-10-18) with two more, both open in code: "in place" holds only while routing selects the layer that holds the prim (a retry at a rotation-cap crossing or after a UTC day change lands in the next layer as a second, stronger copy; now stated in the notes, `docs/api.md` and the card, not yet in the `usd_target.py` docstrings), and re-authoring keeps an existing attribute's type, so an incompatible value raises at author time. |
+| R1′ reviews | The Persistence and Substrate cross-review of PR 1 (design gate 3) returned SOUND-WITH-NITS; its fix-severity finding (`711d7fb`) and its nits are fixed. The Architect conformance review returned SOUND-WITH-NITS, and its nits are fixed. The Architect signed off design revision 6 on 2026-10-18 (SIGNED_OFF; one fix and six nits, applied to the design as a revision 6 erratum after the sign-off), and the re-review of `711d7fb` and `3da0053` returned SOUND-WITH-NITS. Open from them, for a later rc: a keyed retry after an interrupt past step 0's `os.replace` (today that handle degrades until reopened, logged at ERROR), and the macOS row below. |
 | Windows directory fsync | Unavailable. A power loss shortly after a save can roll back its renames. |
+| macOS fsync | `os.fsync` does not flush the drive's write cache on macOS, and `F_FULLFSYNC`, which gate 2 named, is not called, so the fsync guarantees hold only where fsync reaches stable storage. The design states it (§5); code and docstrings come in a later rc. |
 | v5 open items | Unchanged; see the [v1.3.0-rc1 verdict](#v130-rc1-verdict). |
 
 ---

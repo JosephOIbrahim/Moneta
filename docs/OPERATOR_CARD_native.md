@@ -114,7 +114,7 @@ MONETA_NATIVE=0       PYTHONPATH="src;<unzipped-wheel>" python -m pytest tests -
 | `PYTHON-ONLY FAIL (not native qualified): …` | Red run without native. |
 | exit code 4, `MONETA_NATIVE='require' requires the native wheel` | Require asked, wheel not loaded. |
 
-**Measured for `v1.3.0-rc2`** (Python 3.14.2, `pxr` 0.26.5, 2026-10-18, merge commit `3c01cf2`, `src_digest` `58600b5811c7…`, which the release commit keeps; wheel `.pyd` sha256 `ec6d7f0c35c5…` installed in site-packages, `src` first on `PYTHONPATH`). The v5 mutation check below ended `missed: []` on the same tree.
+**Measured for `v1.3.0-rc2`** (Python 3.14.2, `pxr` 0.26.5, 2026-10-18, merge commit `3c01cf2`, `src_digest` `58600b5811c7…`, which both release commits keep; wheel `.pyd` sha256 `ec6d7f0c35c5…` installed in site-packages, `src` first on `PYTHONPATH`). The v5 mutation check below ended `missed: []` on the same tree.
 
 | Run | Result | Verdict |
 |---|---|---|
@@ -139,13 +139,13 @@ cd <scratch> && PYTHONPATH=src python scripts/v5/mutation_check.py   # last line
 
 ### Attention durability (R1′)
 
-**Status.** In `v1.3.0-rc2`, a prerelease candidate not yet published: B, D and L pass in every matrix row. The Architect conformance review and the Persistence and Substrate cross-review (design gate 3) each returned SOUND-WITH-NITS; the cross-review's fix-severity finding is fixed in `711d7fb`, and both reviews' nits are addressed. Owed before publication: the Architect's sign-off of design revision 6 and the owner's acceptance (gate 6). Design: `docs/design/R1-attention-durability.md`, revision 6.
+**Status.** In `v1.3.0-rc2` (a prerelease): B, D and L pass in every matrix row. The Architect conformance review and the Persistence and Substrate cross-review (design gate 3) each returned SOUND-WITH-NITS; the cross-review's fix-severity finding is fixed in `711d7fb`, and both reviews' nits are addressed. The Architect signed off design revision 6 on 2026-10-18 (SIGNED_OFF; its fix, the macOS gap below, and its six nits are applied to the design as a revision 6 erratum), the re-review of `711d7fb` and `3da0053` returned SOUND-WITH-NITS, and the owner accepted the rc2 content (gate 6) the same day. Design: `docs/design/R1-attention-durability.md`, revision 6.
 
 - **B:** `signal_attention`, then `m.durability.snapshot_ecs(m.ecs)` (SYNAPSE's save), then restart. The signal now replays once: a save keeps every WAL line whose signal the reducer has not recorded as applied.
 - **D:** a signal that lands between a sleep pass's drain and its save is kept the same way.
 - **L (late landing):** an append that lands in a list the reducer has already swapped out is applied by the next pass, or at the next reopen if its appender stalls through that pass too. With one pass at a time, it is never applied twice.
 - Native mode has no effect on any of them. Neither seam touches the WAL or the snapshot.
-- **Power loss (Round 4 F1):** every WAL append is fsync'd before `signal_attention` returns (about 1.2 ms per signal), and every file a save publishes is fsync'd before its rename; POSIX also fsyncs the directory after each rename. **Windows has no directory fsync:** a power loss shortly after a save can roll back that save's renames. Each file stays whole, but a signal appended after a rolled-back WAL rename is lost (`docs/api.md`, Durability guarantees).
+- **Power loss (Round 4 F1):** every WAL append is fsync'd before `signal_attention` returns (about 1.2 ms per signal), and every file a save publishes is fsync'd before its rename; POSIX also fsyncs the directory after each rename. **Windows has no directory fsync:** a power loss shortly after a save can roll back that save's renames. Each file stays whole, but a signal appended after a rolled-back WAL rename is lost (`docs/api.md`, Durability guarantees). **macOS:** `os.fsync` does not flush the drive's write cache, and `F_FULLFSYNC` (named by gate 2) is not called, so these guarantees hold only where fsync reaches stable storage; deferred to a later rc.
 
 **Behaviour changes.** Signatures are unchanged, and every raise below is an existing exception type.
 
@@ -277,7 +277,7 @@ PYTHONPATH=src python scripts/bench_query.py --n 10000 --spread
 | You see | Means | Do |
 |---|---|---|
 | ERROR `usd_target: Sdf registry sharing: layer <identifier> is already loaded in this process` | When the target opened, something else in this process (a LOP network, another stage or another `UsdTarget`) already held that store layer. The line names the shared layer and its dirty state. Moneta authors into it; nothing is refused. | Stop editing or reloading that layer from the LOP network while Moneta runs, and drop the network's reference to it before the next session. Detection runs once, when the target is built (in a seat, when the store opens), so a holder that loads a layer later is not detected. |
-| `UsdSaveError` raised from `run_sleep_pass` (v1 `moneta.Moneta`), or returned as `SleepPassResult.projection_error` with the ERROR line `moneta.v5 projection failed` (v5 compat `Moneta`) | A layer's `Save()` returned `False` or raised. Every other layer was still saved, and that batch's vector commit did not happen. The failed layer stays dirty, and the next flush retries it. v1 leaves every entity that pass staged in `STAGED_FOR_SYNC` (listed by `get_consolidation_manifest()`), and no later pass commits them again. v5 projects the failed batch, and every later one, again on the next pass, and re-authors their prims in place. | Read `.failures` (layer identifier to cause), or the v5 error string, and fix the file or its permissions. |
+| `UsdSaveError` raised from `run_sleep_pass` (v1 `moneta.Moneta`), or returned as `SleepPassResult.projection_error` with the ERROR line `moneta.v5 projection failed` (v5 compat `Moneta`) | A layer's `Save()` returned `False` or raised. Every other layer was still saved, and that batch's vector commit did not happen. The failed layer stays dirty, and the next flush retries it. v1 leaves every entity that pass staged in `STAGED_FOR_SYNC` (listed by `get_consolidation_manifest()`), and no later pass commits them again. v5 projects the failed batch, and every later one, again on the next pass, and re-authors their prims in place while routing selects the layer that holds them; a retry at a rotation-cap crossing or after a UTC day change lands in the next layer as a second, stronger copy, and the stale copy stays. | Read `.failures` (layer identifier to cause), or the v5 error string, and fix the file or its permissions. |
 | `ValueError: rotation_cap must be positive` | `rotation_cap < 1`. | Pass a positive cap (default 50,000). |
 
 **Reopen keeps the authored stack.** Existing layers open first and are created only when absent; an existing layer that cannot be opened raises instead of being replaced.
@@ -301,6 +301,8 @@ git log -p --format=fuller <last-public-tag>..HEAD | grep -niE "uspto|claim [0-9
 ```
 
 Every hit is scrubbed at the tip or accepted in writing, with a reason and a precedent; this card's own pattern line matches itself. A secret, a private email or a private path in a commit that was never public is scrubbed by rewriting that commit, never by a tip edit alone.
+
+**`v1.3.0-rc2` record (Route A).** Scan hit 1, local paths that `ea7ee52`, `a5853e7` and `986dae0` added to two docs and `b460e78` removed at the tip, was accepted in writing by the owner on 2026-10-18, so those commits are not rewritten. Reason: history only; no file at the tip has those lines. Precedent: the same prefix is public at `c33bbd96` (`docs/v7/ROUND4_BRIEF.md:367`). The owner's first name in the messages of `0062d4a` and `075eb64` was accepted the same way (precedent: published lines at `c33bbd96`).
 
 **4 · Commit by name.** Never `git add -A`; stray root files exist.
 

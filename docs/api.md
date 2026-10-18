@@ -445,8 +445,9 @@ keeps every WAL line whose signal the reducer has not recorded as
 applied, and the next reopen replays it once. B and D pass unmarked in
 every matrix row of `v1.3.0-rc2`, a prerelease candidate. The
 Persistence and Substrate cross-review (design gate 3) returned
-SOUND-WITH-NITS, and its fix is in (`711d7fb`). The Architect's sign-off
-of design revision 6 and the owner's acceptance (gate 6) are still owed.
+SOUND-WITH-NITS, and its fix is in (`711d7fb`). The Architect signed off
+design revision 6 on 2026-10-18, and the owner accepted the rc2 content
+(gate 6) the same day.
 
 **What can still lose attention:**
 
@@ -463,6 +464,11 @@ of design revision 6 and the owner's acceptance (gate 6) are still owed.
   rolled back is in the rolled-back file and is lost. Whether the
   append's own fsync forces that rename's journal record first is not
   verified.
+- **A power loss on macOS.** `os.fsync` does not flush the drive's write
+  cache on macOS, and Moneta does not call `F_FULLFSYNC` (gate 2 named
+  it; deferred to a later rc). The guarantees above hold only where fsync
+  reaches stable storage, so on macOS a power loss can lose a signal that
+  `signal_attention` acknowledged, or roll back a save.
 - **A reopen while a keyless snapshot is current.** After a degraded save
   (logged at ERROR as `durability.snapshot DEGRADED`), an rc1 save, or a
   rewrite of `snapshot.json` that drops `wal_applied_seqs`, every line is
@@ -521,7 +527,10 @@ unsupported.
   again. On the v5 compat handle, the pass returns the error as
   `SleepPassResult.projection_error` with an ERROR log line, and the next
   pass projects the failed batch, and every later one, again; a prim that
-  already exists is re-authored in place. A store layer that something else
+  already exists is re-authored in place while routing selects the layer
+  that holds it; a retry at a rotation-cap crossing or after a UTC day
+  change lands in the next layer as a second, stronger copy, and the
+  stale copy stays. A store layer that something else
   in the process already loaded (a Houdini LOP network shares Sdf's
   layer registry) is logged at ERROR as `Sdf registry sharing`, naming
   the layer, and
