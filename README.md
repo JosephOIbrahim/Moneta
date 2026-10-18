@@ -31,19 +31,21 @@ with moneta.Moneta(moneta.MonetaConfig.ephemeral()) as m:
 
 **No background threads. No daemons. No LLM calls inside.** Four operations, full stop.
 
-**What `v1.3.0-rc1` adds (prerelease, cut from branch `v7-native-seams`, not `main`):**
+**What `v1.3.0-rc2` adds (prerelease, cut from branch `release/v1.3.0-rc2`, not `main`):**
 
-- **Optional Rust native seams.** The v1 cosine scan and decay loop, plus v5's dot products and decay, run in Rust when the `moneta_native` wheel is installed. Results are bit-identical to the Python oracles. `MONETA_NATIVE=0` turns them off.
-- **A v5 preview beside v1.** `moneta.v5` is a reference implementation where the journal is the database. The v1 API (`moneta.Moneta`) is unchanged. Nothing has flipped on `main`.
-- **Tests at the `v1.3.0-rc1` tag:** 405 passing in four configurations (Python 3.14 and hython 3.11, each with `MONETA_NATIVE=0` and `=1`). Those runs could not show whether Rust actually ran.
-- **Tests on branch `harden/native-observability` at `e7325bb`, Python 3.14.2 only:**
-  - with the wheel: 779 passed and 2 xfailed;
+- **Attention survives a bare save and a restart.** rc1 lost undrained attention when a save ran before a sleep pass applied it (defects B and D), and an append racing the reducer could be dropped (path L). R1′ keys every WAL line by a sequence number and keeps every line the reducer has not applied. See [Attention durability](#attention-durability-b-d-and-l-fixed).
+- **The attention log is forced to disk.** Every WAL append is fsync'd before `signal_attention` returns (about 1.2 ms per signal).
+- **The USD mirror reopens instead of resetting.** Existing layers open first, and `flush()` reports a failed `Save()`.
+- **Native observability.** One native loader, per-handle selection, `Moneta.native_status`, `moneta.build_info()`, and a verdict line at the end of every pytest run.
+- **Tests at `v1.3.0-rc2`, Python 3.14.2 only:**
+  - with the wheel: 907 passed, no xfails;
   - verdict `NATIVE QUALIFIED` under `MONETA_NATIVE=1` and `=require`;
-  - verdict `PYTHON-ONLY PASS` under `=0` and without the wheel.
-  - The 2 xfails are unresolved defects B and D.
-  - The hython rows are planned. See the [test matrix](#status).
+  - verdict `PYTHON-ONLY PASS` under `=0`, and without the wheel (836 passed, 71 skipped).
+  - The hython rows are not run. See the [test matrix](#status).
 
-**What is NOT done:** v5 is gated on owner rulings with open conditions, and 5.0.0 is not released. The open items are listed in the [v1.3.0-rc1 verdict](#v130-rc1-verdict).
+**`v1.3.0-rc1` added** the optional Rust native seams (bit-identical to the Python oracles; `MONETA_NATIVE=0` turns them off) and `moneta.v5`, a reference implementation where the journal is the database. The v1 API (`moneta.Moneta`) is unchanged. Nothing has flipped on `main`.
+
+**What is NOT done:** the hython rows; one adoption condition of the USD repair; and v5, which is gated on owner rulings with open conditions (5.0.0 is not released). See the [v1.3.0-rc2 verdict](#v130-rc2-verdict); the v5 items are in the [v1.3.0-rc1 verdict](#v130-rc1-verdict).
 
 > The name invokes **Juno Moneta** — Roman goddess of warning and memory, whose temple housed the Roman mint because she also *reminded*. Memory as advisory, not only storage.
 
@@ -61,21 +63,22 @@ with moneta.Moneta(moneta.MonetaConfig.ephemeral()) as m:
 | **Free-threading guard** — `AttentionLog` PEP 703 sentinel | `v1.2.0-rc2` (commit `76da067`) | `AttentionLog.__init__` raises `RuntimeError` under `sys._is_gil_enabled() is False`. Lock-free swap-and-drain correctness depends on the GIL; guard converts silent failure into a loud one. |
 | **Cosine clamp** — query ranking fix | `v1.2.0-rc3` (commit `c4a6218`) | Cosine clamped to `[0, 1]` in ranking. A negative cosine times a positive utility no longer ranks a reinforced memory below a zero-score one. |
 | **Native seams + v5 preview** | **`v1.3.0-rc1`** (prerelease) | Optional Rust seams with exact Python oracles. v5 reference implementation (journal as the database) beside v1. Round 4 owner rulings recorded. v1 API unchanged. |
+| **Attention durability + native observability** | **`v1.3.0-rc2`** (prerelease) | WAL-first, seq-keyed attention survives a bare save and a restart (B, D and L fixed). WAL appends fsync'd. The USD mirror reopens existing layers first. One native loader, per-handle selection, build identity and a verdict line. v1 API unchanged. |
 
-**Current version:** `v1.3.0-rc1` (prerelease, from branch `v7-native-seams`). `main` is at `v1.2.0-rc3` plus one docs commit.
+**Current version:** `v1.3.0-rc2` (prerelease, from branch `release/v1.3.0-rc2`; `v1.3.0-rc1` came from `v7-native-seams`). `main` is at `v1.2.0-rc3` plus one docs commit.
 
-**Test matrix, branch `harden/native-observability`** (v1 and v5 suites together, 2026-10-16, commit `98a998f084eb`, `src_digest` `f5c721630ac3`, wheel `.pyd` sha256 `ec6d7f0c35c5…`). Full identity and the verdict lines are in [Native qualification results](#native-qualification-results-on-this-branch).
+**Test matrix, `v1.3.0-rc2`** (branch `release/v1.3.0-rc2`, v1 and v5 suites together, 2026-10-18, merge commit `3c01cf2`, `src_digest` `58600b5811c7`, wheel `.pyd` sha256 `ec6d7f0c35c5…`). The release commit changes no `*.py`, so its `src_digest` is the same. Full identity and the verdict lines are in [Native qualification results](#native-qualification-results-on-this-branch).
 
 | Interpreter | `MONETA_NATIVE` unset | `MONETA_NATIVE=0` | `MONETA_NATIVE=1` | `MONETA_NATIVE=require` |
 |---|---|---|---|---|
-| Python 3.14.2, wheel | not run | 779 passed, 2 xfailed · `PYTHON-ONLY PASS` | 779 passed, 2 xfailed · `NATIVE QUALIFIED` | 779 passed, 2 xfailed · `NATIVE QUALIFIED` |
-| Python 3.14.2, **no wheel** (absent) | 708 passed, 71 skipped, 2 xfailed · `PYTHON-ONLY PASS` | not run | not run | exit 4: refused, wheel not loaded |
-| Python 3.14.2, **broken wheel** | 708 passed, 71 skipped, 2 xfailed · `PYTHON-ONLY PASS` | not run | not run | exit 4: refused, wheel broken (probe at commit `3ca6447e9ac6`, same `src_digest` `f5c721630ac3`, not at `98a998f084eb`) |
+| Python 3.14.2, wheel | not run | 907 passed · `PYTHON-ONLY PASS` | 907 passed · `NATIVE QUALIFIED` | 907 passed · `NATIVE QUALIFIED` |
+| Python 3.14.2, **no wheel** (absent) | 836 passed, 71 skipped · `PYTHON-ONLY PASS` | not run | not run | exit 4: refused, wheel not loaded |
+| Python 3.14.2, **broken wheel** (`ImportError`) | 836 passed, 71 skipped · `PYTHON-ONLY PASS` | not run | not run | exit 4: refused, wheel broken |
 | hython 3.11 | PLANNED: awaiting owner coordination | PLANNED: awaiting owner coordination | PLANNED: awaiting owner coordination | PLANNED: awaiting owner coordination |
 
-**The 2 xfailed are known unresolved defects B and D** (undrained attention lost across snapshot and restart), not passes. See [Known unresolved defects](#known-unresolved-defects-b-and-d).
+**No xfails remain.** Defects B and D ran as 2 strict xfails through the hardening; they now pass unmarked. See [Attention durability](#attention-durability-b-d-and-l-fixed).
 
-*Before this hardening, `v1.3.0-rc1` recorded 405 passed in four configurations and 347 + 35 skipped without the wheel (2026-10-15). Those counts predate the qualification harness and the new tests, and could not tell whether Rust ran.*
+*Earlier counts: `v1.3.0-rc1` recorded 405 passed in four configurations and 347 + 35 skipped without the wheel (2026-10-15), before the qualification harness, so those runs could not tell whether Rust ran. The native-observability hardening recorded 779 passed + 2 xfailed with the wheel and 708 passed + 71 skipped + 2 xfailed without it (2026-10-16, commit `98a998f084eb`).*
 
 **v5 mutation check:** `scripts/v5/mutation_check.py` reports `missed: []` (every planted mutation is caught).
 
@@ -116,7 +119,7 @@ pytest
 - **Is `pxr` importable?** USD tests use `pytest.importorskip("pxr")`, so they skip under plain Python and run under hython (OpenUSD 0.25.5).
 - **Is the `moneta_native` wheel installed?** Native-only tests skip without it.
 
-With the wheel and `pxr` present on Python 3.14, the full suite is **779 passed, 2 xfailed** (the 2 xfails are known defects B and D). The last lines of the summary print a native verdict. See the [test matrix](#status) for each configuration.
+With the wheel and `pxr` present on Python 3.14, the full suite is **907 passed**, with no xfails. The last lines of the summary print a native verdict. See the [test matrix](#status) for each configuration.
 
 ### Stuck?
 
@@ -653,7 +656,7 @@ The same counts are also kept process-wide in `moneta._native`, which the test h
 | `src_digest` | sha256 over the sorted relative POSIX paths of `src/moneta/**/*.py` (no `__pycache__`), each hashed as `path + b"\0" + content` with CRLF normalized to LF. The same commit gives the same digest on any checkout. |
 | `python` | implementation and version |
 
-**Verify what a process runs by `commit` + `src_digest` + the `.pyd` sha256. Never by version:** the version reads `1.3.0rc1` on both rc1 and this branch, and a stale installed dist-info can report a version that is not what runs. For this branch's measured runs, `src_digest` is `f5c721630ac32b9ffcf4bb81b63ce6151040b134dec645cc16236061f0e26de9` and the 0.1.0 abi3 wheel's `.pyd` sha256 is `ec6d7f0c35c5b345f983f4aa80cfea086f3aca454e9cd74a58b6208227b02833`. Docs-only commits leave `src_digest` unchanged.
+**Verify what a process runs by `commit` + `src_digest` + the `.pyd` sha256. Never by version:** the version read `1.3.0rc1` on rc1 and on every commit up to `v1.3.0-rc2`, and a stale installed dist-info can report a version that is not what runs. For `v1.3.0-rc2`'s measured runs, `src_digest` is `58600b5811c719c9b6aee547509ae97287acededf65b6ab970c5ddc53e1420b0` and the 0.1.0 abi3 wheel's `.pyd` sha256 is `ec6d7f0c35c5b345f983f4aa80cfea086f3aca454e9cd74a58b6208227b02833`. Docs-only commits leave `src_digest` unchanged.
 
 **Errors exported from `moneta`:** `NativeConfigError(ValueError)`, `NativeUnavailableError(RuntimeError)`, `NativeSeamError(RuntimeError)`. Also exported: `build_info`, `BuildInfo`, `NativeStatus`, `SeamStatus`, `NativeWheel`. Nothing was removed.
 
@@ -774,29 +777,32 @@ The last block of the pytest summary is the native qualification report. Its hea
 
 ### Native qualification results on this branch
 
-All on branch `harden/native-observability`, Python 3.14.2 on Windows, `pxr` 0.26.5, run on 2026-10-16 at commit `98a998f084ebd5611d6d5daf673557d9ba017a89` (`src_digest` `f5c721630ac32b9ffcf4bb81b63ce6151040b134dec645cc16236061f0e26de9`, `build_info.mode` `git-src`). Wheel rows use the unzipped 0.1.0 abi3 wheel, `.pyd` sha256 `ec6d7f0c35c5b345f983f4aa80cfea086f3aca454e9cd74a58b6208227b02833`, `record_match=True`, `api=None` (legacy 0.1.0).
+All on branch `release/v1.3.0-rc2`, Python 3.14.2 on Windows, `pxr` 0.26.5, run on 2026-10-18 at the merge commit `3c01cf2979f2f33bcd1d323c7109314070157e70` (`src_digest` `58600b5811c719c9b6aee547509ae97287acededf65b6ab970c5ddc53e1420b0`, `build_info.mode` `git-src`). The release commit changes only docs and the version, so the same `src_digest` identifies `v1.3.0-rc2`. Wheel rows use the 0.1.0 abi3 wheel installed in the interpreter's site-packages, `.pyd` sha256 `ec6d7f0c35c5b345f983f4aa80cfea086f3aca454e9cd74a58b6208227b02833`, with `src` first on `PYTHONPATH`.
 
 | Run | Pytest | Native tests | Real Rust calls | Verdict |
 |---|---|---|---|---|
-| wheel, `MONETA_NATIVE=1` | 779 passed, 2 xfailed | 71/71 passed, 0 skipped; qualification 2/2 | scan 594, decay 512 | `NATIVE QUALIFIED` |
-| wheel, `MONETA_NATIVE=require` | 779 passed, 2 xfailed | 71/71 passed, 0 skipped; qualification 2/2 | scan 594, decay 512 | `NATIVE QUALIFIED` |
-| wheel, `MONETA_NATIVE=0` | 779 passed, 2 xfailed | 71/71 passed (explicit backends) | scan 235, decay 35 | `PYTHON-ONLY PASS (not native qualified)` |
-| no wheel (`ModuleNotFoundError`), env unset | 708 passed, 71 skipped, 2 xfailed | 0 run, 71 skipped visibly | 0, 0 | `PYTHON-ONLY PASS (not native qualified)` |
-| broken wheel (`ImportError: DLL load failed`), env unset | 708 passed, 71 skipped, 2 xfailed | 0 run, 71 skipped visibly | 0, 0 | `PYTHON-ONLY PASS (not native qualified)` |
+| wheel, `MONETA_NATIVE=1` | 907 passed | 71/71 passed, 0 skipped; qualification 2/2 | scan 594, decay 795 | `NATIVE QUALIFIED` |
+| wheel, `MONETA_NATIVE=require` | 907 passed | 71/71 passed, 0 skipped; qualification 2/2 | scan 594, decay 795 | `NATIVE QUALIFIED` |
+| wheel, `MONETA_NATIVE=0` | 907 passed | 71/71 passed (explicit backends) | scan 235, decay 35 | `PYTHON-ONLY PASS (not native qualified)` |
+| no wheel (`ModuleNotFoundError`), env unset | 836 passed, 71 skipped | 0 run, 71 skipped visibly | 0, 0 | `PYTHON-ONLY PASS (not native qualified)` |
+| broken wheel (`ImportError`), env unset | 836 passed, 71 skipped | 0 run, 71 skipped visibly | 0, 0 | `PYTHON-ONLY PASS (not native qualified)` |
 | no wheel, `MONETA_NATIVE=require` | exit 4, `MONETA_NATIVE='require' requires the native wheel` | — | — | (refused) |
+| broken wheel, `MONETA_NATIVE=require` | exit 4; same prefix, the cause reads `broken: ImportError` | — | — | (refused) |
 | hython 3.11, every row above | **PLANNED: awaiting owner coordination** | — | — | not run |
 
 The absent and broken rows were produced with test shims on `PYTHONPATH` that make `import moneta_native` raise those errors. The 0 unexpected-fallback count holds in every row.
 
-### Known unresolved defects: B and D
+### Attention durability: B, D and L fixed
 
-**Undrained attention is currently lost across a bare snapshot and restart. This is not fixed.**
+**Undrained attention now survives a bare snapshot and a restart.** Fixed in `v1.3.0-rc2` by R1′ (`docs/design/R1-attention-durability.md`, revision 6).
 
-- **Path B:** `signal_attention`, then a bare save with `m.durability.snapshot_ecs(m.ecs)` (the shape of SYNAPSE's save), then a restart. The signal is gone: the snapshot holds only ECS rows, and the save deletes the WAL.
-- **Path D:** a signal that arrives after a sleep pass has drained the attention log, but before that pass writes its snapshot, is lost the same way.
-- Both are pinned as `xfail(strict=True)` in `tests/integration/test_attention_snapshot_regression.py`. Every run prints a "Known unresolved defects" block listing them. Tests A, A2, C and E in the same file pass.
+- **Path B:** `signal_attention`, then a bare save with `m.durability.snapshot_ecs(m.ecs)` (the shape of SYNAPSE's save), then a restart. rc1's save deleted the WAL. A save now keeps every WAL line whose signal the reducer has not recorded as applied, and the restart replays it once.
+- **Path D:** a signal that arrives after a sleep pass has drained the attention log, but before that pass writes its snapshot, is kept the same way.
+- **Path L:** an append that lands in a list the reducer has already swapped out is applied by the next pass, or at the next reopen if its appender stalls through that pass too. With one pass at a time it is never applied twice.
+- Every WAL append is fsync'd before `signal_attention` returns. Windows has no directory fsync, so a power loss shortly after a save can roll back that save's renames (`docs/api.md`, Durability guarantees).
+- B and D pass unmarked in `tests/integration/test_attention_snapshot_regression.py`, beside the design's §4.2 suite. `KNOWN_DEFECTS` in `tests/conftest.py` is empty.
 - They are independent of the native seams: neither seam touches the WAL or the snapshot.
-- The repair design (R1′) is in `docs/design/R1-attention-durability.md`. It is not implemented on this branch.
+- **Drain, then verify, before a downgrade to rc1,** or the pending lines are lost. The behaviour changes, the rollback table and the ERROR lines are on the [operator's card](docs/OPERATOR_CARD_native.md).
 
 **4. Measure:**
 
@@ -1075,6 +1081,33 @@ Surgery record: [SURGERY_complete_codeless_schema.md](SURGERY_complete_codeless_
 
 ---
 
+## v1.3.0-rc2 verdict
+
+**PRERELEASE — attention durability fixed, the attention log forced to disk, the USD mirror reopens; v1 API unchanged; v5 preview still gated.**
+
+This release candidate is cut from branch `release/v1.3.0-rc2`, not `main`. It carries the native observability hardening, R1′ (defects B, D and L), Round 4 F1 (fsync) and the reopen-first USD repair. Release notes: [`RELEASE_NOTES.md`](RELEASE_NOTES.md).
+
+| Surface | Before (`v1.3.0-rc1`) | After (`v1.3.0-rc2`) |
+|---|---|---|
+| Attention across a bare save and a restart (B, D) | lost | replayed once |
+| Late landing (L) | lost | applied by the next pass, or at the next reopen |
+| WAL append | buffered write, no fsync | one write plus fsync before return (~1.2 ms) |
+| USD reopen in a fresh process | sublayer stack reset | existing layers opened first; stack, offsets and counts kept |
+| Did Rust run? | not shown | a verdict line ends every pytest run |
+
+**Open — not done:**
+
+| Item | State |
+|---|---|
+| hython 3.11 rows | Not run in any configuration. |
+| USD repair, gate 2 condition 3 | A hython row on the target Houdini build (H22.0.400) before any Houdini seat moves. Not run. |
+| USD repair review | Its own review unit (PR 2 of 2, merged in `3c01cf2`). The USD Engineer review returned SOUND-WITH-NITS; its fix-severity finding is fixed in `2007612`. Open from it: a second registry-sharing detection point for layers loaded later, `close()` releasing the root layer, a name-scoped sharing filter, drive-letter case in the stack dedup, a test for the rotation scan, and v5 projection freshness over a half-cleared store. |
+| R1′ reviews | The Persistence and Substrate cross-review of PR 1 (design gate 3) returned SOUND-WITH-NITS; its fix-severity finding (`711d7fb`) and its nits are fixed. The Architect conformance review returned SOUND-WITH-NITS, and its nits are fixed. Owed before publication: the Architect's sign-off of design revision 6 and the owner's acceptance (gate 6). |
+| Windows directory fsync | Unavailable. A power loss shortly after a save can roll back its renames. |
+| v5 open items | Unchanged; see the [v1.3.0-rc1 verdict](#v130-rc1-verdict). |
+
+---
+
 ## v1.3.0-rc1 verdict
 
 **PRERELEASE — v1 unchanged, native seams on by default behind `MONETA_NATIVE`, v5 preview gated.**
@@ -1105,7 +1138,7 @@ Rulings: [docs/v7/RULINGS.md](docs/v7/RULINGS.md) | Blueprint: [docs/v7/BLUEPRIN
 
 ## Lineage
 
-Round 1 (scoping brief) → Round 2 (Gemini Deep Think architectural spec) → Round 2.5 (Claude prior-art review) → Round 3 (Gemini Deep Think validation) → **Phase 1** (5 passes, 94 tests, `v0.1.0`) → **Phase 2** (benchmark, `v0.2.0`) → **Phase 3** (7 passes, narrow lock, 775M-assertion safety, `v1.0.0`) → **Singleton surgery** (Scout / Forge / Crucible / Steward, `v1.1.0`) → **Codeless schema migration** (Auditor / Crucible / Schema Author / Forge, `v1.2.0-rc1`) → **Free-threading guard** (PEP 703 sentinel on `AttentionLog`, commit `76da067`, `v1.2.0-rc2`) → **Documentarian followup** (api.md handle rewrite + CLAUDE.md hard-rule update, commit `6cb1fd1`) → **Cosine clamp** (`c4a6218`, `v1.2.0-rc3`) → **Native seams** (Rust behind exact Python oracles, seam rule O27) → **v5 merged beside v1** (journal as the database) → **Round 4 rulings** (E1–E4 + half-life, `docs/v7/RULINGS.md`) → **`v1.3.0-rc1`** (prerelease from `v7-native-seams`).
+Round 1 (scoping brief) → Round 2 (Gemini Deep Think architectural spec) → Round 2.5 (Claude prior-art review) → Round 3 (Gemini Deep Think validation) → **Phase 1** (5 passes, 94 tests, `v0.1.0`) → **Phase 2** (benchmark, `v0.2.0`) → **Phase 3** (7 passes, narrow lock, 775M-assertion safety, `v1.0.0`) → **Singleton surgery** (Scout / Forge / Crucible / Steward, `v1.1.0`) → **Codeless schema migration** (Auditor / Crucible / Schema Author / Forge, `v1.2.0-rc1`) → **Free-threading guard** (PEP 703 sentinel on `AttentionLog`, commit `76da067`, `v1.2.0-rc2`) → **Documentarian followup** (api.md handle rewrite + CLAUDE.md hard-rule update, commit `6cb1fd1`) → **Cosine clamp** (`c4a6218`, `v1.2.0-rc3`) → **Native seams** (Rust behind exact Python oracles, seam rule O27) → **v5 merged beside v1** (journal as the database) → **Round 4 rulings** (E1–E4 + half-life, `docs/v7/RULINGS.md`) → **`v1.3.0-rc1`** (prerelease from `v7-native-seams`) → **Native observability hardening** (one loader, per-handle selection, qualification harness, Gate B; base `a4f2b0b`) → **R1′ attention durability + F1 fsync + USD reopen-first** → **`v1.3.0-rc2`** (prerelease from `release/v1.3.0-rc2`).
 
 ---
 

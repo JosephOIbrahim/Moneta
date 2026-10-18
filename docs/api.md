@@ -319,8 +319,8 @@ Frozen, stdlib only, no subprocess, cached per process. Fields: `path`,
 one digest on any checkout.
 
 **Verify a running process by `commit` + `src_digest` + the `.pyd`
-sha256, never by version.** The version is `1.3.0rc1` on both rc1 and the
-`harden/native-observability` branch. Measured runs on that branch and
+sha256, never by version.** The version read `1.3.0rc1` on rc1 and on every commit before the
+`v1.3.0-rc2` release commit. Measured runs and
 how to read the suite's verdict line are in the README, "Optional native
 seams (Rust)".
 
@@ -443,9 +443,10 @@ entry line still replays into the attention log.
 Undrained attention now survives a save (defects B and D): a keyed save
 keeps every WAL line whose signal the reducer has not recorded as
 applied, and the next reopen replays it once. B and D pass unmarked in
-all three matrix rows (native on, native off, wheel absent) at `b122a3a`
-on branch `r1prime/attention-durability`. That change is not yet
-accepted (design §6 gate 6) or released.
+every matrix row of `v1.3.0-rc2`, a prerelease candidate. The
+Persistence and Substrate cross-review (design gate 3) returned
+SOUND-WITH-NITS, and its fix is in (`711d7fb`). The Architect's sign-off
+of design revision 6 and the owner's acceptance (gate 6) are still owed.
 
 **What can still lose attention:**
 

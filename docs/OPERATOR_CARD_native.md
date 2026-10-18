@@ -79,16 +79,16 @@ The handle also logs one INFO line at construction with both seams, `wheel.sha25
 
 ### Verify what SYNAPSE loads
 
-**Compare three values, never the version.** The version reads `1.3.0rc1` on both rc1 and this branch.
+**Compare three values, never the version.** The version read `1.3.0rc1` on rc1 and on every commit before the `v1.3.0-rc2` release commit.
 
 ```
 python -c "import moneta; b = moneta.build_info(); print(b.commit, b.src_digest)"
 python -c "import moneta, moneta._native as n; w = n.wheel_info(); print(w.state, w.sha256, w.record_match)"
 ```
 
-| Check | Expected (`r1prime/attention-durability`, computed 2026-10-18) |
+| Check | Expected (`v1.3.0-rc2`, computed 2026-10-18) |
 |---|---|
-| `src_digest` | `11df24bbcf3796553a8863b3064ef656e07e635690d4190c6e930c5344abf99c` (before R1′, on `harden/native-observability`: `f5c721630ac3…`) |
+| `src_digest` | `58600b5811c719c9b6aee547509ae97287acededf65b6ab970c5ddc53e1420b0` (`v1.3.0-rc2`, from the merge commit `3c01cf2`; at `14f060f`, before F1 and the USD repair: `11df24bbcf37…`; at the R1′ base `a4f2b0b`: `ac1742722a8d…`; before Gate B (`bec544f`): `f5c721630ac3…`) |
 | `.pyd` sha256 | `ec6d7f0c35c5b345f983f4aa80cfea086f3aca454e9cd74a58b6208227b02833` (0.1.0 abi3, `record_match=True`) |
 | `commit` | the commit you checked out. Docs-only commits leave `src_digest` unchanged. |
 
@@ -114,16 +114,16 @@ MONETA_NATIVE=0       PYTHONPATH="src;<unzipped-wheel>" python -m pytest tests -
 | `PYTHON-ONLY FAIL (not native qualified): …` | Red run without native. |
 | exit code 4, `MONETA_NATIVE='require' requires the native wheel` | Require asked, wheel not loaded. |
 
-**Measured on `r1prime/attention-durability`** (Python 3.14.2, commit `b122a3a`, the R1′ tests; wheel `.pyd` sha256 `ec6d7f0c35c5…`). Rows marked *before R1′* were not re-run on this branch. They are the last result on `harden/native-observability` (commit `98a998f084eb`, `src_digest` `f5c721630ac3`).
+**Measured for `v1.3.0-rc2`** (Python 3.14.2, `pxr` 0.26.5, 2026-10-18, merge commit `3c01cf2`, `src_digest` `58600b5811c7…`, which the release commit keeps; wheel `.pyd` sha256 `ec6d7f0c35c5…` installed in site-packages, `src` first on `PYTHONPATH`). The v5 mutation check below ended `missed: []` on the same tree.
 
 | Run | Result | Verdict |
 |---|---|---|
-| wheel, `=1` | 872 passed | `NATIVE QUALIFIED` (71/71 native tests, qualification 2/2) |
-| wheel, `=require` | *before R1′:* 779 passed, 2 xfailed | `NATIVE QUALIFIED` |
-| wheel, `=0` | 872 passed | `PYTHON-ONLY PASS` |
-| no wheel (absent) | 801 passed, 71 skipped | `PYTHON-ONLY PASS` |
-| broken wheel | *before R1′:* 708 passed, 71 skipped, 2 xfailed | `PYTHON-ONLY PASS` |
-| no wheel, `=require` | *before R1′:* exit 4 | (refused) |
+| wheel, `=1` | 907 passed | `NATIVE QUALIFIED` (71/71 native tests, qualification 2/2) |
+| wheel, `=require` | 907 passed | `NATIVE QUALIFIED` (71/71 native tests, qualification 2/2) |
+| wheel, `=0` | 907 passed | `PYTHON-ONLY PASS` |
+| no wheel (absent) | 836 passed, 71 skipped | `PYTHON-ONLY PASS` |
+| broken wheel (`ImportError` shim) | 836 passed, 71 skipped | `PYTHON-ONLY PASS` |
+| no wheel or broken wheel, `=require` | exit 4 | (refused) |
 | hython 3.11, all rows | **PLANNED: awaiting owner coordination** | not run |
 
 **No xfails remain.** B and D (see **Attention durability** below) now pass unmarked. The summary no longer prints a "Known unresolved defects" block, because `KNOWN_DEFECTS` in `tests/conftest.py` is empty.
@@ -139,7 +139,7 @@ cd <scratch> && PYTHONPATH=src python scripts/v5/mutation_check.py   # last line
 
 ### Attention durability (R1′)
 
-**Status.** Defects B and D pass in all three matrix rows at `b122a3a` (wheel `=1`, wheel `=0`, no wheel). Not yet accepted (design §6 gate 6) or released. Design: `docs/design/R1-attention-durability.md`.
+**Status.** In `v1.3.0-rc2`, a prerelease candidate not yet published: B, D and L pass in every matrix row. The Architect conformance review and the Persistence and Substrate cross-review (design gate 3) each returned SOUND-WITH-NITS; the cross-review's fix-severity finding is fixed in `711d7fb`, and both reviews' nits are addressed. Owed before publication: the Architect's sign-off of design revision 6 and the owner's acceptance (gate 6). Design: `docs/design/R1-attention-durability.md`, revision 6.
 
 - **B:** `signal_attention`, then `m.durability.snapshot_ecs(m.ecs)` (SYNAPSE's save), then restart. The signal now replays once: a save keeps every WAL line whose signal the reducer has not recorded as applied.
 - **D:** a signal that lands between a sleep pass's drain and its save is kept the same way.
@@ -199,7 +199,7 @@ No marker can make rc1 refuse an R1′ store. rc1 only warns on a version mismat
 | `durability.snapshot step 0 (WAL normalization) failed: …` | The first save after a reopen could not rewrite the WAL. Causes: a foreign handle on the WAL (on Windows, `os.replace` raises `PermissionError`), or a WAL that no longer starts with the bytes found at hydrate (the line says so): truncated or rewritten outside the handle, or already normalized by an earlier step 0 of this handle that an interrupt such as `KeyboardInterrupt` cut short. Those repeat at every save until the handle is reopened. | Close the foreign handle (antivirus, indexer, a tail, a v5 migration read). For "no longer starts with": run `m.run_sleep_pass()` (its rows then hold every drained line), then close and reopen. |
 | `durability.snapshot consistent read timed out after …s (N reducer(s) in flight, epoch moved=…)` | Sleep passes ran back to back with no quiet gap, or a reducer token is stranded. | Leave a gap between passes. If N stays at 1 or more with no pass running, close and reopen the handle. |
 | `durability.snapshot WAL compaction failed: …` (the K path) | The keyed snapshot is written, so deposits are durable, but the WAL keeps its applied lines, and `snapshot_ecs` (or `run_sleep_pass`) raises. The next save retries. R1′ readers stay correct. An rc1 reader of this store could double-apply if the clock precondition is broken, for as long as this repeats. A background save logs it as `background snapshot failed`. | Find the foreign handle on the WAL. Do not downgrade while this repeats. |
-| `torn attention apply: …` | `apply_attention` raised inside a pass after the drained seqs were recorded. Their effects may be missing, and the next save drops their lines: a stated loss, never a double. The pass raises. | Read the exception that follows it. |
+| `torn attention apply: …` | A pass stopped after its drain (an exception in `apply_attention`, or an interrupt) with drained seqs recorded as applied; the line counts them. Their effects may be missing, and the next save drops their lines: a stated loss, never a double. Unrecorded seqs keep their lines. The pass raises. | Read the exception that follows it. |
 | `concurrent attention reducer at entry (N in flight)` or `concurrent attention reducer detected` | Two sleep passes overlapped, which is unsupported. Nothing raised. No keyed snapshot is written from a torn read. | Run one pass at a time. If the entry line repeats with no other pass running, a token is stranded and every save will degrade: close and reopen. |
 | WARNING `durability.hydrate snapshot has no usable wal_applied_seqs but N WAL line(s) carry a seq` | The current snapshot is keyless over R1′ lines: an rc1 save, a degraded save, a rewrite of `snapshot.json` that dropped the key, or a v5 export. Lines are judged by timestamp. | If a v5 facade wrote it, stop, and cut over both interpreters together. |
 | `MonetaResourceLockedError` at construction | Another live handle in this process holds that URI, or that snapshot, WAL or tmp path. | Close it first. Two processes on one store are unsupported. |
@@ -294,12 +294,13 @@ PYTHONPATH=src python scripts/bench_query.py --n 10000 --spread
 
 **2 · Bump the version** in `pyproject.toml` so it matches the tag.
 
-**3 · Public-safety scan.** The repo is public. Nothing should print:
+**3 · Public-safety scan.** The repo is public. Scan every commit since the last public tag, patches and messages both, then the tag text and the notes file:
 
 ```bash
-git diff main..HEAD | grep -niE "uspto|claim [0-9]"
-grep -niE "users[/\]|houdini 21" README.md RELEASE_NOTES.md
+git log -p --format=fuller <last-public-tag>..HEAD | grep -niE "uspto|claim [0-9]|users[/\]|appdata|onedrive|houdini 21"
 ```
+
+Every hit is scrubbed at the tip or accepted in writing, with a reason and a precedent; this card's own pattern line matches itself. A secret, a private email or a private path in a commit that was never public is scrubbed by rewriting that commit, never by a tip edit alone.
 
 **4 · Commit by name.** Never `git add -A`; stray root files exist.
 
