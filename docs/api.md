@@ -320,7 +320,8 @@ one digest on any checkout.
 
 **Verify a running process by `commit` + `src_digest` + the `.pyd`
 sha256, never by version.** The version read `1.3.0rc1` on rc1 and on every commit before the
-`v1.3.0-rc2` release commit. Measured runs and
+`v1.3.0-rc2` release commit, `1.3.0rc2` on rc2, and `1.3.0` from the
+`v1.3.0` release commit on (the same source as rc2). Measured runs and
 how to read the suite's verdict line are in the README, "Optional native
 seams (Rust)".
 
@@ -443,7 +444,8 @@ entry line still replays into the attention log.
 Undrained attention now survives a save (defects B and D): a keyed save
 keeps every WAL line whose signal the reducer has not recorded as
 applied, and the next reopen replays it once. B and D pass unmarked in
-every matrix row of `v1.3.0-rc2`, a prerelease candidate. The
+every matrix row of `v1.3.0-rc2` and of the stable `v1.3.0` (the same
+source, re-run at its release commit on 2026-10-19). The
 Persistence and Substrate cross-review (design gate 3) returned
 SOUND-WITH-NITS, and its fix is in (`711d7fb`). The Architect signed off
 design revision 6 on 2026-10-18, and the owner accepted the rc2 content

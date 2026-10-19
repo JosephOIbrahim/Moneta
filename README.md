@@ -1,10 +1,29 @@
 <p align="center">
-  <img src="docs/assets/moneta-logo.jpg" alt="Moneta — Memory as Advisory: memory substrate for LLM agents built on OpenUSD's composition engine. Patent Pending." width="800"/>
+  <img src="docs/assets/moneta-logo.jpg" alt="Moneta: memory as advisory for LLM agents. Patent pending." width="800"/>
 </p>
 
 # Moneta
 
-**Long-term memory for LLM agents — forgets the noise, keeps what matters.** Built on OpenUSD's composition engine.
+**Long-term memory for LLM agents. Keep useful memories. Let unused ones fade.**
+
+Moneta is a Python library. Working memory lives in RAM, retrieval is weighted by utility, and durable storage and OpenUSD authoring are optional. Your app supplies the embeddings. Moneta makes no LLM calls.
+
+> **Stable release: `v1.3.0`** (2026-10-19), from branch `release/v1.3.0`.
+> Its Python and Rust source is identical to the `v1.3.0-rc2` candidate. Only the version and the docs changed.
+> **`main` still carries the older v1.2-era code.** Check out the tag, not `main`.
+
+---
+
+## Start here
+
+| I want to… | Go to |
+|---|---|
+| **Get the release** | [v1.3.0 on GitHub](https://github.com/JosephOIbrahim/Moneta/releases/tag/v1.3.0) · `git checkout v1.3.0` |
+| **Run it in about 60 seconds** | [Quick start](#quick-start--about-60-seconds-three-steps) |
+| **See what changed** | [What v1.3.0 ships](#what-v130-ships) · [RELEASE_NOTES.md](RELEASE_NOTES.md) |
+| **Know what it does not promise** | [Know the limits](#know-the-limits) |
+| **Use it from Houdini** | [Before using Houdini](#before-using-houdini). Read this before you move a seat. |
+| **Check the test evidence** | [Test evidence](#test-evidence-not-a-blanket-guarantee) |
 
 ---
 
@@ -26,26 +45,84 @@ with moneta.Moneta(moneta.MonetaConfig.ephemeral()) as m:
     eid = m.deposit("the user prefers concise answers", embedding=[...])
     results = m.query(embedding=[...], limit=5)
     m.signal_attention({eid: 0.3})       # this memory was useful
-    m.run_sleep_pass()                   # consolidate survivors
+    m.run_sleep_pass()                   # your harness consolidates
 ```
 
-**No background threads. No daemons. No LLM calls inside.** Four operations, full stop.
+**Four agent operations, full stop.** `run_sleep_pass()` is a harness call, not a fifth operation. **No LLM calls inside. No daemon starts by itself:** a durable handle saves after each successful sleep pass, and the optional background saver runs only if you start it.
 
-**What `v1.3.0-rc2` adds (prerelease, cut from branch `release/v1.3.0-rc2`, not `main`):**
+---
 
-- **Attention survives a bare save and a restart.** rc1 lost undrained attention when a save ran before a sleep pass applied it (defects B and D), and an append racing the reducer could be dropped (path L). R1′ keys every WAL line by a sequence number and keeps every line the reducer has not applied. See [Attention durability](#attention-durability-b-d-and-l-fixed).
-- **The attention log is forced to disk.** Every WAL append is fsync'd before `signal_attention` returns (about 1.2 ms per signal).
-- **The USD mirror reopens instead of resetting.** Existing layers open first, and `flush()` reports a failed `Save()`.
-- **Native observability.** One native loader, per-handle selection, `Moneta.native_status`, `moneta.build_info()`, and a verdict line at the end of every pytest run.
-- **Tests at `v1.3.0-rc2`, Python 3.14.2 only:**
-  - with the wheel: 907 passed, no xfails;
-  - verdict `NATIVE QUALIFIED` under `MONETA_NATIVE=1` and `=require`;
-  - verdict `PYTHON-ONLY PASS` under `=0`, and without the wheel (836 passed, 71 skipped).
-  - The hython rows are not run. See the [test matrix](#status).
+## What v1.3.0 ships
 
-**`v1.3.0-rc1` added** the optional Rust native seams (bit-identical to the Python oracles; `MONETA_NATIVE=0` turns them off) and `moneta.v5`, a reference implementation where the journal is the database. The v1 API (`moneta.Moneta`) is unchanged. Nothing has flipped on `main`.
+Everything since `v1.2.0-rc3`, the last release on the older line. **The v1 four-operation API and its signatures are unchanged.**
 
-**What is NOT done:** the hython rows; one adoption condition of the USD repair; `F_FULLFSYNC` on macOS, so the fsync guarantees are not established there; and v5, which is gated on owner rulings with open conditions (5.0.0 is not released). See the [v1.3.0-rc2 verdict](#v130-rc2-verdict); the v5 items are in the [v1.3.0-rc1 verdict](#v130-rc1-verdict).
+**1 · Attention survives a save and a restart.**
+- Every attention log (WAL) line carries a sequence number.
+- A save keeps every line the sleep pass has not applied yet. A restart replays it once.
+- This fixes three ways rc1 lost attention (defects B, D and L). [Details](#attention-durability-b-d-and-l-fixed).
+
+**2 · The attention log is forced to disk.**
+- `signal_attention` writes and fsyncs the WAL before it returns, about 1.2 ms per call on the test workstation.
+
+**3 · The USD mirror reopens instead of resetting.**
+- Existing layers open first. Sublayer order, offsets and counts survive.
+- `flush()` checks every `Save()`. A failed save raises `UsdSaveError`, and that batch's vector commit does not happen.
+
+**4 · You can see whether Rust actually ran.**
+- Optional Rust seams for scan and decay, bit-identical to the Python code. Off with `MONETA_NATIVE=0`.
+- `Moneta.native_status`, `moneta.build_info()`, and a verdict line at the end of every pytest run.
+
+**5 · `moneta.v5`, a gated preview.**
+- A reference implementation where the journal is the database. **Not a production API yet.** 5.0.0 is not released.
+
+---
+
+## Test evidence, not a blanket guarantee
+
+Re-run on **2026-10-19 at the `v1.3.0` release commit**. Windows, **CPython 3.14.2**, `pxr` 0.26.5, v1 and v5 suites together.
+
+| Configuration | Result |
+|---|---|
+| Wheel installed, `MONETA_NATIVE=1` | **907 passed** · `NATIVE QUALIFIED` |
+| Wheel installed, `MONETA_NATIVE=require` | **907 passed** · `NATIVE QUALIFIED` |
+| Wheel installed, `MONETA_NATIVE=0` | **907 passed** · Python only, not native qualified |
+| No wheel, or a broken wheel | **836 passed + 71 visible skips** · Python only |
+| No wheel or broken wheel, `require` | **Refused, exit 4.** Not a passing run. |
+| v5 mutation check | `missed: []` |
+| **hython 3.11 (Houdini), any row** | **Not run.** This release is not Houdini-qualified. |
+
+**Verify what you run by `commit` + `src_digest` + the wheel's `.pyd` sha256, never by version.** For `v1.3.0`: `src_digest` `58600b5811c7…` and `.pyd` sha256 `ec6d7f0c35c5…` (full values in [Native qualification results](#native-qualification-results-on-this-branch)). Full matrix: [Status](#status).
+
+**No new installer or wheel was built for this release.** The GitHub release carries GitHub's source archives only. The optional `moneta_native` wheel stays at 0.1.0; build it from `rust/moneta_native` (see [native seams](#optional-native-seams-rust)).
+
+---
+
+## Before using Houdini
+
+**Do not move a Houdini seat to v1.3.0 until gate 2 condition C3 is done:**
+
+1. Run the hython row on **Houdini H22.0.400**.
+2. Include a **LOP network that sublayers `cortex_root.usda`**.
+3. Record the result against this release's exact source and runtime.
+
+C1 (checked USD saves) and C2 (registry-sharing diagnostics and the operator rule) are met. **C3 is still pending.** Earlier Houdini integration evidence does not qualify this code.
+
+LOP networks must **not edit or reload `.moneta/usd` layers during a live session**. Shared layers are detected when the target is built and logged at ERROR, not refused. A layer loaded later is not detected. [Operator rules](docs/OPERATOR_CARD_native.md).
+
+---
+
+## Know the limits
+
+- **Windows power loss.** Windows has no directory fsync. A save's renames can roll back, and a signal appended after a rolled-back WAL rename can be lost.
+- **macOS power loss.** `os.fsync` does not flush the drive's write cache, and Moneta does not call `F_FULLFSYNC`. A signal that `signal_attention` acknowledged, or a save, can be lost.
+- **Downgrading to rc1.** Quiesce signals, run `m.run_sleep_pass()`, `m.close()`, then check that the WAL is absent or empty. Otherwise pending attention is lost. R1′ → v5 facade → R1′ is unsupported.
+- **A failed USD save on the v1 handle** leaves that pass's staged entities `STAGED_FOR_SYNC`. Later v1 passes do not commit them again. Check the manifest.
+- **One process per store, one sleep pass at a time.** The store-path check is in-process only. Free-threaded Python is unsupported.
+- **Failure windows.** An interrupt within a few bytecodes of a WAL write can apply a signal whose call raised. A torn apply is logged and can lose an effect, never silently double it. Keyed replay is not an unconditional exactly-once guarantee.
+- **The 30-second loss bound needs a save at least every 30 s.** Closing a handle is not a substitute for a successful save.
+- **v5 stays a gated preview** with open conditions (see the [v1.3.0-rc1 verdict](#v130-rc1-verdict)).
+
+[Every limit, with the rollback table](RELEASE_NOTES.md#honest-limits).
 
 > The name invokes **Juno Moneta** — Roman goddess of warning and memory, whose temple housed the Roman mint because she also *reminded*. Memory as advisory, not only storage.
 
@@ -64,10 +141,11 @@ with moneta.Moneta(moneta.MonetaConfig.ephemeral()) as m:
 | **Cosine clamp** — query ranking fix | `v1.2.0-rc3` (commit `c4a6218`) | Cosine clamped to `[0, 1]` in ranking. A negative cosine times a positive utility no longer ranks a reinforced memory below a zero-score one. |
 | **Native seams + v5 preview** | **`v1.3.0-rc1`** (prerelease) | Optional Rust seams with exact Python oracles. v5 reference implementation (journal as the database) beside v1. Round 4 owner rulings recorded. v1 API unchanged. |
 | **Attention durability + native observability** | **`v1.3.0-rc2`** (prerelease) | WAL-first, seq-keyed attention survives a bare save and a restart (B, D and L fixed). WAL appends fsync'd. The USD mirror reopens existing layers first. One native loader, per-handle selection, build identity and a verdict line. v1 API unchanged. |
+| **Stable release** | **`v1.3.0`** | `v1.3.0-rc2` promoted unchanged: same source, same `src_digest`, matrix re-run at the release commit. Version and docs only. Not Houdini-qualified (hython rows not run). |
 
-**Current version:** `v1.3.0-rc2` (prerelease, from branch `release/v1.3.0-rc2`; `v1.3.0-rc1` came from `v7-native-seams`). `main` is at `v1.2.0-rc3` plus one docs commit.
+**Current version:** `v1.3.0`, stable, from branch `release/v1.3.0` (cut from the `v1.3.0-rc2` tag; `v1.3.0-rc1` came from `v7-native-seams`). `main` is still the older v1.2-era line (`v1.2.0-rc3` plus docs commits) and does not contain this code.
 
-**Test matrix, `v1.3.0-rc2`** (branch `release/v1.3.0-rc2`, v1 and v5 suites together, 2026-10-18, merge commit `3c01cf2`, `src_digest` `58600b5811c7`, wheel `.pyd` sha256 `ec6d7f0c35c5…`). The two release commits (`292105f` and the recut that records the reviews) change no `*.py`, so the tagged commit's `src_digest` is the same. Full identity and the verdict lines are in [Native qualification results](#native-qualification-results-on-this-branch).
+**Test matrix, `v1.3.0`** (v1 and v5 suites together, `src_digest` `58600b5811c7`, wheel `.pyd` sha256 `ec6d7f0c35c5…`). First recorded for `v1.3.0-rc2` on 2026-10-18 at merge commit `3c01cf2`; **re-run on 2026-10-19 at the `v1.3.0` release commit** with the same counts and verdicts in every row below. No release commit since `3c01cf2` changes a `*.py` or `*.rs` file, so the `src_digest` is the same. Full identity and the verdict lines are in [Native qualification results](#native-qualification-results-on-this-branch).
 
 | Interpreter | `MONETA_NATIVE` unset | `MONETA_NATIVE=0` | `MONETA_NATIVE=1` | `MONETA_NATIVE=require` |
 |---|---|---|---|---|
@@ -95,6 +173,7 @@ You'll have it cloned, smoke-tested, and (optionally) green on the test suite by
 ```bash
 git clone https://github.com/JosephOIbrahim/Moneta.git
 cd Moneta
+git checkout v1.3.0        # the stable release; main is the older line
 pip install -e .[dev]
 ```
 
@@ -205,7 +284,8 @@ versions, ownership rules, recovery checks and artist-control boundaries.
 graph TB
     consumer["<b>Consumer</b><br/>(your agent / app)"]
     handle["<b>Moneta(config)</b> handle<br/>__exit__ → release lock"]
-    registry["<b>_ACTIVE_URIS</b><br/>process-level set&lt;str&gt;<br/>keyed by storage_uri"]
+    registry["<b>_ACTIVE_URIS</b> + <b>_ACTIVE_STORE_PATHS</b><br/>process-level sets<br/>storage_uri and snapshot · WAL · tmp paths"]
+    durab["<b>DurabilityManager</b><br/>snapshot + seq-keyed attention WAL<br/>fsync before signal_attention returns<br/>(durability.py · optional)"]
 
     subgraph hot["Hot Tier — owned by handle"]
         ECS["ECS<br/>struct-of-arrays<br/>(ecs.py)"]
@@ -238,6 +318,8 @@ graph TB
     handle --> AttLog
     handle --> VecIdx
     handle --> Runner
+    handle -.->|"signal_attention:<br/>WAL first, then buffer"| durab
+    Runner -.->|"save after a<br/>successful pass"| durab
     Runner --> AttLog
     Runner --> Decay
     Runner --> SeqWriter
@@ -250,7 +332,7 @@ graph TB
     classDef green fill:#6E8B6E,color:#fff,stroke:#6E8B6E
     classDef blue fill:#7E94B0,color:#fff,stroke:#7E94B0
 
-    class handle,ECS,Decay,AttLog,VecIdx,Runner,SeqWriter green
+    class handle,ECS,Decay,AttLog,VecIdx,Runner,SeqWriter,durab green
     class consumer,registry,Real,Mock,Rolling,Protected blue
 ```
 
@@ -259,15 +341,15 @@ graph TB
 ```mermaid
 stateDiagram-v2
     [*] --> CheckUri: Moneta(config)
-    CheckUri --> Collide: storage_uri already in<br/>_ACTIVE_URIS
-    CheckUri --> Constructed: storage_uri free<br/>→ added to _ACTIVE_URIS
+    CheckUri --> Collide: storage_uri in _ACTIVE_URIS<br/>or a snapshot, WAL or tmp path<br/>in _ACTIVE_STORE_PATHS
+    CheckUri --> Constructed: URI and store paths free<br/>→ both registered
     Collide --> [*]: raise<br/>MonetaResourceLockedError
 
     Constructed --> Live: __enter__<br/>(returns self)
     Live --> Live: deposit / query / signal_attention<br/>get_consolidation_manifest / run_sleep_pass
 
     Live --> Closing: __exit__<br/>OR raise inside with block<br/>OR explicit close()
-    Closing --> Released: durability.close →<br/>authoring_target.close →<br/>_ACTIVE_URIS.discard
+    Closing --> Released: durability.close →<br/>authoring_target.close →<br/>release URI and store paths
     Released --> [*]
 
     classDef live fill:#6E8B6E,color:#fff,stroke:#6E8B6E
@@ -376,7 +458,7 @@ stateDiagram-v2
 
 ```mermaid
 flowchart TD
-    trigger{"ConsolidationRunner.should_run()<br/>volatile_count > MAX_ENTITIES (10000)<br/>OR idle_ms > 5000"} -->|yes| drain_reduce["1. attention.drain_and_reduce()<br/>Utility += Σweights<br/>AttendedCount += signal_count<br/>(includes decay eval point 2)"]
+    trigger{"ConsolidationRunner.should_run()<br/>volatile_count > MAX_ENTITIES (10000)<br/>OR idle_ms > 5000"} -->|yes| drain_reduce["1. reduce_attention_log()<br/>swap buffer · one snapshot · record seqs<br/>Utility += Σweights<br/>AttendedCount += signal_count<br/>(includes decay eval point 2)"]
     drain_reduce --> decay3["2. ecs.decay_all(lambda, now)<br/>decay eval point 3 (explicit)"]
     decay3 --> classify["3. ConsolidationRunner.classify(ecs)<br/>→ (prune_ids, stage_ids)"]
 
@@ -389,12 +471,19 @@ flowchart TD
     keep -->|keep| volatile["Stays VOLATILE<br/>re-evaluated next pass"]
 
     seqwrite --> consolidated["State → CONSOLIDATED"]
+    seqwrite -->|"a Save() fails"| usderr["UsdSaveError raised<br/>other layers still saved<br/>vector commit skipped · layer stays dirty"]
+    consolidated --> save["4. durability.snapshot_ecs()<br/>durable handles only<br/>keeps every WAL line not yet applied"]
+    volatile --> save
+    remove --> save
 
     classDef green fill:#6E8B6E,color:#fff,stroke:#6E8B6E
     classDef blue fill:#7E94B0,color:#fff,stroke:#7E94B0
 
-    class drain_reduce,decay3,classify,seqwrite,consolidated,volatile green
+    classDef red fill:#A86A5E,color:#fff,stroke:#A86A5E
+
+    class drain_reduce,decay3,classify,seqwrite,consolidated,volatile,save green
     class trigger,prune,stage,keep,remove blue
+    class usderr red
 ```
 
 ### Protocol injection — dual-target architecture
@@ -656,7 +745,7 @@ The same counts are also kept process-wide in `moneta._native`, which the test h
 | `src_digest` | sha256 over the sorted relative POSIX paths of `src/moneta/**/*.py` (no `__pycache__`), each hashed as `path + b"\0" + content` with CRLF normalized to LF. The same commit gives the same digest on any checkout. |
 | `python` | implementation and version |
 
-**Verify what a process runs by `commit` + `src_digest` + the `.pyd` sha256. Never by version:** the version read `1.3.0rc1` on rc1 and on every commit up to `v1.3.0-rc2`, and a stale installed dist-info can report a version that is not what runs. For `v1.3.0-rc2`'s measured runs, `src_digest` is `58600b5811c719c9b6aee547509ae97287acededf65b6ab970c5ddc53e1420b0` and the 0.1.0 abi3 wheel's `.pyd` sha256 is `ec6d7f0c35c5b345f983f4aa80cfea086f3aca454e9cd74a58b6208227b02833`. Docs-only commits leave `src_digest` unchanged.
+**Verify what a process runs by `commit` + `src_digest` + the `.pyd` sha256. Never by version:** the version read `1.3.0rc1` on rc1 and on every commit up to `v1.3.0-rc2`, `1.3.0rc2` on rc2, and `1.3.0` from the `v1.3.0` release commit on, and a stale installed dist-info can report a version that is not what runs. For the measured runs of `v1.3.0-rc2` and `v1.3.0` (the same source), `src_digest` is `58600b5811c719c9b6aee547509ae97287acededf65b6ab970c5ddc53e1420b0` and the 0.1.0 abi3 wheel's `.pyd` sha256 is `ec6d7f0c35c5b345f983f4aa80cfea086f3aca454e9cd74a58b6208227b02833`. Docs-only commits leave `src_digest` unchanged.
 
 **Errors exported from `moneta`:** `NativeConfigError(ValueError)`, `NativeUnavailableError(RuntimeError)`, `NativeSeamError(RuntimeError)`. Also exported: `build_info`, `BuildInfo`, `NativeStatus`, `SeamStatus`, `NativeWheel`. Nothing was removed.
 
@@ -777,7 +866,7 @@ The last block of the pytest summary is the native qualification report. Its hea
 
 ### Native qualification results on this branch
 
-All on branch `release/v1.3.0-rc2`, Python 3.14.2 on Windows, `pxr` 0.26.5, run on 2026-10-18 at the merge commit `3c01cf2979f2f33bcd1d323c7109314070157e70` (`src_digest` `58600b5811c719c9b6aee547509ae97287acededf65b6ab970c5ddc53e1420b0`, `build_info.mode` `git-src`). The two release commits change only docs and the version, so the same `src_digest` identifies `v1.3.0-rc2`. Wheel rows use the 0.1.0 abi3 wheel installed in the interpreter's site-packages, `.pyd` sha256 `ec6d7f0c35c5b345f983f4aa80cfea086f3aca454e9cd74a58b6208227b02833`, with `src` first on `PYTHONPATH`.
+All on branch `release/v1.3.0-rc2`, Python 3.14.2 on Windows, `pxr` 0.26.5, run on 2026-10-18 at the merge commit `3c01cf2979f2f33bcd1d323c7109314070157e70` (`src_digest` `58600b5811c719c9b6aee547509ae97287acededf65b6ab970c5ddc53e1420b0`, `build_info.mode` `git-src`). The two release commits change only docs and the version, so the same `src_digest` identifies `v1.3.0-rc2`. **`v1.3.0`:** the seven rows below were re-run on 2026-10-19 at the `v1.3.0` release commit, with the same wheel, and gave the same counts and verdicts; the `src_digest` is unchanged. Wheel rows use the 0.1.0 abi3 wheel installed in the interpreter's site-packages, `.pyd` sha256 `ec6d7f0c35c5b345f983f4aa80cfea086f3aca454e9cd74a58b6208227b02833`, with `src` first on `PYTHONPATH`.
 
 | Run | Pytest | Native tests | Real Rust calls | Verdict |
 |---|---|---|---|---|
@@ -796,7 +885,28 @@ The absent and broken rows were produced with test shims on `PYTHONPATH` that ma
 
 ### Attention durability: B, D and L fixed
 
-**Undrained attention now survives a bare snapshot and a restart.** Fixed in `v1.3.0-rc2` by R1′ (`docs/design/R1-attention-durability.md`, revision 6).
+**Undrained attention now survives a bare snapshot and a restart.** Fixed in `v1.3.0-rc2` by R1′ (`docs/design/R1-attention-durability.md`, revision 6), and shipped in `v1.3.0`.
+
+**The normal durable path, start to finish.** Ephemeral handles skip the WAL. The failure windows in [Know the limits](#know-the-limits) still apply.
+
+```mermaid
+flowchart TD
+    Signal["signal_attention"] --> WAL["Write WAL line with its seq, then fsync"]
+    WAL --> Buffer["Append entry and seq to the in-memory buffer"]
+    Buffer --> Drain["Sleep pass: swap the buffer, take one snapshot of it"]
+    Carry["Late entries from the previous swap"] --> Drain
+    Drain --> Record["Record the drained seqs"]
+    Record --> Apply["Apply summed weights and signal counts to the ECS"]
+    Apply --> Pass["Decay, prune and consolidate"]
+    Pass --> Snapshot["Save the ECS rows with the applied seqs"]
+    Snapshot --> Compact["Keep every WAL line not yet applied"]
+    Compact --> Reopen["Reopen: hydrate the snapshot, filter the WAL"]
+    Reopen --> Replay["Queue unapplied lines for the next pass"]
+    Replay --> Drain
+    Buffer -.-> Carry
+```
+
+Seqs are recorded **before** the apply. A torn apply is logged (`torn attention apply`) and can lose an effect; it never silently applies one twice.
 
 - **Path B:** `signal_attention`, then a bare save with `m.durability.snapshot_ecs(m.ecs)` (the shape of SYNAPSE's save), then a restart. rc1's save deleted the WAL. A save now keeps every WAL line whose signal the reducer has not recorded as applied, and the restart replays it once.
 - **Path D:** a signal that arrives after a sleep pass has drained the attention log, but before that pass writes its snapshot, is kept the same way.
@@ -1083,6 +1193,17 @@ Surgery record: [SURGERY_complete_codeless_schema.md](SURGERY_complete_codeless_
 
 ---
 
+## v1.3.0 verdict
+
+**STABLE — `v1.3.0-rc2` promoted unchanged. v1 API unchanged. Python-qualified on CPython 3.14.2 with and without the native wheel. Not Houdini-qualified. v5 preview still gated.**
+
+- **What changed from rc2:** the version (`1.3.0rc2` → `1.3.0`) and the docs. No `*.py` or `*.rs` file changed; the `src_digest` is the same.
+- **Evidence:** the seven-row Python matrix and the v5 mutation check, re-run at the release commit on 2026-10-19 ([Status](#status)). The rc2 reviews and the owner's acceptance carry over, because the code they reviewed is the code that ships.
+- **Still open:** everything in the rc2 verdict's "Open — not done" table below. hython has not run this code in any configuration, gate 2 condition C3 is pending, and the macOS `F_FULLFSYNC` gap is in the code.
+- **No new binaries.** The `moneta_native` wheel is not rebuilt or attached; it stays 0.1.0 (`.pyd` sha256 `ec6d7f0c35c5…`).
+
+---
+
 ## v1.3.0-rc2 verdict
 
 **PRERELEASE — attention durability fixed, the attention log forced to disk, the USD mirror reopens; v1 API unchanged; v5 preview still gated.**
@@ -1143,7 +1264,7 @@ Rulings: [docs/v7/RULINGS.md](docs/v7/RULINGS.md) | Blueprint: [docs/v7/BLUEPRIN
 
 ## Lineage
 
-Round 1 (scoping brief) → Round 2 (Gemini Deep Think architectural spec) → Round 2.5 (Claude prior-art review) → Round 3 (Gemini Deep Think validation) → **Phase 1** (5 passes, 94 tests, `v0.1.0`) → **Phase 2** (benchmark, `v0.2.0`) → **Phase 3** (7 passes, narrow lock, 775M-assertion safety, `v1.0.0`) → **Singleton surgery** (Scout / Forge / Crucible / Steward, `v1.1.0`) → **Codeless schema migration** (Auditor / Crucible / Schema Author / Forge, `v1.2.0-rc1`) → **Free-threading guard** (PEP 703 sentinel on `AttentionLog`, commit `76da067`, `v1.2.0-rc2`) → **Documentarian followup** (api.md handle rewrite + CLAUDE.md hard-rule update, commit `6cb1fd1`) → **Cosine clamp** (`c4a6218`, `v1.2.0-rc3`) → **Native seams** (Rust behind exact Python oracles, seam rule O27) → **v5 merged beside v1** (journal as the database) → **Round 4 rulings** (E1–E4 + half-life, `docs/v7/RULINGS.md`) → **`v1.3.0-rc1`** (prerelease from `v7-native-seams`) → **Native observability hardening** (one loader, per-handle selection, qualification harness, Gate B; base `a4f2b0b`) → **R1′ attention durability + F1 fsync + USD reopen-first** → **`v1.3.0-rc2`** (prerelease from `release/v1.3.0-rc2`).
+Round 1 (scoping brief) → Round 2 (Gemini Deep Think architectural spec) → Round 2.5 (Claude prior-art review) → Round 3 (Gemini Deep Think validation) → **Phase 1** (5 passes, 94 tests, `v0.1.0`) → **Phase 2** (benchmark, `v0.2.0`) → **Phase 3** (7 passes, narrow lock, 775M-assertion safety, `v1.0.0`) → **Singleton surgery** (Scout / Forge / Crucible / Steward, `v1.1.0`) → **Codeless schema migration** (Auditor / Crucible / Schema Author / Forge, `v1.2.0-rc1`) → **Free-threading guard** (PEP 703 sentinel on `AttentionLog`, commit `76da067`, `v1.2.0-rc2`) → **Documentarian followup** (api.md handle rewrite + CLAUDE.md hard-rule update, commit `6cb1fd1`) → **Cosine clamp** (`c4a6218`, `v1.2.0-rc3`) → **Native seams** (Rust behind exact Python oracles, seam rule O27) → **v5 merged beside v1** (journal as the database) → **Round 4 rulings** (E1–E4 + half-life, `docs/v7/RULINGS.md`) → **`v1.3.0-rc1`** (prerelease from `v7-native-seams`) → **Native observability hardening** (one loader, per-handle selection, qualification harness, Gate B; base `a4f2b0b`) → **R1′ attention durability + F1 fsync + USD reopen-first** → **`v1.3.0-rc2`** (prerelease from `release/v1.3.0-rc2`) → **`v1.3.0`** (stable; rc2 promoted unchanged, from `release/v1.3.0`).
 
 ---
 

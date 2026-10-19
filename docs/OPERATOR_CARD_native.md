@@ -79,14 +79,14 @@ The handle also logs one INFO line at construction with both seams, `wheel.sha25
 
 ### Verify what SYNAPSE loads
 
-**Compare three values, never the version.** The version read `1.3.0rc1` on rc1 and on every commit before the `v1.3.0-rc2` release commit.
+**Compare three values, never the version.** The version read `1.3.0rc1` on rc1 and on every commit before the `v1.3.0-rc2` release commit, `1.3.0rc2` on rc2, and `1.3.0` from the `v1.3.0` release commit on.
 
 ```
 python -c "import moneta; b = moneta.build_info(); print(b.commit, b.src_digest)"
 python -c "import moneta, moneta._native as n; w = n.wheel_info(); print(w.state, w.sha256, w.record_match)"
 ```
 
-| Check | Expected (`v1.3.0-rc2`, computed 2026-10-18) |
+| Check | Expected (`v1.3.0` and `v1.3.0-rc2`, the same source; computed 2026-10-18, confirmed at the `v1.3.0` release commit 2026-10-19) |
 |---|---|
 | `src_digest` | `58600b5811c719c9b6aee547509ae97287acededf65b6ab970c5ddc53e1420b0` (`v1.3.0-rc2`, from the merge commit `3c01cf2`; at `14f060f`, before F1 and the USD repair: `11df24bbcf37…`; at the R1′ base `a4f2b0b`: `ac1742722a8d…`; before Gate B (`bec544f`): `f5c721630ac3…`) |
 | `.pyd` sha256 | `ec6d7f0c35c5b345f983f4aa80cfea086f3aca454e9cd74a58b6208227b02833` (0.1.0 abi3, `record_match=True`) |
@@ -114,7 +114,7 @@ MONETA_NATIVE=0       PYTHONPATH="src;<unzipped-wheel>" python -m pytest tests -
 | `PYTHON-ONLY FAIL (not native qualified): …` | Red run without native. |
 | exit code 4, `MONETA_NATIVE='require' requires the native wheel` | Require asked, wheel not loaded. |
 
-**Measured for `v1.3.0-rc2`** (Python 3.14.2, `pxr` 0.26.5, 2026-10-18, merge commit `3c01cf2`, `src_digest` `58600b5811c7…`, which both release commits keep; wheel `.pyd` sha256 `ec6d7f0c35c5…` installed in site-packages, `src` first on `PYTHONPATH`). The v5 mutation check below ended `missed: []` on the same tree.
+**Measured for `v1.3.0-rc2`, re-run for `v1.3.0`** (every row below gave the same result at the `v1.3.0` release commit on 2026-10-19, with the same wheel and a `git archive` mutation check). First run (Python 3.14.2, `pxr` 0.26.5, 2026-10-18, merge commit `3c01cf2`, `src_digest` `58600b5811c7…`, which both release commits keep; wheel `.pyd` sha256 `ec6d7f0c35c5…` installed in site-packages, `src` first on `PYTHONPATH`). The v5 mutation check below ended `missed: []` on the same tree.
 
 | Run | Result | Verdict |
 |---|---|---|
@@ -139,7 +139,7 @@ cd <scratch> && PYTHONPATH=src python scripts/v5/mutation_check.py   # last line
 
 ### Attention durability (R1′)
 
-**Status.** In `v1.3.0-rc2` (a prerelease): B, D and L pass in every matrix row. The Architect conformance review and the Persistence and Substrate cross-review (design gate 3) each returned SOUND-WITH-NITS; the cross-review's fix-severity finding is fixed in `711d7fb`, and both reviews' nits are addressed. The Architect signed off design revision 6 on 2026-10-18 (SIGNED_OFF; its fix, the macOS gap below, and its six nits are applied to the design as a revision 6 erratum), the re-review of `711d7fb` and `3da0053` returned SOUND-WITH-NITS, and the owner accepted the rc2 content (gate 6) the same day. Design: `docs/design/R1-attention-durability.md`, revision 6.
+**Status.** In `v1.3.0` (stable; the `v1.3.0-rc2` source, promoted unchanged): B, D and L pass in every matrix row. The Architect conformance review and the Persistence and Substrate cross-review (design gate 3) each returned SOUND-WITH-NITS; the cross-review's fix-severity finding is fixed in `711d7fb`, and both reviews' nits are addressed. The Architect signed off design revision 6 on 2026-10-18 (SIGNED_OFF; its fix, the macOS gap below, and its six nits are applied to the design as a revision 6 erratum), the re-review of `711d7fb` and `3da0053` returned SOUND-WITH-NITS, and the owner accepted the rc2 content (gate 6) the same day. Design: `docs/design/R1-attention-durability.md`, revision 6.
 
 - **B:** `signal_attention`, then `m.durability.snapshot_ecs(m.ecs)` (SYNAPSE's save), then restart. The signal now replays once: a save keeps every WAL line whose signal the reducer has not recorded as applied.
 - **D:** a signal that lands between a sleep pass's drain and its save is kept the same way.
@@ -288,7 +288,7 @@ PYTHONPATH=src python scripts/bench_query.py --n 10000 --spread
 
 ### Cut a release
 
-**Prerelease from a feature branch; `main` and "Latest" stay put.** `X.Y.Z-rcN` is the tag; `pyproject.toml` takes `X.Y.ZrcN`.
+**Prerelease from a feature branch; `main` and "Latest" stay put.** `X.Y.Z-rcN` is the tag; `pyproject.toml` takes `X.Y.ZrcN`. To promote an rc to stable, follow steps 1–5 with these changes, then step 8.
 
 **1 · Green first.** `NATIVE QUALIFIED` with the wheel under `=1` and `=require`, `PYTHON-ONLY PASS` under `=0` and without the wheel, plus the v5 mutation check (`missed: []`). hython rows once the owner has coordinated them.
 
@@ -332,3 +332,20 @@ gh release create vX.Y.Z-rcN --target <branch> --prerelease \
 | `A repository cannot have more than 20 topics` | Topics cap at 20. Drop one before `gh repo edit --add-topic`. |
 | "Unable to render rich display" on GitHub | A mermaid block GitHub rejects. Quote labels, no `λ` or bare parentheses in nodes, fix, push again. |
 | The rc became "Latest" | `gh release edit vX.Y.Z-rcN --prerelease`. |
+
+**8 · Promote an rc to stable** (done for `v1.3.0` on 2026-10-19, from `v1.3.0-rc2`).
+
+- **Branch** `release/vX.Y.Z` from the rc tag, never from `main` unless `main` contains it. Keep every rc tag and release as it is.
+- **Change only** the version (`pyproject.toml` takes `X.Y.Z`) and the docs. No `*.py` or `*.rs` change, so the `src_digest` stays the rc's.
+- **Re-run step 1 on the release commit**, every row, before the tag. Reuse the rc's reviews only because the code is the same.
+- **Tag and publish** without `--prerelease`, and mark it Latest:
+
+```bash
+git tag -a vX.Y.Z -m "vX.Y.Z: <one line>"
+git push origin release/vX.Y.Z vX.Y.Z
+gh release create vX.Y.Z --target release/vX.Y.Z --latest \
+    --title "vX.Y.Z — <one line>" --notes-file RELEASE_NOTES.md
+```
+
+- **Check** `git ls-remote --tags origin vX.Y.Z` (the peeled `^{}` line is your commit) and `gh release view vX.Y.Z --json isDraft,isPrerelease` (both false). `gh release list` shows it **Latest**.
+- **Never** attach an rc's binaries to the stable release. Attach only what was built at the release commit.

@@ -152,7 +152,7 @@ PYTHONPATH="src;<unzipped-wheel-dir>" "<hython3.11.exe>" -m pytest tests -q -p n
 PYTHONPATH=src python scripts/bench_query.py --n 1000 10000            # add --spread for aged utilities
 ```
 
-**Test matrix** (`v1.3.0-rc2`, branch `release/v1.3.0-rc2`, v1 and v5 suites together, 2026-10-18, merge commit `3c01cf2`, `src_digest` `58600b5811c7`, wheel `.pyd` sha256 `ec6d7f0c35c5…`, Python 3.14.2):
+**Test matrix** (`v1.3.0`, stable, branch `release/v1.3.0`; the same source as `v1.3.0-rc2`, first run 2026-10-18 at merge commit `3c01cf2` and re-run 2026-10-19 at the `v1.3.0` release commit with the same results; v1 and v5 suites together, `src_digest` `58600b5811c7`, wheel `.pyd` sha256 `ec6d7f0c35c5…`, Python 3.14.2):
 
 - `MONETA_NATIVE=1` and `=require` with the wheel: 907 passed, verdict `NATIVE QUALIFIED`.
 - `MONETA_NATIVE=0` with the wheel: 907 passed, `PYTHON-ONLY PASS`.
@@ -205,7 +205,7 @@ docs/
 - Do not violate the Phase 3 operational envelope (ARCHITECTURE.md §15.2).
 - Do not let documentation lag implementation by more than one PR (Documentarian contract).
 - Do not cross role boundaries without Architect review.
-- Do not break the existing test suite (Python 3.14.2, `v1.3.0-rc2` at merge commit `3c01cf2`, 2026-10-18: 907 passed with the wheel under `MONETA_NATIVE=1`, `=require` and `=0`, with `NATIVE QUALIFIED` under `=1` and `=require`; 836 passed + 71 native-only skips without the `moneta_native` wheel; hython 3.11 rows PLANNED: awaiting owner coordination). Regression is higher priority than new work.
+- Do not break the existing test suite (Python 3.14.2, `v1.3.0` (the `v1.3.0-rc2` source), re-run at the release commit 2026-10-19: 907 passed with the wheel under `MONETA_NATIVE=1`, `=require` and `=0`, with `NATIVE QUALIFIED` under `=1` and `=require`; 836 passed + 71 native-only skips without the `moneta_native` wheel; hython 3.11 rows PLANNED: awaiting owner coordination). Regression is higher priority than new work.
 - Do not assume free-threaded Python (PEP 703) support. `AttentionLog.__init__` raises `RuntimeError` under `sys._is_gil_enabled() is False` because the lock-free swap-and-drain correctness argument requires the GIL. Removing the guard requires MONETA.md §9 Trigger 2 escalation; rewriting the attention log to be free-threaded-safe is in-scope for that escalation.
 - Follow `docs/agent-commandments.md` from Phase 3 Pass 3 onward.
 

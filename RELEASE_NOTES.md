@@ -1,10 +1,39 @@
-# Moneta v1.3.0-rc2
+# Moneta v1.3.0
 
-**Prerelease, cut from branch `release/v1.3.0-rc2`, not `main`.** `main` and "Latest" stay where they are. The four-operation v1 API and its signatures are unchanged.
+**Stable release, cut from branch `release/v1.3.0`, not `main`.** It promotes `v1.3.0-rc2` unchanged: the same Python and Rust source, the same `src_digest`. Only the version (`1.3.0rc2` → `1.3.0`) and the docs changed. The four-operation v1 API and its signatures are unchanged. `main` still carries the older v1.2-era code.
 
 **In one line:** attention you signal now survives a bare save and a restart, the attention log is forced to disk before `signal_attention` returns, and the USD mirror reopens its existing layers instead of resetting them.
 
-Range: `v1.3.0-rc1` (`c33bbd96`) to this commit. Verify a build by `commit` + `src_digest` + the wheel's `.pyd` sha256, never by version.
+**Not Houdini-qualified.** hython has not run this code in any configuration. Gate 2 condition C3 (a hython row on H22.0.400 with a LOP network sublayering `cortex_root.usda`) is still owed before any Houdini seat moves to it. See [Honest limits](#honest-limits).
+
+Verify a build by `commit` + `src_digest` + the wheel's `.pyd` sha256, never by version.
+
+---
+
+## 0 · Promotion from `v1.3.0-rc2` to `v1.3.0`
+
+- **Candidate shipped:** `v1.3.0-rc2`, tag object `8f76869c`, commit `aae303b5`. It was the newest candidate; no rc3 exists. `main` does not contain it, so it was not used.
+- **What the release commit changes:** `pyproject.toml` (the version), `README.md`, `RELEASE_NOTES.md`, `CLAUDE.md`, `docs/api.md` and `docs/OPERATOR_CARD_native.md`. No `*.py`, `*.rs` or test file.
+- **Reused evidence:** the rc2 reviews, sign-offs and the owner's acceptance below, because the code they cover is the code that ships.
+- **Fresh evidence:** the Python matrix and the v5 mutation check, re-run at the release commit (table below).
+- **Artifacts:** none built. No installer, sdist or wheel is attached; GitHub's source archives are the only downloads. The optional `moneta_native` wheel is not rebuilt and stays 0.1.0.
+- **Kept as they were:** every rc tag and release, `v1.3.0-rc1` and `v1.3.0-rc2` included.
+
+**Tests at the `v1.3.0` release commit** (2026-10-19, Windows, Python 3.14.2, `pxr` 0.26.5, v1 and v5 suites together, `src_digest` `58600b5811c719c9b6aee547509ae97287acededf65b6ab970c5ddc53e1420b0`, wheel `moneta_native` 0.1.0 abi3 `.pyd` sha256 `ec6d7f0c35c5b345f983f4aa80cfea086f3aca454e9cd74a58b6208227b02833`, `src` first on `PYTHONPATH`):
+
+| Run | Pytest | Verdict |
+|---|---|---|
+| wheel, `MONETA_NATIVE=1` | 907 passed | `NATIVE QUALIFIED` |
+| wheel, `MONETA_NATIVE=require` | 907 passed | `NATIVE QUALIFIED` |
+| wheel, `MONETA_NATIVE=0` | 907 passed | `PYTHON-ONLY PASS (not native qualified)` |
+| no wheel (`ModuleNotFoundError` shim), env unset | 836 passed, 71 skipped visibly | `PYTHON-ONLY PASS (not native qualified)` |
+| no wheel, `MONETA_NATIVE=require` | exit 4 | refused: `requires the native wheel` |
+| broken wheel (`ImportError` shim), env unset | 836 passed, 71 skipped visibly | `PYTHON-ONLY PASS (not native qualified)` |
+| broken wheel, `MONETA_NATIVE=require` | exit 4 | refused: `requires the native wheel` |
+| v5 mutation check (`git archive` of the release commit) | `missed: []` | — |
+| hython 3.11, every row | **not run** | — |
+
+The sections below are the rc2 notes, kept whole. Range: `v1.3.0-rc1` (`c33bbd96`) to `v1.3.0-rc2` (`aae303b5`).
 
 ---
 
