@@ -33,6 +33,21 @@ Verify a build by `commit` + `src_digest` + the wheel's `.pyd` sha256, never by 
 | v5 mutation check (`git archive` of the release commit) | `missed: []` | — |
 | hython 3.11, every row | **not run** | — |
 
+**Added after publication (2026-10-19): hython on Houdini 22.0.400.** The tag did not move. Same commit `4f7afc7`, same `src_digest`, same wheel (`.pyd` sha256 `ec6d7f0c35c5…`, unzipped to a scratch folder, not installed). hython 22.0.400 runs Python 3.13.10 with `pxr` 0.26.5. The run used `HOUDINI_PACKAGE_DIR` pointed at an empty folder, so no Houdini package changed the environment.
+
+| hython 22.0.400 run | Pytest | Verdict |
+|---|---|---|
+| wheel, `MONETA_NATIVE=1` | 907 passed | `NATIVE QUALIFIED` (71/71 native tests, qualification 2/2) |
+| wheel, `MONETA_NATIVE=require` | 907 passed | `NATIVE QUALIFIED` |
+| wheel, `MONETA_NATIVE=0` | 907 passed | `PYTHON-ONLY PASS (not native qualified)` |
+| no wheel, env unset | 836 passed, 71 skipped visibly | `PYTHON-ONLY PASS (not native qualified)` |
+| no wheel, `MONETA_NATIVE=require` | exit 4 | refused: `requires the native wheel` |
+| broken wheel, env unset | 836 passed, 71 skipped visibly | `PYTHON-ONLY PASS (not native qualified)` |
+| broken wheel, `MONETA_NATIVE=require` | exit 4 | refused: `requires the native wheel` |
+
+- **Not Houdini qualification.** Gate 2 condition C3 also needs a LOP network that sublayers `cortex_root.usda`, and its pass bar is not written yet. C3 stays open.
+- **Under SYNAPSE's Houdini package,** which sets `MONETA_NATIVE=0` for every Houdini process on purpose, the same run gives 903 passed and 4 failed with the wheel, and 833 passed, 71 skipped and 3 failed without it. Every failure is a harness test that starts a child interpreter with its own `MONETA_NATIVE`, which the package overrides with `0`. This is environment, not a Moneta defect.
+
 The sections below are the rc2 notes, kept whole. Range: `v1.3.0-rc1` (`c33bbd96`) to `v1.3.0-rc2` (`aae303b5`).
 
 ---

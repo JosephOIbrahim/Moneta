@@ -89,7 +89,8 @@ Re-run on **2026-10-19 at the `v1.3.0` release commit**. Windows, **CPython 3.14
 | No wheel, or a broken wheel | **836 passed + 71 visible skips** · Python only |
 | No wheel or broken wheel, `require` | **Refused, exit 4.** Not a passing run. |
 | v5 mutation check | `missed: []` |
-| **hython 3.11 (Houdini), any row** | **Not run.** This release is not Houdini-qualified. |
+| **hython, Houdini 22.0.400** (Python 3.13.10, `pxr` 0.26.5), added 2026-10-19 | **The suite rows above match** (the mutation check was not re-run under hython): 907 passed (`NATIVE QUALIFIED` under `=1` and `=require`), 836 + 71 skips without the wheel, exit 4 under `require`. Run isolated from the SYNAPSE Houdini package. |
+| **Houdini gate C3** (a LOP network sublayering `cortex_root.usda`) | **Not run.** This release is **not Houdini-qualified** until C3 is done. |
 
 **Verify what you run by `commit` + `src_digest` + the wheel's `.pyd` sha256, never by version.** For `v1.3.0`: `src_digest` `58600b5811c7…` and `.pyd` sha256 `ec6d7f0c35c5…` (full values in [Native qualification results](#native-qualification-results-on-this-branch)). Full matrix: [Status](#status).
 
@@ -106,6 +107,10 @@ Re-run on **2026-10-19 at the `v1.3.0` release commit**. Windows, **CPython 3.14
 3. Record the result against this release's exact source and runtime.
 
 C1 (checked USD saves) and C2 (registry-sharing diagnostics and the operator rule) are met. **C3 is still pending.** Earlier Houdini integration evidence does not qualify this code.
+
+**Done on 2026-10-19:** the full test suite under hython on H22.0.400, every row green (see [Test evidence](#test-evidence-not-a-blanket-guarantee)). That covers the hython rows, not the LOP-network half of C3, and its pass bar is still to be written.
+
+**SYNAPSE's Houdini package sets `MONETA_NATIVE=0`** for every Houdini process, on purpose, so the native wheel stays out of SYNAPSE sessions. Under that package, the 4 harness tests that set `MONETA_NATIVE` themselves fail, because the package overrides them. That's the package's kill switch working, not a Moneta defect. The rows above ran with `HOUDINI_PACKAGE_DIR` pointed at an empty folder.
 
 LOP networks must **not edit or reload `.moneta/usd` layers during a live session**. Shared layers are detected when the target is built and logged at ERROR, not refused. A layer loaded later is not detected. [Operator rules](docs/OPERATOR_CARD_native.md).
 
@@ -152,7 +157,8 @@ LOP networks must **not edit or reload `.moneta/usd` layers during a live sessio
 | Python 3.14.2, wheel | not run | 907 passed · `PYTHON-ONLY PASS` | 907 passed · `NATIVE QUALIFIED` | 907 passed · `NATIVE QUALIFIED` |
 | Python 3.14.2, **no wheel** (absent) | 836 passed, 71 skipped · `PYTHON-ONLY PASS` | not run | not run | exit 4: refused, wheel not loaded |
 | Python 3.14.2, **broken wheel** (`ImportError`) | 836 passed, 71 skipped · `PYTHON-ONLY PASS` | not run | not run | exit 4: refused, wheel broken |
-| hython 3.11 | PLANNED: awaiting owner coordination | PLANNED: awaiting owner coordination | PLANNED: awaiting owner coordination | PLANNED: awaiting owner coordination |
+| hython 22.0.400 (Python 3.13.10), wheel | not run | 907 passed · `PYTHON-ONLY PASS` | 907 passed · `NATIVE QUALIFIED` | 907 passed · `NATIVE QUALIFIED` |
+| hython 22.0.400, **no wheel** / **broken wheel** | 836 passed, 71 skipped · `PYTHON-ONLY PASS` | not run | not run | exit 4: refused |
 
 **No xfails remain.** Defects B and D ran as 2 strict xfails through the hardening; they now pass unmarked. See [Attention durability](#attention-durability-b-d-and-l-fixed).
 
