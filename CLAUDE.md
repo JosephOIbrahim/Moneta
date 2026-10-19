@@ -21,6 +21,8 @@ If the blueprint and the spec disagree on a clause, that is a §9 trigger, not a
 
 **v1.0.0 shipped.** All three phases complete.
 
+**Current release: `v1.3.0`** (stable, 2026-10-19, tag on `4f7afc7`, branch `release/v1.3.0`; `main` is the older v1.2-era line). It adds the native seams, the v5 preview, R1′ attention durability, F1 fsync and the USD reopen-first repair to the phases below. Houdini gate 2 is met on H22.0.400. Release notes: `RELEASE_NOTES.md`.
+
 - **Phase 1** shipped as v0.1.0 (94 tests green, ECS + four-op API + mock USD target + Protocol-based sequential writer).
 - **Phase 2** closed as tag `moneta-v0.2.0-phase2-closed` with verdict YELLOW — clean in the operational envelope.
 - **Phase 3** shipped as v1.0.0 in Green-adjacent tier. Real USD writer with narrow writer lock (ChangeBlock-only scope per Pass 5 DETERMINISTIC SAFE ruling). Steady-state p95 reader stall projected at ~10–30ms at operational batch sizes.
@@ -129,6 +131,12 @@ pytest tests/load
 # Phase 3 USD target tests — pxr-capable interpreter required (local: hython)
 PYTHONPATH="src" "C:/Program Files/Side Effects Software/Houdini 21.0.773/bin/hython3.11.exe" \
     -m pytest tests/unit/test_usd_target.py -v -p no:faulthandler -p no:cacheprovider
+
+# v1.3.0 qualification interpreter: Houdini 22.0.400 (hython is Python 3.13, pxr 0.26.5), full suite.
+# An empty HOUDINI_PACKAGE_DIR keeps installed Houdini packages (SYNAPSE's sets MONETA_NATIVE=0) out of the run.
+HOUDINI_PACKAGE_DIR="<empty-folder>" PYTHONPATH="src;<unzipped-wheel-dir>" \
+    "C:/Program Files/Side Effects Software/Houdini 22.0.400/bin/hython.exe" \
+    -m pytest tests -q -p no:faulthandler -p no:cacheprovider
 ```
 
 Both suites must be green at every pass boundary from Pass 3 onward. The `-p no:faulthandler` flag suppresses harmless `os.environ` access violation warnings from hython's patched environment. USD tests use `pytest.importorskip("pxr")` so they are skipped (not failed) under plain Python.
