@@ -4,7 +4,7 @@
 
 **In one line:** attention you signal now survives a bare save and a restart, the attention log is forced to disk before `signal_attention` returns, and the USD mirror reopens its existing layers instead of resetting them.
 
-**Not Houdini-qualified.** hython has not run this code in any configuration. Gate 2 condition C3 (a hython row on H22.0.400 with a LOP network sublayering `cortex_root.usda`) is still owed before any Houdini seat moves to it. See [Honest limits](#honest-limits).
+**Houdini:** gate 2 condition C3 was met after publication, on 2026-10-19, on H22.0.400 in headless hython. Both halves passed: the hython rows and a LOP network sublayering `cortex_root.usda`. The evidence is in the tables below. The section 0 tables and the rc2 notes keep their original wording.
 
 Verify a build by `commit` + `src_digest` + the wheel's `.pyd` sha256, never by version.
 
@@ -45,7 +45,17 @@ Verify a build by `commit` + `src_digest` + the wheel's `.pyd` sha256, never by 
 | broken wheel, env unset | 836 passed, 71 skipped visibly | `PYTHON-ONLY PASS (not native qualified)` |
 | broken wheel, `MONETA_NATIVE=require` | exit 4 | refused: `requires the native wheel` |
 
-- **Not Houdini qualification.** Gate 2 condition C3 also needs a LOP network that sublayers `cortex_root.usda`, and its pass bar is not written yet. C3 stays open.
+- **The LOP-network half of C3** follows below.
+
+**Added after publication (2026-10-19): gate 2 condition C3, the LOP probe.** `scripts/houdini/c3_probe.py` ran in three separate hython 22.0.400 processes at `4f7afc7` against a scratch store, with `native="off"` and the package directory isolated. The owner approved the issue #8 checks as the pass bar.
+
+| Phase | Result |
+|---|---|
+| seed (no LOP) | 4 memories consolidated (1 protected, 3 rolling). Root sublayers: `cortex_protected.usda`, `cortex_2026_10_19.usda`, no duplicates. |
+| lop (Sublayer LOP on `cortex_root.usda` built first) | The LOP composes 4 prims and holds 3 store layers. The Moneta handle logs 3 `Sdf registry sharing` ERRORs. A deposit, sleep pass and flush stage 4 more, with no `UsdSaveError` and no duplicate sublayers. A re-cook (not a reload) composes 8. |
+| reopen (fresh process) | A plain stage open composes 8 prims (2 protected, 6 rolling), with the same stack and offsets. The handle reopens with an empty consolidation manifest and 0 sharing errors. A new LOP in that process composes 8. |
+
+Gate 2's C1, C2 and C3 are now all met for `v1.3.0` on H22.0.400. Not covered: an interactive session, non-default layer offsets (the CPython `test_usd_target_reopen.py` suite covers those), and a SYNAPSE seat. SYNAPSE's Houdini package loads Moneta from a checkout that is not on `v1.3.0` yet, and it sets `MONETA_NATIVE=0`.
 - **Under SYNAPSE's Houdini package,** which sets `MONETA_NATIVE=0` for every Houdini process on purpose, the same run gives 903 passed and 4 failed with the wheel, and 833 passed, 71 skipped and 3 failed without it. Every failure is a harness test that starts a child interpreter with its own `MONETA_NATIVE`, which the package overrides with `0`. This is environment, not a Moneta defect.
 
 The sections below are the rc2 notes, kept whole. Range: `v1.3.0-rc1` (`c33bbd96`) to `v1.3.0-rc2` (`aae303b5`).

@@ -282,7 +282,7 @@ PYTHONPATH=src python scripts/bench_query.py --n 10000 --spread
 
 **Reopen keeps the authored stack.** Existing layers open first and are created only when absent; an existing layer that cannot be opened raises instead of being replaced.
 
-**Owed before any Houdini seat moves to this code** (gate 2): a hython row on H22.0.400 with a LOP network sublayering `cortex_root.usda`. Not run.
+**Gate 2 on Houdini, met for `v1.3.0` on 2026-10-19 (H22.0.400, headless hython):** the hython rows are green, and the LOP probe passed (`scripts/houdini/c3_probe.py`, phases `seed`, `lop` and `reopen`, each in its own hython process). Run the probe and the hython suite with `HOUDINI_PACKAGE_DIR` pointed at an empty folder: SYNAPSE's package sets `MONETA_NATIVE=0`. Moving a SYNAPSE seat also means moving its Moneta checkout to `v1.3.0`.
 
 ---
 

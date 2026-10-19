@@ -90,7 +90,7 @@ Re-run on **2026-10-19 at the `v1.3.0` release commit**. Windows, **CPython 3.14
 | No wheel or broken wheel, `require` | **Refused, exit 4.** Not a passing run. |
 | v5 mutation check | `missed: []` |
 | **hython, Houdini 22.0.400** (Python 3.13.10, `pxr` 0.26.5), added 2026-10-19 | **The suite rows above match** (the mutation check was not re-run under hython): 907 passed (`NATIVE QUALIFIED` under `=1` and `=require`), 836 + 71 skips without the wheel, exit 4 under `require`. Run isolated from the SYNAPSE Houdini package. |
-| **Houdini gate C3** (a LOP network sublayering `cortex_root.usda`) | **Not run.** This release is **not Houdini-qualified** until C3 is done. |
+| **Houdini gate C3** (a LOP network sublayering `cortex_root.usda`), added 2026-10-19 | **Met** on H22.0.400 in headless hython ([`scripts/houdini/c3_probe.py`](scripts/houdini/c3_probe.py)). Every check passed; see [Before using Houdini](#before-using-houdini). |
 
 **Verify what you run by `commit` + `src_digest` + the wheel's `.pyd` sha256, never by version.** For `v1.3.0`: `src_digest` `58600b5811c7…` and `.pyd` sha256 `ec6d7f0c35c5…` (full values in [Native qualification results](#native-qualification-results-on-this-branch)). Full matrix: [Status](#status).
 
@@ -100,15 +100,21 @@ Re-run on **2026-10-19 at the `v1.3.0` release commit**. Windows, **CPython 3.14
 
 ## Before using Houdini
 
-**Do not move a Houdini seat to v1.3.0 until gate 2 condition C3 is done:**
+**Gate 2 is met for v1.3.0 on Houdini H22.0.400** (2026-10-19, commit `4f7afc7`). C1 (checked USD saves) and C2 (registry-sharing diagnostics and the operator rule) were met in code. **C3** now has both halves:
 
-1. Run the hython row on **Houdini H22.0.400**.
-2. Include a **LOP network that sublayers `cortex_root.usda`**.
-3. Record the result against this release's exact source and runtime.
+1. **The hython rows.** The full suite under hython 22.0.400 is green in every row (see [Test evidence](#test-evidence-not-a-blanket-guarantee)).
+2. **The LOP probe.** [`scripts/houdini/c3_probe.py`](scripts/houdini/c3_probe.py) ran in three separate hython processes against a scratch store. The owner approved these checks as the pass bar:
 
-C1 (checked USD saves) and C2 (registry-sharing diagnostics and the operator rule) are met. **C3 is still pending.** Earlier Houdini integration evidence does not qualify this code.
+| C3 check | Result |
+|---|---|
+| A Sublayer LOP loads `cortex_root.usda` | ✅ The LOP composes the store's 4 memory prims and holds 3 store layers (root, protected, rolling) |
+| Moneta logs the sharing | ✅ One `Sdf registry sharing` ERROR per shared layer: 3 |
+| Deposit, sleep pass and flush with the LOP present | ✅ 4 memories staged (1 protected), no `UsdSaveError`, no duplicate sublayers |
+| Fresh reopen, no LOP | ✅ Same sublayer stack and offsets, 2 protected + 6 rolling prims, nothing stranded in the manifest, 0 sharing errors |
+| Fresh LOP in a new process | ✅ Composes all 8 prims |
+| LOPs never edit or reload `.moneta/usd` layers | ✅ The probe only re-cooks the node. After Moneta's flush, a re-cook shows the new prims, because the layers are shared. |
 
-**Done on 2026-10-19:** the full test suite under hython on H22.0.400, every row green (see [Test evidence](#test-evidence-not-a-blanket-guarantee)). That covers the hython rows, not the LOP-network half of C3, and its pass bar is still to be written.
+**Before you move a seat**, know that this is headless hython, not an interactive session. The probe uses its own scratch store and the default layer offsets. Also, SYNAPSE's seat loads Moneta from a local repo checkout, which is still on `v7-native-seams` (older than `v1.3.0`). Moving a seat means moving that dependency to `v1.3.0`, which is a separate step.
 
 **SYNAPSE's Houdini package sets `MONETA_NATIVE=0`** for every Houdini process, on purpose, so the native wheel stays out of SYNAPSE sessions. Under that package, the 4 harness tests that set `MONETA_NATIVE` themselves fail, because the package overrides them. That's the package's kill switch working, not a Moneta defect. The rows above ran with `HOUDINI_PACKAGE_DIR` pointed at an empty folder.
 
@@ -146,7 +152,7 @@ LOP networks must **not edit or reload `.moneta/usd` layers during a live sessio
 | **Cosine clamp** — query ranking fix | `v1.2.0-rc3` (commit `c4a6218`) | Cosine clamped to `[0, 1]` in ranking. A negative cosine times a positive utility no longer ranks a reinforced memory below a zero-score one. |
 | **Native seams + v5 preview** | **`v1.3.0-rc1`** (prerelease) | Optional Rust seams with exact Python oracles. v5 reference implementation (journal as the database) beside v1. Round 4 owner rulings recorded. v1 API unchanged. |
 | **Attention durability + native observability** | **`v1.3.0-rc2`** (prerelease) | WAL-first, seq-keyed attention survives a bare save and a restart (B, D and L fixed). WAL appends fsync'd. The USD mirror reopens existing layers first. One native loader, per-handle selection, build identity and a verdict line. v1 API unchanged. |
-| **Stable release** | **`v1.3.0`** | `v1.3.0-rc2` promoted unchanged: same source, same `src_digest`, matrix re-run at the release commit. Version and docs only. Not Houdini-qualified (hython rows not run). |
+| **Stable release** | **`v1.3.0`** | `v1.3.0-rc2` promoted unchanged: same source, same `src_digest`, matrix re-run at the release commit. Version and docs only. Houdini gate C3 met on H22.0.400 (hython rows and LOP probe, 2026-10-19). |
 
 **Current version:** `v1.3.0`, stable, from branch `release/v1.3.0` (cut from the `v1.3.0-rc2` tag; `v1.3.0-rc1` came from `v7-native-seams`). `main` is still the older v1.2-era line (`v1.2.0-rc3` plus docs commits) and does not contain this code.
 
@@ -1201,11 +1207,11 @@ Surgery record: [SURGERY_complete_codeless_schema.md](SURGERY_complete_codeless_
 
 ## v1.3.0 verdict
 
-**STABLE — `v1.3.0-rc2` promoted unchanged. v1 API unchanged. Python-qualified on CPython 3.14.2 with and without the native wheel. Not Houdini-qualified. v5 preview still gated.**
+**STABLE — `v1.3.0-rc2` promoted unchanged. v1 API unchanged. Python-qualified on CPython 3.14.2 with and without the native wheel. Houdini gate C3 met on H22.0.400 (headless hython, 2026-10-19). v5 preview still gated.**
 
 - **What changed from rc2:** the version (`1.3.0rc2` → `1.3.0`) and the docs. No `*.py` or `*.rs` file changed; the `src_digest` is the same.
 - **Evidence:** the seven-row Python matrix and the v5 mutation check, re-run at the release commit on 2026-10-19 ([Status](#status)). The rc2 reviews and the owner's acceptance carry over, because the code they reviewed is the code that ships.
-- **Still open:** everything in the rc2 verdict's "Open — not done" table below. hython has not run this code in any configuration, gate 2 condition C3 is pending, and the macOS `F_FULLFSYNC` gap is in the code.
+- **Still open:** everything in the rc2 verdict's "Open — not done" table below. The macOS `F_FULLFSYNC` gap is in the code (issue #6). The hython rows and gate 2 condition C3 were met after publication, on 2026-10-19, on H22.0.400.
 - **No new binaries.** The `moneta_native` wheel is not rebuilt or attached; it stays 0.1.0 (`.pyd` sha256 `ec6d7f0c35c5…`).
 
 ---

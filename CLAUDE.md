@@ -157,7 +157,7 @@ PYTHONPATH=src python scripts/bench_query.py --n 1000 10000            # add --s
 - `MONETA_NATIVE=1` and `=require` with the wheel: 907 passed, verdict `NATIVE QUALIFIED`.
 - `MONETA_NATIVE=0` with the wheel: 907 passed, `PYTHON-ONLY PASS`.
 - Without the wheel (absent), or with a broken wheel: 836 passed, 71 native-only tests skipped visibly, `PYTHON-ONLY PASS`. `MONETA_NATIVE=require` exits 4 in both.
-- hython 3.11, all rows: PLANNED: awaiting owner coordination.
+- hython 22.0.400 (Python 3.13.10), all rows, 2026-10-19: the same counts and verdicts, run with `HOUDINI_PACKAGE_DIR` pointed at an empty folder. Gate 2 C3 LOP probe: `scripts/houdini/c3_probe.py`, passed.
 - No xfails. Defects B and D pass since R1′, and `KNOWN_DEFECTS` in `tests/conftest.py` is empty.
 
 Verify a run by `commit` + `src_digest` + `.pyd` sha256, never by version. Read the verdict line at the end of the pytest summary (README, "Reading the verdict line").
@@ -205,7 +205,7 @@ docs/
 - Do not violate the Phase 3 operational envelope (ARCHITECTURE.md §15.2).
 - Do not let documentation lag implementation by more than one PR (Documentarian contract).
 - Do not cross role boundaries without Architect review.
-- Do not break the existing test suite (Python 3.14.2, `v1.3.0` (the `v1.3.0-rc2` source), re-run at the release commit 2026-10-19: 907 passed with the wheel under `MONETA_NATIVE=1`, `=require` and `=0`, with `NATIVE QUALIFIED` under `=1` and `=require`; 836 passed + 71 native-only skips without the `moneta_native` wheel; hython 3.11 rows PLANNED: awaiting owner coordination). Regression is higher priority than new work.
+- Do not break the existing test suite (Python 3.14.2, `v1.3.0` (the `v1.3.0-rc2` source), re-run at the release commit 2026-10-19: 907 passed with the wheel under `MONETA_NATIVE=1`, `=require` and `=0`, with `NATIVE QUALIFIED` under `=1` and `=require`; 836 passed + 71 native-only skips without the `moneta_native` wheel; hython 22.0.400 rows green with the same counts, 2026-10-19). Regression is higher priority than new work.
 - Do not assume free-threaded Python (PEP 703) support. `AttentionLog.__init__` raises `RuntimeError` under `sys._is_gil_enabled() is False` because the lock-free swap-and-drain correctness argument requires the GIL. Removing the guard requires MONETA.md §9 Trigger 2 escalation; rewriting the attention log to be free-threaded-safe is in-scope for that escalation.
 - Follow `docs/agent-commandments.md` from Phase 3 Pass 3 onward.
 
