@@ -118,7 +118,7 @@ Re-run **2026-10-19 at the v1.3.0 release commit, on Windows, CPython 3.14.2, px
 - **hython on Houdini 22.0.400** (Python 3.13.10), added 2026-10-19: the same rows match,
   907 passed with the wheel (native qualified) and 836 + 71 skips without it.
   Run isolated from the SYNAPSE Houdini package, which sets `MONETA_NATIVE=0`.
-- **Gate C3's LOP-network check: not run. v1.3.0 is not Houdini-qualified.**
+- **Gate C3's LOP-network check: met on H22.0.400** (headless hython, 2026-10-19).
 
 No release commit since merge commit `3c01cf2` changes Python or Rust source, so
 the source digest is the same. No installer or new wheel was built for v1.3.0.
@@ -126,15 +126,17 @@ the source digest is the same. No installer or new wheel was built for v1.3.0.
 
 ## Before using Houdini
 
-**Do not move a Houdini seat to v1.3.0 until gate 2 condition C3 is completed:**
+**Gate 2 is met for v1.3.0 on Houdini H22.0.400** (2026-10-19, commit `4f7afc7`):
 
-- Run the required hython row on **Houdini H22.0.400**.
-- Include a **LOP network sublayering `cortex_root.usda`**.
-- Record the result against the exact release source and runtime.
+- C1 (checked USD saves) and C2 (registry-sharing diagnostics and operator rule): met in code.
+- C3: the hython suite is green in every row, and a **LOP network sublayering
+  `cortex_root.usda`** passed every check in
+  [`scripts/houdini/c3_probe.py`](https://github.com/JosephOIbrahim/Moneta/blob/release/v1.3.0/scripts/houdini/c3_probe.py).
+  Those checks are the sharing ERRORs, a clean flush with the LOP present, and an intact reopen.
+  [Results](https://github.com/JosephOIbrahim/Moneta/blob/release/v1.3.0/RELEASE_NOTES.md).
 
-C1 (checked USD saves) and C2 (registry-sharing diagnostics and operator rule)
-are met. **C3 is still pending.** Earlier integration evidence is not v1.3.0
-qualification.
+**Before you move a seat:** this was headless hython, not an interactive session.
+A SYNAPSE seat loads Moneta from its own checkout, which must move to `v1.3.0` first.
 
 LOP networks must **not edit or reload `.moneta/usd` layers during a live
 session**. Shared layers are detected at construction and logged, not refused;
