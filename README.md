@@ -114,7 +114,7 @@ Re-run on **2026-10-19 at the `v1.3.0` release commit**. Windows, **CPython 3.14
 | Fresh LOP in a new process | ✅ Composes all 8 prims |
 | LOPs never edit or reload `.moneta/usd` layers | ✅ The probe only re-cooks the node. After Moneta's flush, a re-cook shows the new prims, because the layers are shared. |
 
-**Before you move a seat**, know that this is headless hython, not an interactive session. The probe uses its own scratch store and the default layer offsets. Also, SYNAPSE's seat loads Moneta from a local repo checkout, which is still on `v7-native-seams` (older than `v1.3.0`). Moving a seat means moving that dependency to `v1.3.0`, which is a separate step.
+**Before you move a seat**, know that this is headless hython, not an interactive session. The probe uses its own scratch store and the default layer offsets. Also, SYNAPSE's seat loads Moneta from a local repo checkout, which is still on `v7-native-seams` (older than `v1.3.0`). Moving a seat means moving that dependency to `v1.3.0`, which is a separate step. *(Update 2026-10-19: the owner's SYNAPSE seat was moved to `v1.3.0` and verified. SYNAPSE loads `4f7afc7`, the schema is registered and native is off. SYNAPSE's 61 Moneta-touching test files pass on Houdini 22.0.400's Python 3.13. Other seats still need the same move.)*
 
 **SYNAPSE's Houdini package sets `MONETA_NATIVE=0`** for every Houdini process, on purpose, so the native wheel stays out of SYNAPSE sessions. Under that package, the 4 harness tests that set `MONETA_NATIVE` themselves fail, because the package overrides them. That's the package's kill switch working, not a Moneta defect. The rows above ran with `HOUDINI_PACKAGE_DIR` pointed at an empty folder.
 
@@ -207,7 +207,7 @@ pytest
 
 **You should see every test pass or skip, with no failures.** The exact count depends on two things:
 
-- **Is `pxr` importable?** USD tests use `pytest.importorskip("pxr")`, so they skip under plain Python and run under hython (OpenUSD 0.25.5).
+- **Is `pxr` importable?** USD tests use `pytest.importorskip("pxr")`, so they skip where `pxr` is missing. They run under hython (Houdini 22.0.400, OpenUSD 0.26.5) and under CPython with `pxr` installed.
 - **Is the `moneta_native` wheel installed?** Native-only tests skip without it.
 
 With the wheel and `pxr` present on Python 3.14, the full suite is **907 passed**, with no xfails. The last lines of the summary print a native verdict. See the [test matrix](#status) for each configuration.
@@ -856,7 +856,7 @@ Add `MONETA_QUAL_REPORT=<file>.json` to save the verdict, counts and identity as
 PYTHONPATH="src;<unzipped-wheel-dir>" "<hython3.11.exe>" -m pytest tests -q -p no:faulthandler -p no:cacheprovider
 ```
 
-The hython rows for this branch are **PLANNED: awaiting owner coordination**. They have not been run.
+The hython rows ran on 2026-10-19 on Houdini 22.0.400 (Python 3.13.10) and matched the CPython rows. Run them with `HOUDINI_PACKAGE_DIR` pointed at an empty folder, so a Houdini package (SYNAPSE's sets `MONETA_NATIVE=0`) cannot override the mode the tests ask for.
 
 **You're good when** the verdict line reads `NATIVE QUALIFIED` with the wheel under `=1` and `=require`, and `PYTHON-ONLY PASS` under `=0` and without the wheel.
 
@@ -889,7 +889,7 @@ All on branch `release/v1.3.0-rc2`, Python 3.14.2 on Windows, `pxr` 0.26.5, run 
 | broken wheel (`ImportError`), env unset | 836 passed, 71 skipped | 0 run, 71 skipped visibly | 0, 0 | `PYTHON-ONLY PASS (not native qualified)` |
 | no wheel, `MONETA_NATIVE=require` | exit 4, `MONETA_NATIVE='require' requires the native wheel` | — | — | (refused) |
 | broken wheel, `MONETA_NATIVE=require` | exit 4; same prefix, the cause reads `broken: ImportError` | — | — | (refused) |
-| hython 3.11, every row above | **PLANNED: awaiting owner coordination** | — | — | not run |
+| hython 3.11, every row above | **PLANNED: awaiting owner coordination** | — | — | not run *(2026-10-19: run on hython 22.0.400 at `4f7afc7` with the same counts and verdicts; see [Test evidence](#test-evidence-not-a-blanket-guarantee))* |
 
 The absent and broken rows were produced with test shims on `PYTHONPATH` that make `import moneta_native` raise those errors. The 0 unexpected-fallback count holds in every row.
 
@@ -1236,7 +1236,7 @@ This release candidate is cut from branch `release/v1.3.0-rc2`, not `main`. It c
 
 | Item | State |
 |---|---|
-| hython 3.11 rows | Not run in any configuration. |
+| hython 3.11 rows | Not run in any configuration. *(2026-10-19, after `v1.3.0` shipped: run on hython 22.0.400 and green, and gate 2 C3 met; see the [v1.3.0 verdict](#v130-verdict).)* |
 | USD repair, gate 2 condition 3 | A hython row on the target Houdini build (H22.0.400) before any Houdini seat moves. Not run. |
 | USD repair review | Its own review unit (PR 2 of 2, merged in `3c01cf2`). The USD Engineer review returned SOUND-WITH-NITS; its fix-severity finding is fixed in `2007612`. Open from it: a second registry-sharing detection point for layers loaded later, `close()` releasing the root layer, a name-scoped sharing filter, drive-letter case in the stack dedup, a test for the rotation scan, and v5 projection freshness over a half-cleared store. The re-review of `2007612` and `49643c9` returned SOUND-WITH-NITS (2026-10-18) with two more, both open in code: "in place" holds only while routing selects the layer that holds the prim (a retry at a rotation-cap crossing or after a UTC day change lands in the next layer as a second, stronger copy; now stated in the notes, `docs/api.md` and the card, not yet in the `usd_target.py` docstrings), and re-authoring keeps an existing attribute's type, so an incompatible value raises at author time. |
 | R1′ reviews | The Persistence and Substrate cross-review of PR 1 (design gate 3) returned SOUND-WITH-NITS; its fix-severity finding (`711d7fb`) and its nits are fixed. The Architect conformance review returned SOUND-WITH-NITS, and its nits are fixed. The Architect signed off design revision 6 on 2026-10-18 (SIGNED_OFF; one fix and six nits, applied to the design as a revision 6 erratum after the sign-off), and the re-review of `711d7fb` and `3da0053` returned SOUND-WITH-NITS. Open from them, for a later rc: a keyed retry after an interrupt past step 0's `os.replace` (today that handle degrades until reopened, logged at ERROR), and the macOS row below. |

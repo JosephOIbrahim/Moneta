@@ -124,7 +124,7 @@ MONETA_NATIVE=0       PYTHONPATH="src;<unzipped-wheel>" python -m pytest tests -
 | no wheel (absent) | 836 passed, 71 skipped | `PYTHON-ONLY PASS` |
 | broken wheel (`ImportError` shim) | 836 passed, 71 skipped | `PYTHON-ONLY PASS` |
 | no wheel or broken wheel, `=require` | exit 4 | (refused) |
-| hython 3.11, all rows | **PLANNED: awaiting owner coordination** | not run |
+| hython 3.11, all rows | **PLANNED: awaiting owner coordination** | not run *(2026-10-19: run on hython 22.0.400 at `4f7afc7`, same counts and verdicts; see the Houdini gate note below)* |
 
 **No xfails remain.** B and D (see **Attention durability** below) now pass unmarked. The summary no longer prints a "Known unresolved defects" block, because `KNOWN_DEFECTS` in `tests/conftest.py` is empty.
 
