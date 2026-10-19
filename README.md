@@ -115,7 +115,10 @@ Re-run **2026-10-19 at the v1.3.0 release commit, on Windows, CPython 3.14.2, px
 - No wheel or broken wheel, default mode: **836 passed + 71 visible skips**.
 - No wheel or broken wheel with `require`: refused with exit 4, not a passing run.
 - v5 mutation check: `missed: []`.
-- **hython rows: not run. v1.3.0 is not Houdini-qualified.**
+- **hython on Houdini 22.0.400** (Python 3.13.10), added 2026-10-19: the same rows match,
+  907 passed with the wheel (native qualified) and 836 + 71 skips without it.
+  Run isolated from the SYNAPSE Houdini package, which sets `MONETA_NATIVE=0`.
+- **Gate C3's LOP-network check: not run. v1.3.0 is not Houdini-qualified.**
 
 No release commit since merge commit `3c01cf2` changes Python or Rust source, so
 the source digest is the same. No installer or new wheel was built for v1.3.0.
