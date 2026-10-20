@@ -1,0 +1,109 @@
+#usda 1.0
+(
+    subLayers = [
+        @usd/schema.usda@
+    ]
+)
+
+over "GLOBAL" (
+    customData = {
+        string libraryName = "moneta_bridge"
+        string libraryPath = "./"
+        bool skipCodeGeneration = true
+    }
+)
+{
+}
+
+class CozyRoom "CozyRoom" (
+    inherits = </Typed>
+    customData = {
+        string className = "CozyRoom"
+        string schemaKind = "concreteTyped"
+    }
+    doc = """A Comfy-Cozy session/space container.
+
+Authored by Comfy-Cozy when it flushes a session as USD; consumed by
+the Moneta bridge ingester. The prim path is /Cozy/Room_<hex> where
+<hex> is a uuid4 hex string (32 chars, no dashes). Substrate
+convention #1 (docs/substrate-conventions.md): never construct prim
+names from natural language — content lives in string attributes."""
+)
+{
+    token roomId (
+        doc = "UUID hex (32 chars) identifying this room."
+    )
+
+    double createdAt (
+        doc = "Unix seconds when the room first opened."
+    )
+
+    double closedAt (
+        doc = "Unix seconds when this stage was flushed."
+    )
+
+    token kind (
+        allowedTokens = ["conversation", "task", "session", "thread"]
+        doc = "Coarse classification of the room's purpose."
+    )
+
+    string topic (
+        doc = "Optional human-facing summary; may be empty."
+    )
+}
+
+class CozyMemory "CozyMemory" (
+    inherits = </Typed>
+    customData = {
+        string className = "CozyMemory"
+        string schemaKind = "concreteTyped"
+    }
+    doc = """A single memory minted inside a CozyRoom.
+
+The prim path is /Cozy/Room_<roomHex>/Memory_<memoryHex>, both
+UUID hex (substrate convention #1, never NL in prim names). The
+bridge ingester reads each CozyMemory and calls
+moneta.deposit(payload, embedding, protected_floor); attentionWeight
+is forwarded as a deposit-time attention seed.
+
+embeddingHint contract: empty array means "bridge will embed the
+payload using its configured embedder." When non-empty, length MUST
+equal the bridge embedder's dim (currently 384 for
+sentence-transformers/all-MiniLM-L6-v2). The bridge does NOT pad or
+truncate — a length mismatch is a contract violation and the bridge
+raises."""
+)
+{
+    token memoryId (
+        doc = "UUID hex (32 chars) identifying this memory."
+    )
+
+    string payload (
+        doc = "Text content; this is what the bridge embeds and deposits."
+    )
+
+    double createdAt (
+        doc = "Unix seconds when the memory was minted in Comfy-Cozy."
+    )
+
+    float protectedFloor (
+        doc = "Pinning hint forwarded to moneta.deposit; 0.0 = unprotected."
+    )
+
+    float[] embeddingHint (
+        doc = "Optional pre-computed embedding. Empty array = bridge embeds. Non-empty length must match bridge embedder dim (384 for default MiniLM-L6-v2)."
+    )
+
+    float attentionWeight (
+        doc = "Initial attention seed forwarded to signal_attention; 0.0 = no seed."
+    )
+
+    token kind (
+        allowedTokens = ["event", "fact", "preference", "task", "observation", "decision"]
+        doc = "Coarse classification of what this memory captures."
+    )
+
+    string[] sourceRefs (
+        doc = "Opaque pointers back into Comfy-Cozy. Bridge round-trips them; does not interpret."
+    )
+}
